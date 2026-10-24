@@ -1,5 +1,26 @@
 # SPDX-License-Identifier: Apache-2.0
 wsrv_add_test(NAME base_version_test SOURCES base/version_test.cpp LINK wsrv::base)
+wsrv_add_test(NAME base_error_test SOURCES base/error_test.cpp LINK wsrv::base)
+wsrv_add_test(NAME base_checked_test SOURCES base/checked_test.cpp LINK wsrv::base)
+wsrv_add_test(NAME base_assert_test SOURCES base/assert_test.cpp LINK wsrv::base)
+wsrv_add_test(NAME base_bytes_test SOURCES base/bytes_test.cpp LINK wsrv::base)
+wsrv_add_test(NAME base_byte_buffer_test SOURCES base/byte_buffer_test.cpp LINK wsrv::base)
+wsrv_add_test(NAME base_ring_buffer_test SOURCES base/ring_buffer_test.cpp LINK wsrv::base)
+wsrv_add_test(NAME base_clock_test SOURCES base/clock_test.cpp LINK wsrv::base)
+wsrv_add_test(NAME base_logger_test SOURCES base/logger_test.cpp LINK wsrv::base)
+wsrv_add_test(NAME base_random_test SOURCES base/random_test.cpp LINK wsrv::base)
+wsrv_add_test(NAME net_system_random_test SOURCES net/system_random_test.cpp LINK wsrv::net)
+
+# Differential tests against OpenSSL are test-only and optional (ADR-0005: no runtime dependency).
+find_package(OpenSSL QUIET)
+
+wsrv_add_test(NAME crypto_base64_test SOURCES crypto/base64_test.cpp LINK wsrv::crypto)
+wsrv_add_test(NAME crypto_sha1_test SOURCES crypto/sha1_test.cpp LINK wsrv::crypto)
+wsrv_add_test(NAME protocol_utf8_test SOURCES protocol/utf8_test.cpp LINK wsrv::protocol)
+if(TARGET OpenSSL::Crypto)
+    target_link_libraries(crypto_sha1_test PRIVATE OpenSSL::Crypto)
+    target_compile_definitions(crypto_sha1_test PRIVATE WSRV_TEST_HAS_OPENSSL=1)
+endif()
 
 # Architecture guard: the real link graph must equal the allowed graph (docs/ARCHITECTURE.md 2.1).
 include(WsrvModuleGraph)
@@ -22,3 +43,7 @@ add_test(NAME module_graph_sees_private_links
     COMMAND ${CMAKE_COMMAND} -E compare_files
             "${CMAKE_CURRENT_SOURCE_DIR}/module_graph_private.expected"
             "${CMAKE_BINARY_DIR}/module_graph_private.actual")
+
+if(WSRV_BUILD_FUZZERS)
+    add_subdirectory(fuzz)
+endif()

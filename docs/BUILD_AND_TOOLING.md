@@ -79,7 +79,17 @@ Usage: `cmake --preset dev && cmake --build --preset dev && ctest --preset dev`.
 - `pre-commit` hooks (format, trailing whitespace, banned functions, markdown links) — optional locally, enforced in CI.
 - `.editorconfig`: LF, UTF-8, final newline, 4 spaces (2 for YAML/JSON/CMake).
 
-Implemented gate targets (all run in CI): `cmake --build --preset dev --target format-check | check-banned | check-includes | header-check`; `tools/format.sh fix` rewrites formatting; `cmake --preset tidy && cmake --build --preset tidy` runs clang-tidy on every first-party compile. The tools themselves are tested (`ctest -L tools`) against fixtures in `tests/tools/fixtures/`. `module_graph` (ctest) diffs the real CMake link graph against `tests/module_graph.expected`. Sanitizer self-tests: `ctest -L sanitizer-selftest`.
+Implemented gate targets (all run in CI): `cmake --build --preset dev --target format-check | check-banned | check-includes | header-check`; `tools/format.sh fix` rewrites formatting; `cmake --preset tidy && cmake --build --preset tidy` runs clang-tidy on production code (`src/`; this is what CI runs, ~15 s); `tidy-all` also covers tests (slow: ~10 s per GoogleTest file; run it before pushing test changes). Tests use the relaxed `tests/.clang-tidy` profile, without `clang-analyzer-*`, which spent 15-30 s per test file expanding GoogleTest macros. The tools themselves are tested (`ctest -L tools`) against fixtures in `tests/tools/fixtures/`. `module_graph` (ctest) diffs the real CMake link graph against `tests/module_graph.expected`. Sanitizer self-tests: `ctest -L sanitizer-selftest`.
+
+### 5.1 Fuzzing (implemented in M1)
+
+```bash
+cmake --preset fuzz && cmake --build --preset fuzz            # Clang + libc++, ASan+UBSan, libFuzzer
+cd build/fuzz && ctest -L fuzz-regression                      # replay the committed seed/regression corpora
+./tests/fuzz/fuzz_utf8 ../../tests/fuzz/corpus/utf8 -max_total_time=60   # real fuzzing; writes crash-* on failure
+```
+
+Targets: `fuzz_utf8`, `fuzz_base64`, `fuzz_sha1` (properties asserted inside each harness). Every crashing input must be added to `tests/fuzz/corpus/<target>/` together with its fix. Toolchain traps (documented in `tests/fuzz/CMakeLists.txt`): Ubuntu's libFuzzer runtime is built against libstdc++ while our Clang builds use libc++, and the Clang driver rewrites `-lstdc++` into `-lc++` under `-stdlib=libc++`, so the fuzz executables link `-l:libstdc++.so.6` with `--no-as-needed`. CI (`clang` job) builds the targets, replays the committed corpora (`ctest -L fuzz-regression`) and fuzzes each target for 5 s per run. This is a deliberate reduction of the 60 s per target in TESTING_STRATEGY §5 / ADR-0008 to keep CI cheap; longer runs belong in a nightly job, which does not exist yet.
 
 ## 6. CI pipeline (GitHub Actions)
 

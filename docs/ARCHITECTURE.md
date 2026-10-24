@@ -209,7 +209,7 @@ Invariants: `on_open` at most once and only from `Open`; `on_close` exactly once
 
 - `ErrorCode` enum with category (`Protocol`, `Limit`, `Io`, `Tls`, `Config`, `Internal`).
 - Protocol/Limit errors map to a close code (table in `protocol/close_code.hpp`); Io errors map to 1006 (abnormal, never sent).
-- Programmer errors → `assert` (debug) / `std::terminate` via `WSRV_ASSERT` in release for invariant violations that would imply memory unsafety. No silent recovery from broken invariants.
+- Programmer errors → `WSRV_ASSERT`, active in release builds too, which prints the failed condition and calls `std::abort()` for invariant violations that would imply memory unsafety. No silent recovery from broken invariants.
 
 ## 9. Extensibility points (Open/Closed)
 

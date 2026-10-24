@@ -83,7 +83,7 @@ The tools themselves are tested (`ctest -L tools`) against small good/bad fixtur
 | `dev-clang` | same with Clang + libc++ |
 | `release` | optimised, hardened (PIE, RELRO, stack protector, `_FORTIFY_SOURCE=3`), LTO |
 | `tsan` | thread-safety checks |
-| `tidy` | clang-tidy on every compile |
+| `tidy` / `tidy-all` | clang-tidy on production code (what CI runs) / also on tests (slow, local) |
 | `coverage` | gcov instrumentation |
 | `relwithdebinfo`, `bench`, `fuzz`, `msan` | declared, used from later milestones |
 

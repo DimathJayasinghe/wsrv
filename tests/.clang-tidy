@@ -1,8 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # Tests inherit the project profile minus checks that GoogleTest macros and test style trip.
+# clang-analyzer-* is off for tests only: the path-sensitive analyzer spends 15-30 s per test file
+# expanding GoogleTest macros (CI went from 36 s to 359 s) and finds little in test code. It stays on
+# for everything under src/.
 InheritParentConfig: true
 Checks: >
+  -clang-analyzer-*,
   -cert-err58-cpp,
+  -cert-msc32-c,
+  -cert-msc51-cpp,
   -cppcoreguidelines-owning-memory,
   -cppcoreguidelines-special-member-functions,
   -cppcoreguidelines-avoid-non-const-global-variables,

@@ -7,7 +7,7 @@ include_guard(GLOBAL)
 
 include(FetchContent)
 set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
-set(BUILD_GMOCK ON CACHE BOOL "" FORCE)
+set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)   # we use no mocks (fakes instead); saves a third of the GoogleTest build
 FetchContent_Declare(googletest
     URL https://github.com/google/googletest/releases/download/v1.15.2/googletest-1.15.2.tar.gz
     URL_HASH SHA256=7b42b4d6ed48810c5362c265a17faebe90dc2373c885e5216439d37927f02926
@@ -21,6 +21,7 @@ function(wsrv_add_test)
     add_executable(${ARG_NAME} ${ARG_SOURCES})
     target_link_libraries(${ARG_NAME} PRIVATE ${ARG_LINK} GTest::gtest_main)
     set_target_properties(${ARG_NAME} PROPERTIES CXX_EXTENSIONS OFF)
-    wsrv_apply_warnings(${ARG_NAME})
+    target_include_directories(${ARG_NAME} PRIVATE "${PROJECT_SOURCE_DIR}/tests")   # support/fakes.hpp
+    wsrv_apply_warnings(${ARG_NAME} TEST)
     gtest_discover_tests(${ARG_NAME} DISCOVERY_MODE PRE_TEST)
 endfunction()
