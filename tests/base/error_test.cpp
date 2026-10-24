@@ -21,7 +21,9 @@ constexpr std::array kAllCodes{ErrorCode::InvalidArgument,
                                ErrorCode::InvalidBase64,
                                ErrorCode::InvalidUtf8,
                                ErrorCode::RandomUnavailable,
-                               ErrorCode::ResourceExhausted};
+                               ErrorCode::ResourceExhausted,
+                               ErrorCode::Closing,
+                               ErrorCode::Backpressure};
 
 TEST(Error, EveryCodeHasANonEmptyDistinctName) {
     std::set<std::string_view> names;
@@ -41,6 +43,8 @@ TEST(Error, CategoriesMatchTheErrorModel) {
     EXPECT_EQ(wsrv::category(ErrorCode::ResourceExhausted), ErrorCategory::Limit);
     EXPECT_EQ(wsrv::category(ErrorCode::RandomUnavailable), ErrorCategory::Internal);
     EXPECT_EQ(wsrv::category(ErrorCode::InvalidArgument), ErrorCategory::Internal);
+    EXPECT_EQ(wsrv::category(ErrorCode::Closing), ErrorCategory::Internal);
+    EXPECT_EQ(wsrv::category(ErrorCode::Backpressure), ErrorCategory::Limit);
 }
 
 TEST(Error, FailBuildsAnErrorResultCarryingCodeAndContext) {
