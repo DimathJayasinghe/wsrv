@@ -50,9 +50,6 @@ Seen ping(std::string data) {
 Seen pong(std::string data) {
     return Seen{Kind::Pong, MessageType::Text, std::move(data), false, 0, {}, false};
 }
-Seen protocol_error(unsigned code, std::string reason) {
-    return Seen{Kind::ProtocolError, MessageType::Text, {}, false, code, std::move(reason), false};
-}
 Seen closed(unsigned code, std::string reason, bool clean) {
     return Seen{Kind::Closed, MessageType::Text, {}, false, code, std::move(reason), clean};
 }
@@ -130,7 +127,7 @@ private:
         }
     }
 
-    wsrv::TimePoint start_{};
+    wsrv::TimePoint start_;
     wsrv::TimePoint now_ = start_;
     ProtocolSession session_;
 };
@@ -273,8 +270,9 @@ TEST(Session, ALocalCloseIsSentAndTheSessionWaitsForThePeersClose) {  // FR-C2
               (std::vector<WireFrame>{{Opcode::Close, true, close_payload(1000, "bye")}}));
     EXPECT_TRUE(rig.poll().empty());  // not closed until the peer answers
     EXPECT_EQ(rig.session().state(), SessionState::Closing);
-    EXPECT_TRUE(rig.feed(client_frame(Opcode::Close, true, close_payload(1000))).empty());
-    EXPECT_EQ(rig.poll(), (std::vector<Seen>{closed(1000, "", true)}));
+    // Our Close is already written, so the peer's Close completes the handshake right away.
+    EXPECT_EQ(rig.feed(client_frame(Opcode::Close, true, close_payload(1000))),
+              (std::vector<Seen>{closed(1000, "", true)}));
     EXPECT_EQ(rig.session().state(), SessionState::Closed);
 }
 
@@ -285,9 +283,8 @@ TEST(Session, DataAndPingsFromThePeerAfterOurCloseAreDroppedButItsCloseIsHonoure
     const auto events = rig.feed(cat({client_frame(Opcode::Text, true, "ignored"),
                                       client_frame(Opcode::Ping, true, "ignored"),
                                       client_frame(Opcode::Close, true, close_payload(1001))}));
-    EXPECT_TRUE(events.empty());
-    EXPECT_TRUE(rig.take_output().frames.empty());  // no Pong, no second Close
-    EXPECT_EQ(rig.poll(), (std::vector<Seen>{closed(1001, "", true)}));
+    EXPECT_EQ(events, (std::vector<Seen>{closed(1001, "", true)}));  // and nothing before it
+    EXPECT_TRUE(rig.take_output().frames.empty());                   // no Pong, no second Close
 }
 
 TEST(Session, SimultaneousClosesProduceOneCloseFrameAndOneClosedEvent) {  // EC-C11
@@ -405,6 +402,121 @@ TEST(Session, ANewSessionHasNothingToSayAndAClosedOneProducesNothing) {
     rig.poll();
     EXPECT_TRUE(rig.feed(client_frame(Opcode::Text, true, "x")).empty());
     EXPECT_TRUE(rig.session().pending_output().empty());
+}
+
+// ---- Sending ----------------------------------------------------------------------------------
+
+TEST(SessionSend, TextAndBinaryGoOutAsSingleUnmaskedFrames) {
+    Rig rig;
+    ASSERT_TRUE(rig.session().send_text("hello").has_value());
+    ASSERT_TRUE(
+        rig.session().send_binary(wsrv::as_bytes(std::string_view{"\x01\x02"})).has_value());
+    EXPECT_EQ(rig.take_output().frames,
+              (std::vector<WireFrame>{{Opcode::Text, true, "hello"},
+                                      {Opcode::Binary, true, "\x01\x02"}}));
+}
+
+TEST(SessionSend, InvalidUtf8TextIsRefusedAndNothingIsQueued) {  // EC-F36 (single-shot)
+    Rig rig;
+    const auto r = rig.session().send_text("bad \xFF");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, ErrorCode::InvalidUtf8);
+    EXPECT_TRUE(rig.take_output().frames.empty());
+}
+
+TEST(SessionSend, NothingCanBeSentOnceClosingHasStarted) {  // EC-C14
+    Rig rig;
+    ASSERT_TRUE(rig.session().close(CloseCode::Normal, "").has_value());
+    rig.take_output();
+    for (const auto& r : {rig.session().send_text("x"),
+                          rig.session().send_binary({}),
+                          rig.session().send_ping({})}) {
+        ASSERT_FALSE(r.has_value());
+        EXPECT_EQ(r.error().code, ErrorCode::Closing);
+    }
+    EXPECT_TRUE(rig.take_output().frames.empty());
+
+    Rig after_peer_close;  // also when the peer started the close
+    after_peer_close.feed(client_frame(Opcode::Close, true, close_payload(1000)));
+    const auto r = after_peer_close.session().send_text("x");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, ErrorCode::Closing);
+}
+
+TEST(SessionSend, PingsAreLimitedToOneInFlightAndOneHundredTwentyFiveBytes) {
+    Rig rig;
+    ASSERT_TRUE(rig.session().send_ping(wsrv::as_bytes(std::string_view{"a"})).has_value());
+    const auto second = rig.session().send_ping({});
+    ASSERT_FALSE(second.has_value());
+    EXPECT_EQ(second.error().code, ErrorCode::Backpressure);
+    EXPECT_EQ(rig.take_output().frames, (std::vector<WireFrame>{{Opcode::Ping, true, "a"}}));
+    const std::string too_long(126, 'x');
+    const auto r = rig.session().send_ping(wsrv::as_bytes(std::string_view{too_long}));
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+}
+
+TEST(SessionSend, AFullOutboundQueueIsBackpressureNotGrowth) {  // EC-N09
+    SessionConfig config;
+    config.outbound.max_queued_bytes = 100;
+    Rig rig{config};
+    ASSERT_TRUE(rig.session()
+                    .send_binary(wsrv::as_bytes(std::string_view{std::string(80, 'a')}))
+                    .has_value());
+    const auto full =
+        rig.session().send_binary(wsrv::as_bytes(std::string_view{std::string(80, 'b')}));
+    ASSERT_FALSE(full.has_value());
+    EXPECT_EQ(full.error().code, ErrorCode::Backpressure);
+    const auto never =
+        rig.session().send_binary(wsrv::as_bytes(std::string_view{std::string(200, 'c')}));
+    ASSERT_FALSE(never.has_value());
+    EXPECT_EQ(never.error().code, ErrorCode::BufferFull);
+    EXPECT_EQ(rig.take_output().frames.size(), 1U);
+    EXPECT_TRUE(rig.session()
+                    .send_binary(wsrv::as_bytes(std::string_view{std::string(80, 'b')}))
+                    .has_value());
+}
+
+TEST(SessionSend, ABigMessageIsFragmentedAndAPingJumpsInBetweenFragments) {  // EC-F31, EC-F32
+    Rig rig;
+    const std::string payload(std::size_t{200} * 1024, 'm');
+    ASSERT_TRUE(rig.session().send_binary(wsrv::as_bytes(std::string_view{payload})).has_value());
+    std::vector<std::byte> wire;
+    const wsrv::ByteView first = rig.session().pending_output();
+    wire.insert(wire.end(), first.begin(), first.begin() + 1000);  // a partial write
+    rig.session().consume_output(1000);
+    ASSERT_TRUE(rig.session().send_ping(wsrv::as_bytes(std::string_view{"now"})).has_value());
+    for (;;) {
+        const wsrv::ByteView view = rig.session().pending_output();
+        if (view.empty()) {
+            break;
+        }
+        wire.insert(wire.end(), view.begin(), view.end());
+        rig.session().consume_output(view.size());
+    }
+    const auto parsed = parse_server_output(wire);
+    ASSERT_TRUE(parsed.ok);
+    ASSERT_GE(parsed.frames.size(), 3U);
+    EXPECT_EQ(parsed.frames[0].opcode, Opcode::Binary);
+    EXPECT_FALSE(parsed.frames[0].fin);
+    EXPECT_EQ(parsed.frames[1], (WireFrame{Opcode::Ping, true, "now"}));  // not inside a frame
+    std::string joined;
+    for (const WireFrame& f : parsed.frames) {
+        if (f.opcode != Opcode::Ping) {
+            joined += f.payload;
+        }
+    }
+    EXPECT_EQ(joined, payload);
+    EXPECT_TRUE(parsed.frames.back().fin);
+}
+
+TEST(SessionSend, CloseDropsMessagesThatHaveNotStartedAndNothingFollowsTheCloseFrame) {
+    Rig rig;
+    ASSERT_TRUE(rig.session().send_text("never sent").has_value());
+    ASSERT_TRUE(rig.session().close(CloseCode::GoingAway, "bye").has_value());
+    EXPECT_EQ(rig.take_output().frames,
+              (std::vector<WireFrame>{{Opcode::Close, true, close_payload(1001, "bye")}}));
+    EXPECT_TRUE(rig.take_output().frames.empty());
 }
 
 }  // namespace

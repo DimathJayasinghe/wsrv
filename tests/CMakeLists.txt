@@ -31,6 +31,7 @@ wsrv_add_test(NAME protocol_frame_writer_test SOURCES protocol/frame_writer_test
 wsrv_add_test(NAME protocol_frame_parser_test SOURCES protocol/frame_parser_test.cpp LINK wsrv::protocol)
 wsrv_add_test(NAME protocol_message_assembler_test SOURCES protocol/message_assembler_test.cpp LINK wsrv::protocol)
 wsrv_add_test(NAME protocol_outbound_scheduler_test SOURCES protocol/outbound_scheduler_test.cpp LINK wsrv::protocol)
+wsrv_add_test(NAME protocol_session_test SOURCES protocol/session_test.cpp LINK wsrv::protocol)
 wsrv_add_test(NAME protocol_utf8_test SOURCES protocol/utf8_test.cpp LINK wsrv::protocol)
 if(TARGET OpenSSL::Crypto)
     target_link_libraries(crypto_sha1_test PRIVATE OpenSSL::Crypto)
