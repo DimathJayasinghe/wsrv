@@ -19,6 +19,7 @@ enum class ErrorCode : std::uint8_t {
     InvalidBase64,      ///< Input is not strict, canonical Base64 (Protocol).
     InvalidUtf8,        ///< Input is not well-formed UTF-8 (Protocol).
     RandomUnavailable,  ///< The system random source failed (Internal).
+    ResourceExhausted,  ///< An allocation failed; the operation did nothing (Limit).
 };
 
 /// A failure. `context` MUST be a string literal (static storage): it is never built from peer
@@ -38,6 +39,7 @@ struct Error {
         return ErrorCategory::Protocol;
     case ErrorCode::Overflow:
     case ErrorCode::BufferFull:
+    case ErrorCode::ResourceExhausted:
         return ErrorCategory::Limit;
     case ErrorCode::InvalidArgument:
     case ErrorCode::OutOfRange:

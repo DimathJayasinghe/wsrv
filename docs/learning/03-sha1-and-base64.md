@@ -17,7 +17,7 @@ SHA-1 turns any message into 20 bytes by processing it in **64-byte blocks**, ke
 3. **80 rounds.** Each round mixes the five state words with a function `f` and a constant `k` that change every 20 rounds, and a 5-bit and 30-bit rotation.
 4. Add the result back into the state; after the last block, the five words (big-endian) are the digest.
 
-**Streaming.** TCP delivers bytes in arbitrary chunks, so `update()` buffers a partial block and processes whole blocks as soon as they exist; `finish()` does the padding. Any chunking must give the same digest. A subtle part is the **padding boundary**: a 55-byte message fits in one block (55 + `0x80` + 8 length bytes = 64), but a 56-byte message needs a second block, because the length no longer fits. A test confirms that a 56-byte message pads to **2 blocks**.
+**Streaming.** TCP delivers bytes in arbitrary chunks, so `update()` buffers a partial block and processes whole blocks as soon as they exist; `finish()` does the padding. Any chunking must give the same digest. A subtle part is the **padding boundary**: a 55-byte message fits in one block (55 + `0x80` + 8 length bytes = 64), but a 56-byte message needs a second block, because the length no longer fits. The 56-byte test vector below exercises exactly that two-block path (a 56-byte message pads to **2 blocks**).
 
 ## 3. Proving it right
 `tests/crypto/sha1_test.cpp` checks, in layers:

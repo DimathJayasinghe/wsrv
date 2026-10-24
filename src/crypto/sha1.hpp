@@ -36,8 +36,9 @@ private:
 
     std::array<std::uint32_t, 5> state_{};
     std::array<std::byte, 64> block_{};
-    std::size_t block_len_ = 0;      // bytes currently buffered in block_
-    std::uint64_t total_bytes_ = 0;  // message length so far (wraps only after 2^64 bytes = 16 EiB)
+    std::size_t block_len_ = 0;  // bytes currently buffered in block_
+    std::uint64_t total_bytes_ =
+        0;  // message length so far; the 64-bit BIT length limits SHA-1 input to 2^61 bytes
 };
 
 }  // namespace wsrv

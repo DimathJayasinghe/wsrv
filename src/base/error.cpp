@@ -19,6 +19,8 @@ std::string_view to_string(ErrorCode code) noexcept {
         return "InvalidUtf8";
     case ErrorCode::RandomUnavailable:
         return "RandomUnavailable";
+    case ErrorCode::ResourceExhausted:
+        return "ResourceExhausted";
     }
     return "Unknown";
 }

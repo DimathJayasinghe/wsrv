@@ -38,6 +38,15 @@ TEST(Checked, MulOverflowIsAnError) {
     EXPECT_EQ(checked_mul<std::uint64_t>(kMax, 2).error().code, ErrorCode::Overflow);
 }
 
+TEST(Checked, OperandsAtTheMaximumBehaveExactly) {
+    constexpr auto kMax64 = std::numeric_limits<std::uint64_t>::max();
+    EXPECT_EQ(checked_mul<std::uint64_t>(kMax64, 1).value(), kMax64);
+    EXPECT_EQ(checked_mul<std::uint64_t>(1, kMax64).value(), kMax64);
+    EXPECT_EQ(checked_add<std::uint8_t>(0, 255).value(), 255);
+    EXPECT_EQ(checked_add<std::uint8_t>(255, 255).error().code, ErrorCode::Overflow);
+    EXPECT_EQ(checked_mul<std::uint8_t>(255, 255).error().code, ErrorCode::Overflow);
+}
+
 TEST(Checked, MulByZeroIsZeroEvenAtTheMaximum) {
     constexpr auto kMax = std::numeric_limits<std::uint64_t>::max();
     EXPECT_EQ(checked_mul<std::uint64_t>(kMax, 0).value(), 0U);

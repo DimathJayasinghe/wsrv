@@ -84,6 +84,19 @@ TEST(RingBuffer, ZeroCapacityAcceptsNothing) {
     EXPECT_TRUE(ring.full());
 }
 
+TEST(RingBuffer, WritingAViewOfItsOwnContentsIsSafe) {
+    RingBuffer ring{8};
+    ASSERT_EQ(ring.write(bytes_of(1, 3)), 3U);
+    ASSERT_EQ(ring.write(ring.contiguous_front()),
+              3U);  // source = live bytes, destination = free slots
+    std::vector<std::byte> out(6);
+    EXPECT_EQ(ring.read(out), 6U);
+    EXPECT_EQ(
+        out,
+        (std::vector<std::byte>{
+            std::byte{1}, std::byte{2}, std::byte{3}, std::byte{1}, std::byte{2}, std::byte{3}}));
+}
+
 TEST(RingBuffer, RandomOperationsMatchADequeModel) {
     std::mt19937 rng{12345};
     RingBuffer ring{37};

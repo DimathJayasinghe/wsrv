@@ -11,7 +11,7 @@ std::uint64_t end = offset + length;   // length came from the network
 if (end <= buffer_size) { /* read [offset, end) */ }
 ```
 
-If `length` is `0xFFFFFFFFFFFFFFF0` the addition **wraps around** to a small number, the check passes, and we read far outside the buffer. That is a classic remote-code-execution bug. The cure is arithmetic that *refuses to wrap*.
+If `length` is `0xFFFFFFFFFFFFFFF0` the addition **wraps around** to a small number, the check passes, and we read (or write) far outside the buffer. Out-of-bounds reads leak memory and out-of-bounds writes are the raw material of remote-code-execution exploits. The cure is arithmetic that *refuses to wrap*.
 
 ## 2. Errors as values: `Result<T>`
 `src/base/error.hpp` defines:
@@ -59,14 +59,14 @@ We measured both failures:
 - On our little-endian CPU the bytes `01 02` read as `0x0201`, not the `0x0102` on the wire (`naive=0x0201 correct=0x0102`).
 - On an odd address UBSan reports `runtime error: load of misaligned address ... which requires 2 byte alignment`.
 
-So `load_be16/32/64` assemble the value byte by byte (`(b0 << 8) | b1`): correct on any CPU, any alignment, no aliasing tricks. The compiler turns it into a single load anyway.
+So `load_be16/32/64` assemble the value byte by byte (`(b0 << 8) | b1`): correct on any CPU, any alignment, no aliasing tricks. Modern compilers often turn this into a single load (GCC does for `load_be16`; for 32 and 64 bits it depends on the compiler and optimisation level), but correctness never depends on that.
 
 `as_chars()` is the **one** audited `reinterpret_cast` in the code base (between `std::byte` and `char`, which the language allows to alias anything); it carries a `NOLINT` with that justification.
 
 ## 5. Bounded buffers
-- **`ByteBuffer`** is a queue with a hard maximum. `append` past the bound returns `BufferFull` and leaves the buffer *unchanged*. It never reserves the maximum up front (a test creates one with a 1 TiB bound and appends one byte): a peer must not be able to make us allocate memory just by connecting.
+- **`ByteBuffer`** is a queue with a hard maximum, and the bound limits *memory*, not just content. `append` past the bound returns `BufferFull` and leaves the buffer *unchanged*; consumed bytes at the front are compacted away before the buffer could outgrow the bound, growth is capped at the bound, and draining it releases large allocations. A first version of ours missed this: the independent review measured it using ~2.1x `max_size` (dead bytes at the front plus vector growth) and never shrinking, so an idle connection kept its high-water mark. Tests now assert `capacity() <= max_size()` after every step of a 30,000-step random run, and that capacity falls back below 16 KiB after `clear()` or a full `consume()`. Nothing is reserved up front: a peer must not be able to make us allocate memory just by connecting. Appending a view of the buffer's *own* contents is safe (it is copied first; the review found the naive version was undefined behaviour), and an allocation failure comes back as `Error{ResourceExhausted}` instead of an exception.
 - **`RingBuffer`** has fixed capacity and accepts only what fits, returning how many bytes it took. That return value becomes *backpressure* later: if the outbound ring is full, stop reading from the sender.
-- Both are checked in tests against simple models (a randomized 20,000-step comparison with `std::deque`).
+- Both are checked in tests against a simple model (`std::deque`) over thousands of random operations.
 
 ## 6. Bugs vs. peer behaviour: `Result` vs `WSRV_ASSERT`
 If a *peer* can cause a condition, return a `Result` (close the connection, move on). If only a *bug in our code* can cause it (calling `load_be32` on 3 bytes), use `WSRV_ASSERT`: it prints the failed condition and aborts, in release builds too. Continuing after a broken invariant is worse than stopping. Death tests prove the assertions fire.
@@ -82,7 +82,7 @@ If a *peer* can cause a condition, return a `Result` (close the connection, move
 1. What do `checked_add<std::uint8_t>(250, 6)` and `checked_mul<std::uint16_t>(256, 256)` return?
 2. A `ByteBuffer` with `max_size` 4 holds `"abc"`. You append `"de"`. What are the result, the contents, and the size afterwards?
 3. Why does `RingBuffer::contiguous_front()` sometimes return fewer bytes than `size()`?
-4. Which should be a `Result` and which an assertion: (a) a frame header claims 2⁶⁴ bytes; (b) `consume(n)` called with `n` larger than the buffer holds?
+4. Which should be a `Result` and which an assertion: (a) a frame header claims a 64-bit payload length larger than your configured limit; (b) `consume(n)` called with `n` larger than the buffer holds?
 
 <details><summary>Answers</summary>
 

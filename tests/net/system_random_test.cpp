@@ -34,8 +34,8 @@ TEST(SystemRandom, ZeroLengthFillSucceeds) {
 
 TEST(SystemRandom, LargeFillsAreCompleteDespiteShortReads) {
     wsrv::SystemRandom random;
-    std::vector<std::byte> out(
-        1 << 20);  // 1 MiB: larger than one getrandom() call is guaranteed to return
+    std::vector<std::byte> out(1 << 20);  // 1 MiB: exercises a large request (short reads are
+                                          // legal, though the kernel rarely produces them)
     ASSERT_TRUE(random.fill(out).has_value());
     // The last bytes must have been written too (a short read left unhandled would leave zeros).
     EXPECT_FALSE(

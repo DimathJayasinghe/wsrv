@@ -81,7 +81,7 @@ jobs:
       - name: Install libc++ and clang-tidy
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends libc++-18-dev libc++abi-18-dev clang-tidy-18 ccache
+          sudo apt-get install -y -qq --no-install-recommends libc++-18-dev libc++abi-18-dev libclang-rt-18-dev clang-tidy-18 ccache
           clang++-18 --version | head -1
       - name: dev-clang (ASan+UBSan)
         run: |
@@ -93,6 +93,16 @@ jobs:
           cmake --preset tsan -DCMAKE_CXX_COMPILER=clang++-18
           cmake --build --preset tsan
           ctest --preset tsan
+      - name: fuzz (corpus replay + 5 s smoke per target)
+        run: |
+          cmake --preset fuzz -DCMAKE_CXX_COMPILER=clang++-18
+          cmake --build --preset fuzz --target fuzz_utf8 fuzz_base64 fuzz_sha1
+          ctest --test-dir build/fuzz -L fuzz-regression --output-on-failure
+          for target in utf8 base64 sha1; do
+            mkdir -p "$RUNNER_TEMP/fuzz_$target"
+            "build/fuzz/tests/fuzz/fuzz_$target" "$RUNNER_TEMP/fuzz_$target" "tests/fuzz/corpus/$target" \
+              -max_total_time=5 -artifact_prefix="$RUNNER_TEMP/" 2>&1 | tail -2
+          done
       - name: clang-tidy
         run: |
           cmake --preset tidy -DCMAKE_CXX_COMPILER=clang++-18

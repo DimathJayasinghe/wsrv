@@ -80,21 +80,35 @@ TEST(Base64, RejectsMalformedInput) {
         "Zg=a",                   // data after padding
         "Zg==Zg==",               // padding in the middle (two messages glued together)
         "Zm9v=",                  // length not a multiple of 4
-        "Zm9v\n",                 // trailing newline
-        "Zm 9v",                  // embedded space
-        "Zm9v ",                  // trailing space
+        "Zm9v\n",                 // 5 characters: rejected by the length rule
+        "Zm9\n",                  // 4 characters: newline where a data character belongs
+        "Zm 9",                   // embedded space inside a group
+        " Zm9",                   // leading space
+        "Zm9v Zm9v",              // space between two valid groups
+        "Zm9v\r\nZm9v",           // line-wrapped (MIME style) input
         std::string{"Z\0==", 4},  // NUL byte
         "Zm-_",                   // URL-safe alphabet is a different encoding
         "Zm9\xC3",                // non-ASCII byte
         "Zh==",                   // non-canonical: low 4 bits of the 2nd sextet must be 0
-        "Zm9=",                   // non-canonical: low 2 bits of the 3rd sextet must be 0
-        "Zm+=",                   // non-canonical, uses '+'
+        "Zk==",  // bit 2 of the 4 unused bits set (a mask of 0x03 would wrongly accept it)
+        "ZI==",  // bit 3 set
+        "QR==",  // another set-bit pattern
+        "QUJ=",  // 3rd sextet J has its low 2 bits set
+        "Zm9=",  // non-canonical: low 2 bits of the 3rd sextet must be 0
+        "Zm+=",  // non-canonical, uses '+'
     };
     for (const std::string& text : bad) {
         const auto result = wsrv::base64_decode(text);
         ASSERT_FALSE(result.has_value()) << "accepted: " << text;
         EXPECT_EQ(result.error().code, ErrorCode::InvalidBase64);
     }
+}
+
+TEST(Base64, AcceptsCanonicalFormsNextToTheRejectedOnes) {
+    EXPECT_EQ(decode_to_text("ZA=="), "d");
+    EXPECT_EQ(decode_to_text("QQ=="), "A");
+    EXPECT_EQ(decode_to_text("QUI="), "AB");
+    EXPECT_EQ(decode_to_text("Zm9vZm9v"), "foofoo");
 }
 
 TEST(Base64, EveryNonAlphabetByteIsRejected) {

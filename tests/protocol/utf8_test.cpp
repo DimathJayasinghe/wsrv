@@ -138,6 +138,28 @@ TEST(Utf8, TruncatedTailIsNotAnErrorYetButIsNotABoundary) {
     EXPECT_EQ(v.pending_bytes(), 0U);
 }
 
+TEST(Utf8, PendingBytesAccumulateAcrossChunksAndResetOnCompletion) {
+    Utf8Validator v;
+    EXPECT_EQ(v.pending_bytes(), 0U);
+    ASSERT_TRUE(v.feed(bytes({0xF0})).has_value());
+    EXPECT_EQ(v.pending_bytes(), 1U);
+    ASSERT_TRUE(v.feed(bytes({0x9F})).has_value());
+    EXPECT_EQ(v.pending_bytes(),
+              2U);  // more than the length of the last chunk: includes earlier chunks
+    ASSERT_TRUE(v.feed(bytes({0x98})).has_value());
+    EXPECT_EQ(v.pending_bytes(), 3U);
+    ASSERT_TRUE(v.feed(bytes({0x80})).has_value());
+    EXPECT_EQ(v.pending_bytes(), 0U);
+}
+
+TEST(Utf8, PendingBytesAreZeroAfterAFailure) {
+    Utf8Validator v;
+    ASSERT_TRUE(v.feed(bytes({0xED})).has_value());
+    EXPECT_EQ(v.pending_bytes(), 1U);
+    ASSERT_FALSE(v.feed(bytes({0xA0})).has_value());  // surrogate
+    EXPECT_EQ(v.pending_bytes(), 0U);
+}
+
 TEST(Utf8, PendingStateSurvivesEmptyFeeds) {
     Utf8Validator v;
     ASSERT_TRUE(v.feed(bytes({0xF0, 0x9F})).has_value());

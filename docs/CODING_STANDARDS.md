@@ -57,9 +57,9 @@ Baseline: **C++ Core Guidelines** (https://isocpp.github.io/CppCoreGuidelines). 
 |---|---|
 | Expected runtime failure (bad input, I/O error, limit hit) | `Result<T>` (`std::expected<T, Error>`) |
 | Invalid configuration at startup | exception `ConfigError` (only in builder/`main`) |
-| Programmer error / violated invariant | `WSRV_ASSERT` (debug: abort with message; release: still checked for memory-safety-critical invariants → `std::terminate`) |
+| Programmer error / violated invariant | `WSRV_ASSERT` (always active, also in release: prints the failed condition and calls `std::abort()`) |
 | User handler throws | caught at the handler boundary → log → close 1011; never propagates |
-| Allocation failure | treated as `Error{ResourceExhausted}` where recoverable (connection-level), otherwise terminate |
+| Allocation failure | `Error{ResourceExhausted}` where it is peer-driven and recoverable (e.g. `ByteBuffer::append`); in small, bounded helpers (e.g. `base64_encode/decode` on handshake-sized input) `std::bad_alloc` may propagate and terminate the process |
 
 Rules:
 - Every error path is tested. Error contexts are static strings (no allocation, no peer data inside).

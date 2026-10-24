@@ -15,8 +15,9 @@ function(wsrv_add_fuzzer name sources link)
     #  * with -stdlib=libc++ the Clang driver silently rewrites `-lstdc++` into `-lc++`, so the library
     #    must be named by file (`-l:libstdc++.so.6`);
     #  * --no-as-needed keeps it even though nothing in OUR objects references it.
-    target_link_options(${name} PRIVATE -Wl,--no-as-needed)
-    target_link_libraries(${name} PRIVATE -l:libstdc++.so.6)
+    # push-state/pop-state confine --no-as-needed to this one library instead of every library after it.
+    target_link_libraries(${name} PRIVATE -Wl,--push-state,--no-as-needed -l:libstdc++.so.6 -Wl,--pop-state)
+    wsrv_apply_warnings(${name} TEST)   # harnesses are code too: warnings are errors
     target_include_directories(${name} PRIVATE "${PROJECT_SOURCE_DIR}/src")
     string(REPLACE "fuzz_" "" _corpus ${name})
     add_test(NAME ${name}_corpus_replay
