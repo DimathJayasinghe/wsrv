@@ -82,24 +82,26 @@ Forbidden: `protocol → net`, `protocol → <sys/*>`, `net → protocol`, any c
 | `ProtocolSession` | FSM: `Connecting → Open → Closing → Closed`; orchestrates parser/assembler/ping/close; **input** `feed(bytes)`, `tick(now)`, `send(...)`; **output** `drain_events()`, `drain_output()` |
 | `IExtension` | Frame transform hook (RSV bits, per-message transform) |
 
-`ProtocolSession` surface (sketch):
+`ProtocolSession` surface (as implemented in M4, `src/protocol/session.hpp`):
 
 ```cpp
 class ProtocolSession {
 public:
-  explicit ProtocolSession(SessionConfig cfg, std::unique_ptr<IExtension> ext = nullptr);
-  Result<void> feed(ByteView bytes);               // may emit events
-  void         tick(TimePoint now);                // timers: ping, pong deadline, close deadline
-  Result<void> send_text(std::string_view);
+  ProtocolSession(SessionConfig cfg, TimePoint now);        // starts Open: the 101 is already sent
+  std::optional<SessionEvent> next_event(MutableByteView& input); // consumes input; Message/Part, Ping, Pong, ProtocolError, Closed
+  void tick(TimePoint now);                                  // timers (idle, heartbeat, incomplete message, close) + rate windows
+  Result<void> send_text(std::string_view);                  // Closing | InvalidUtf8 | Backpressure | BufferFull
   Result<void> send_binary(ByteView);
   Result<void> send_ping(ByteView);
-  void         close(CloseCode, std::string_view reason);
-  std::optional<Event> next_event();               // Message, Ping, Pong, Closed, ProtocolError
-  ByteView     pending_output() const;             // bytes to write
-  void         consume_output(size_t n);
-  State        state() const noexcept;
+  Result<void> close(CloseCode, std::string_view reason);    // idempotent
+  void on_transport_closed();                                // EOF / reset: Closed at once
+  ByteView pending_output();                                 // bytes to write (control frames first at frame boundaries)
+  void consume_output(std::size_t n);
+  SessionState state() const noexcept;                       // Open -> Closing -> Closed
 };
 ```
+Why `next_event(input)` and not `feed()` + a queue: events carry views into the caller's buffer (frames are unmasked in place) and into the assembler's message buffer; a queue would outlive them. Pulling one event at a time keeps every view valid until the next call. Server role only for now (inbound frames must be masked, outbound are not); a client role needs `IRandom` for mask keys.
+
 The session is deterministic: same bytes + same ticks ⇒ same output. This is what makes fuzzing and golden tests cheap.
 
 ### 3.5 net

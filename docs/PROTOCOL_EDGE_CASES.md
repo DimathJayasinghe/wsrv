@@ -197,7 +197,11 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | EC-H14, H15, H17, H18, H19, H22 (parser side), H23 | done (M2) | `HttpRequestParser.*`, `HandshakeFlow.*`, `fuzz_http_request` |
 | EC-F01..F17, F19..F22, F24..F26, F28..F30, F37 | done (M3), F29/F30 streaming rules at assembler level (F30: `MessageAssembler.Discard*`, `DiscardMidFrame*`, `ContinuationsOfADiscardedMessage*`, `LimitsStillApplyWhileDraining*`) | `FrameParser.*`, `FrameWriter.*`, `MessageAssembler.*`, `MessageAssemblerStreaming.*`, `Masker.*`, `fuzz_frame_parser`, `fuzz_message_pipeline` |
 | EC-C05..C09 (payload rules) | done (M3) | `ClosePayload.*`, `CloseCode.*` |
-| EC-F18, F23, F31..F36 | M4 (outbound) / M6 (connection level) | - |
+| EC-C01..C05, C10..C17 (session level; C16/C17 as timers, C12 as `close_timeout`) | done (M4) | `Session.*`, `SessionSend.*`, `SessionTimers.*`, `OutboundScheduler.*`, `fuzz_session` |
+| EC-F12, F27, F28 (rates and incomplete-message timer), F31, F32, F36 (single-shot send), N09 (queue bound: `Backpressure`) | done (M4) | `SessionRates.*`, `SessionTimers.AnUnfinishedMessage*`, `OutboundScheduler.ALargeMessage*`, `SessionSend.*` |
+| EC-F23, N04 (peer EOF -> 1006) | done at session level (M4: `on_transport_closed`) | `Session.TheTransportClosing*` |
+| EC-C18 (server shutdown) | M6 | - |
+| EC-F18, F33..F35 (`MessageWriter`) | M6 (needs connection-level backpressure) | - |
 | EC-H20, H21, H22 (logging), H24 | M6 (connection level: timers, disconnects) | - |
 | EC-H26 | M10 (MAY) | - |
 | EC-F*, EC-C*, EC-N*, EC-A*, EC-T*, EC-D* | later milestones | - |

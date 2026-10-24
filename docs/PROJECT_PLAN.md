@@ -77,7 +77,7 @@ Each milestone is *done* only when its exit criteria and the global Definition o
 | M13 | More bindings & platforms | Python, Node, Go, Rust bindings (Tier 1/2 per GOVERNANCE); macOS (`KqueuePoller`), then Windows | Each binding passes Autobahn in CI; per-OS CI green |
 | M14 | Open-source launch | LICENSE/NOTICE, CoC, GOVERNANCE, templates, website/docs site, roadmap, good-first-issues, signed releases + SBOM | Public repo checklist complete; **1.0 tag** |
 
-> **Status (2026-10-24):** M0, M1, M2 merged (PR #1-#3). M3 (frame codec: opcodes, close codes, masking, strict incremental frame parser and encoder, message assembler with buffered and streaming delivery, 2 fuzz targets) implemented on `feat/m3-framing`, pending review/merge. Next: M4 (protocol session).
+> **Status (2026-10-24):** M0-M3 merged (PR #1-#4; M3 = frame codec, message assembler, 2 fuzz targets). M4 (`ProtocolSession`, outbound scheduler, timers, rate limits, `fuzz_session`) implemented on `feat/m4-session`, pending review/merge. Next: M5 (net).
 >
 > Sequencing note: TLS (M8) is required built-in (owner decision). permessage-deflate (M9) may slip behind M11/M12 if needed for the PHP milestone. Decide at M7 exit.
 
