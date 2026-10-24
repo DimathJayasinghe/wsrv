@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "base/assert.hpp"
 #include "base/bytes.hpp"
+#include "base/error.hpp"
 #include "protocol/frame.hpp"
 #include "protocol/frame_parser.hpp"
 #include "protocol/frame_writer.hpp"
@@ -45,8 +47,9 @@ inline std::vector<std::byte> client_frame(Opcode opcode, bool fin, std::string_
     header.payload_length = payload.size();
     header.mask_key = kTestMaskKey;
     std::array<std::byte, kMaxHeaderSize> head{};
-    const std::size_t n = *encode_header(head, header);
-    std::vector<std::byte> out(head.begin(), head.begin() + static_cast<std::ptrdiff_t>(n));
+    const Result<std::size_t> encoded = encode_header(head, header);
+    WSRV_ASSERT(encoded.has_value());  // a test asked for a frame that cannot exist (control > 125)
+    std::vector<std::byte> out(head.begin(), head.begin() + static_cast<std::ptrdiff_t>(*encoded));
     std::vector<std::byte> body(payload.size());
     std::transform(payload.begin(), payload.end(), body.begin(), [](char c) {
         return static_cast<std::byte>(c);
@@ -62,6 +65,18 @@ inline std::string close_payload(unsigned code, std::string_view reason = {}) {
     out.push_back(static_cast<char>(code >> 8U));
     out.push_back(static_cast<char>(code & 0xFFU));
     out.append(reason);
+    return out;
+}
+
+/// A masked control frame whose 16-bit length field says `length` (> 125): illegal on the wire
+/// (RFC 6455 section 5.5), which encode_header refuses to produce, so it is built by hand.
+inline std::vector<std::byte> oversized_control_frame(Opcode opcode, std::size_t length) {
+    std::vector<std::byte> out{static_cast<std::byte>(0x80U | static_cast<unsigned>(opcode)),
+                               std::byte{0xFE},
+                               static_cast<std::byte>(length >> 8U),
+                               static_cast<std::byte>(length & 0xFFU)};
+    out.insert(out.end(), kTestMaskKey.begin(), kTestMaskKey.end());
+    out.insert(out.end(), length, std::byte{0});
     return out;
 }
 

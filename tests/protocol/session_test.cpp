@@ -23,6 +23,7 @@ using wsrv::SessionEvent;
 using wsrv::SessionState;
 using wsrv::test::client_frame;
 using wsrv::test::close_payload;
+using wsrv::test::oversized_control_frame;
 using wsrv::test::parse_server_output;
 using wsrv::test::ParsedOutput;
 using wsrv::test::WireFrame;
@@ -226,8 +227,7 @@ TEST(Session, InvalidClosePayloadsAreProtocolErrors) {  // EC-C06..C09, EC-U08
                                   {close_payload(999), 1002},
                                   {close_payload(1004), 1002},
                                   {close_payload(5000), 1002},
-                                  {close_payload(1000, "\xFF"), 1007},
-                                  {close_payload(1000, std::string(124, 'r')), 1002}};
+                                  {close_payload(1000, "\xFF"), 1007}};
     for (const Case& c : cases) {
         Rig rig;
         const auto events = rig.feed(client_frame(Opcode::Close, true, c.payload));
@@ -239,6 +239,16 @@ TEST(Session, InvalidClosePayloadsAreProtocolErrors) {  // EC-C06..C09, EC-U08
                       {Opcode::Close, true, close_payload(c.expected, events[0].reason)}}));
         EXPECT_EQ(rig.poll(), (std::vector<Seen>{closed(c.expected, events[0].reason, false)}));
     }
+}
+
+TEST(Session, ACloseFrameLongerThanAControlFrameMayBeIsAProtocolError) {  // EC-C09 on the wire
+    // A reason over 123 bytes means a payload over 125, which no control frame can carry; the
+    // payload-level rule itself is tested in ClosePayload.*.
+    Rig rig;
+    const auto events = rig.feed(oversized_control_frame(Opcode::Close, 126));
+    ASSERT_EQ(events.size(), 1U);
+    EXPECT_EQ(events[0].kind, Kind::ProtocolError);
+    EXPECT_EQ(events[0].code, 1002U);
 }
 
 TEST(Session, EverythingAfterThePeersCloseIsIgnored) {  // FR-C5, EC-C10
