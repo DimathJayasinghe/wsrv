@@ -1,0 +1,4 @@
+GET /chat HTTP/1.1
+Host: example.com
+Sec-WebSocket-Version: 8
+
