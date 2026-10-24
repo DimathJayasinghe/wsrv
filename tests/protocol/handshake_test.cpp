@@ -366,11 +366,6 @@ TEST(Handshake, UserRuleThatThrowsAnythingBecomesA500AndTheServerSurvives) {
     EXPECT_EQ(run_status(valid_request(), primitive), 500);
 }
 
-#ifndef _LIBCPP_VERSION
-// With libc++ this particular case is skipped: the CI runner's libc++ / libc++abi pair makes ASan
-// report an alloc-dealloc-mismatch for the message string of any std::exception subclass (allocated
-// with operator new in libc++.so, freed with free() by libc++abi's destructor), an environment
-// problem, not a defect here.
 TEST(Handshake, UserRuleThrowingAStdExceptionBecomesA500) {
     HandshakeConfig config = default_config();
     config.user_rules.push_back(
@@ -379,7 +374,6 @@ TEST(Handshake, UserRuleThrowingAStdExceptionBecomesA500) {
         }));
     EXPECT_EQ(run_status(valid_request(), config), 500);
 }
-#endif
 
 TEST(Handshake, UserRulesSeeOnlyRequestsThatPassedEveryBuiltInRule) {
     int calls = 0;
@@ -422,8 +416,183 @@ TEST(Handshake, RejectionKeepsTheRulesExtraHeaders) {
     const auto text = wsrv::serialize(wsrv::to_response(decision));
     ASSERT_TRUE(text.has_value());
     EXPECT_EQ(*text,
-              "HTTP/1.1 426 Upgrade Required\r\nSec-WebSocket-Version: 13\r\nConnection: close\r\n"
-              "Content-Length: 0\r\n\r\n");
+              "HTTP/1.1 426 Upgrade Required\r\nSec-WebSocket-Version: 13\r\nUpgrade: websocket\r\n"
+              "Connection: Upgrade, close\r\nContent-Length: 0\r\n\r\n");  // RFC 9110 15.5.22
+}
+
+// ---- review findings: Host validity, user-rule boundary, caps, config
+// -------------------------------------
+
+TEST(Handshake, HostMustBeAValidHostValue) {  // FR-H1, RFC 9112 section 3.2
+    EXPECT_EQ(run_status(replaced(valid_request(), "Host", "a b, c")), 400);
+    EXPECT_EQ(run_status(replaced(valid_request(), "Host", "ex@mple.com")), 400);
+    EXPECT_EQ(run_status(replaced(valid_request(), "Host", "example.com:99999")), 400);
+    EXPECT_EQ(run_status(replaced(valid_request(), "Host", "[::1]:8080")), 101);
+    EXPECT_EQ(run_status(replaced(valid_request(), "Host", "example.com:8080")), 101);
+}
+
+struct RefusalCase {
+    HandshakeReject refusal;
+    const char* why;
+};
+
+TEST(Handshake, AUserRulesRefusalIsValidatedBeforeItCanBeSent) {
+    const std::vector<RefusalCase> invalid{
+        {HandshakeReject{999, {}}, "status out of range"},
+        {HandshakeReject{101, {}}, "a refusal must not claim Switching Protocols"},
+        {HandshakeReject{200, {}}, "a refusal must not claim success"},
+        {HandshakeReject{302, {}}, "redirects are not offered to user rules"},
+        {HandshakeReject{401, {{"X", "a\r\nSet-Cookie: stolen=1"}}}, "CRLF in a header value"},
+        {HandshakeReject{401, {{"Bad Name", "v"}}}, "header name is not a token"},
+        {HandshakeReject{401, {{"Content-Length", "5"}}}, "would duplicate the framing header"},
+        {HandshakeReject{401, {{"content-length", "0"}}}, "framing headers belong to the server"},
+        {HandshakeReject{401, {{"Connection", "keep-alive"}}}, "the server decides about closing"},
+        {HandshakeReject{401, {{"Transfer-Encoding", "chunked"}}}, "framing header"},
+        {HandshakeReject{401, {{"Upgrade", "websocket"}}}, "upgrade headers belong to the server"},
+        {HandshakeReject{401, {{"Sec-WebSocket-Accept", "x"}}},
+         "handshake headers belong to the server"},
+        {HandshakeReject{401, {{"sec-websocket-protocol", "x"}}},
+         "handshake headers belong to the server"},
+    };
+    for (const RefusalCase& c : invalid) {
+        HandshakeConfig config = default_config();
+        config.user_rules.push_back(
+            std::make_shared<LambdaRule>([refusal = c.refusal](const HttpRequest&) {
+                return std::optional<HandshakeReject>{refusal};
+            }));
+        const HandshakeDecision decision = HandshakeNegotiator{config}.negotiate(valid_request());
+        ASSERT_EQ(status_of(decision), 500) << c.why;
+        EXPECT_FALSE(std::get<HandshakeReject>(decision).from_exception) << c.why;
+    }
+}
+
+TEST(Handshake, AUserRuleMayUseOrdinaryHeadersOnItsRefusal) {
+    HandshakeConfig config = default_config();
+    config.user_rules.push_back(std::make_shared<LambdaRule>([](const HttpRequest&) {
+        return std::optional<HandshakeReject>{
+            HandshakeReject{429, {{"Retry-After", "30"}, {"Set-Cookie", "a=b"}}}};
+    }));
+    const HandshakeDecision decision = HandshakeNegotiator{config}.negotiate(valid_request());
+    ASSERT_EQ(status_of(decision), 429);
+    EXPECT_TRUE(has_header(std::get<HandshakeReject>(decision), "Retry-After", "30"));
+}
+
+class ContextRule final : public wsrv::IHandshakeRule {
+public:
+    using Fn = std::function<void(HandshakeContext&)>;
+    explicit ContextRule(Fn fn) : fn_{std::move(fn)} {}
+    [[nodiscard]] std::optional<HandshakeReject>
+    evaluate(const HttpRequest& /*request*/, HandshakeContext& context) const override {
+        fn_(context);
+        return std::nullopt;
+    }
+
+private:
+    Fn fn_;
+};
+
+TEST(Handshake, AUserRuleCannotInventOrChangeTheNegotiatedSubprotocolOrExtensions) {
+    HandshakeConfig config = chat_config();
+    config.user_rules.push_back(std::make_shared<ContextRule>(
+        [](HandshakeContext& context) { context.subprotocol = "notoffered"; }));
+    EXPECT_EQ(run_status(with(valid_request(), "Sec-WebSocket-Protocol", "chat"), config), 500);
+
+    HandshakeConfig extensions = default_config();
+    extensions.user_rules.push_back(std::make_shared<ContextRule>([](HandshakeContext& context) {
+        context.extension_offers.emplace_back(wsrv::ExtensionOffer{"x-injected", {}});
+    }));
+    EXPECT_EQ(run_status(valid_request(), extensions), 500);
+}
+
+TEST(Handshake, AUserRuleCanAnnotateTheAcceptedConnection) {  // FR-H6
+    HandshakeConfig config = default_config();
+    config.user_rules.push_back(std::make_shared<ContextRule>([](HandshakeContext& context) {
+        context.annotations["user"] = "alice";
+        context.annotations["scope"] = "chat:read";
+    }));
+    const HandshakeDecision decision = HandshakeNegotiator{config}.negotiate(valid_request());
+    ASSERT_TRUE(std::holds_alternative<HandshakeAccept>(decision));
+    const auto& accept = std::get<HandshakeAccept>(decision);
+    EXPECT_EQ(accept.annotations.at("user"), "alice");
+    EXPECT_EQ(accept.annotations.at("scope"), "chat:read");
+    const std::string text = wsrv::render_response(decision);
+    EXPECT_EQ(text.find("alice"),
+              std::string::npos);  // annotations are for the application, never sent
+}
+
+TEST(Handshake, AThrownExceptionIsFlaggedSoTheConnectionLayerCanLogIt) {
+    HandshakeConfig config = default_config();
+    config.user_rules.push_back(std::make_shared<LambdaRule>(
+        [](const HttpRequest&) -> std::optional<HandshakeReject> { throw 1; }));
+    const HandshakeDecision decision = HandshakeNegotiator{config}.negotiate(valid_request());
+    ASSERT_EQ(status_of(decision), 500);
+    EXPECT_TRUE(std::get<HandshakeReject>(decision).from_exception);
+}
+
+TEST(Handshake, SubprotocolOffersAreCappedAgainstAmplification) {
+    std::string at_cap;
+    for (std::size_t i = 0; i < wsrv::kMaxSubprotocolOffers; ++i) {
+        at_cap += (i == 0 ? "p" : ", p") + std::to_string(i);
+    }
+    EXPECT_EQ(run_status(with(valid_request(), "Sec-WebSocket-Protocol", at_cap), chat_config()),
+              101);
+    EXPECT_EQ(run_status(with(valid_request(), "Sec-WebSocket-Protocol", at_cap + ", one-too-many"),
+                         chat_config()),
+              400);
+}
+
+TEST(Handshake, ExtensionOffersAcrossHeaderLinesAreCappedToo) {
+    HttpRequest request = valid_request();
+    for (std::size_t i = 0; i <= wsrv::kMaxExtensionOffers;
+         ++i) {  // one offer per header line, one too many
+        request = with(std::move(request), "Sec-WebSocket-Extensions", "e" + std::to_string(i));
+    }
+    EXPECT_EQ(run_status(request), 400);
+}
+
+TEST(Handshake, ARenderedResponseExistsForEveryDecision) {
+    EXPECT_EQ(
+        wsrv::render_response(HandshakeNegotiator{default_config()}.negotiate(valid_request())),
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n");
+    // A decision that cannot be serialised (built by hand here) still yields a well-formed 500.
+    const HandshakeDecision broken = HandshakeReject{1234, {}};
+    EXPECT_EQ(
+        wsrv::render_response(broken),
+        "HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+}
+
+TEST(Handshake, ABadConfigurationFailsAtConstructionNotAtRequestTime) {  // ADR-0006: config errors
+                                                                         // are startup errors
+    auto bad = [](auto mutate) {
+        HandshakeConfig config = default_config();
+        mutate(config);
+        return config;
+    };
+    EXPECT_NO_THROW(HandshakeNegotiator{default_config()});
+    EXPECT_NO_THROW(HandshakeNegotiator{chat_config()});
+    EXPECT_NO_THROW(HandshakeNegotiator{
+        bad([](HandshakeConfig& c) { c.allowed_origins.emplace_back("null"); })});
+    EXPECT_THROW(
+        HandshakeNegotiator{bad([](HandshakeConfig& c) { c.user_rules.push_back(nullptr); })},
+        std::invalid_argument);
+    EXPECT_THROW(
+        HandshakeNegotiator{bad([](HandshakeConfig& c) { c.subprotocols = {"ok", "not ok"}; })},
+        std::invalid_argument);
+    EXPECT_THROW(
+        HandshakeNegotiator{bad([](HandshakeConfig& c) { c.subprotocols = {"chat", "chat"}; })},
+        std::invalid_argument);
+    for (const char* origin : {"https://a.example/",
+                               "*",
+                               "",
+                               "app.example.com",
+                               "https://a b.example",
+                               "https://a.example\r\n"}) {
+        EXPECT_THROW(HandshakeNegotiator{bad(
+                         [origin](HandshakeConfig& c) { c.allowed_origins = {origin}; })},
+                     std::invalid_argument)
+            << origin;
+    }
 }
 
 }  // namespace

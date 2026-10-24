@@ -5,6 +5,8 @@
 #include "http/response.hpp"
 #include "protocol/extension_offer.hpp"
 
+#include <cstddef>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -24,13 +26,22 @@ namespace wsrv {
 struct HandshakeReject {
     int status = 400;
     std::vector<HttpHeader> headers;
+    bool from_exception =
+        false;  // set when a user rule threw: the connection layer should log it (FR-S6)
 };
+
+/// Work cap on the number of distinct subprotocol offers (duplicate detection is linear per token).
+inline constexpr std::size_t kMaxSubprotocolOffers = 32;
 
 /// Facts the rules collect for the final decision.
 struct HandshakeContext {
-    std::string subprotocol;  // chosen by the subprotocol rule; empty = none
-    std::vector<ExtensionOffer>
-        extension_offers;  // syntactically valid offers; none are accepted before M9
+    std::string subprotocol;                       // chosen by the built-in rule; empty = none
+    std::vector<ExtensionOffer> extension_offers;  // valid offers; none are accepted before M9
+    /// Application data set by user rules (user id, claims...), handed to the application with the
+    /// accepted connection and never sent to the peer. This is the ONLY part of the context user
+    /// rules may change: if a rule alters `subprotocol` or `extension_offers` the handshake fails
+    /// with 500.
+    std::map<std::string, std::string> annotations;
 };
 
 /// One link of the handshake validation chain (Chain of Responsibility). Returns std::nullopt to
@@ -75,17 +86,26 @@ struct HandshakeAccept {
     std::string accept_key;   // value of Sec-WebSocket-Accept
     std::string subprotocol;  // empty = none selected
     std::vector<ExtensionOffer> extension_offers;
+    std::map<std::string, std::string> annotations;  // from user rules; for the application only
 };
 
 using HandshakeDecision = std::variant<HandshakeAccept, HandshakeReject>;
 
 /// Validates an upgrade request and decides. Built-in rules run in this order, the first refusal
-/// wins: method, HTTP version, Host, no body, Upgrade, Connection, Sec-WebSocket-Key,
-/// Sec-WebSocket-Version, Origin, subprotocols, extension offers; then the configured user rules
-/// inside an exception barrier (a throwing rule becomes a 500). Pure: no I/O, no clock.
+/// wins: method, HTTP version, Host (valid host[:port]), no body, Upgrade, Connection,
+/// Sec-WebSocket-Key, Sec-WebSocket-Version, Origin, subprotocols, extension offers; then the
+/// configured user rules inside an exception barrier. A user rule's refusal is validated before it
+/// is used: status 400..599, token header names, clean values, and none of the headers the server
+/// owns (Connection, Content-Length, Transfer-Encoding, Upgrade, Sec-WebSocket-*); anything else
+/// becomes a 500. A throwing rule becomes a 500 with `from_exception` set; a rule that changes the
+/// negotiated subprotocol or extension offers also becomes a 500. Pure: no I/O, no clock.
 /// Thread-affinity: negotiate() is const and safe to call concurrently if the user rules are.
 class HandshakeNegotiator {
 public:
+    /// @throws std::invalid_argument for an invalid configuration (null rule, subprotocol that is
+    /// not a token or is repeated, allowed origin that cannot match such as "*", a trailing slash
+    /// or a missing scheme). Config errors are startup errors (ADR-0006): this is the one place the
+    /// handshake throws.
     explicit HandshakeNegotiator(HandshakeConfig config);
 
     [[nodiscard]] HandshakeDecision negotiate(const HttpRequest& request) const;
@@ -96,8 +116,13 @@ private:
 };
 
 /// The HTTP response to send for `decision`: 101 with Upgrade/Connection/Sec-WebSocket-Accept (and
-/// Sec-WebSocket-Protocol if one was selected), or the rejection plus Connection: close and
-/// Content-Length: 0. Extension offers are never echoed.
+/// Sec-WebSocket-Protocol if one was selected), or the rejection plus Connection: close
+/// (Connection: Upgrade, close when the rejection carries an Upgrade header, as RFC 9110 requires
+/// for 426) and Content-Length: 0. Extension offers and annotations are never echoed.
 [[nodiscard]] HttpResponse to_response(const HandshakeDecision& decision);
+
+/// The exact bytes to send for `decision`; never fails: if the response cannot be serialised (which
+/// validated decisions never cause) a fixed, well-formed 500 is returned instead of nothing.
+[[nodiscard]] std::string render_response(const HandshakeDecision& decision);
 
 }  // namespace wsrv

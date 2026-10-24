@@ -88,6 +88,8 @@ TEST(HttpRequestParser, ByteAtATimeGivesTheSameRequest) {  // EC-H17
 }
 
 TEST(HttpRequestParser, EverySplitPointGivesTheSameResult) {  // EC-H18, including inside \r\n\r\n
+    const Outcome whole = run(kValid);
+    ASSERT_TRUE(whole.complete);
     for (std::size_t split = 1; split < kValid.size(); ++split) {
         HttpRequestParser parser;
         const auto first = parser.feed(wsrv::as_bytes(kValid.substr(0, split)));
@@ -97,7 +99,18 @@ TEST(HttpRequestParser, EverySplitPointGivesTheSameResult) {  // EC-H18, includi
         ASSERT_TRUE(second.has_value()) << split;
         ASSERT_TRUE(second->complete) << split;
         EXPECT_EQ(first->consumed + second->consumed, kValid.size()) << split;
-        EXPECT_EQ(parser.request().headers.size(), 6U) << split;
+        // Every byte must arrive intact: compare the complete request with the one-shot parse.
+        const wsrv::HttpRequest& got = parser.request();
+        ASSERT_EQ(got.method, whole.request.method) << split;
+        ASSERT_EQ(got.target, whole.request.target) << split;
+        ASSERT_EQ(got.version_minor, whole.request.version_minor) << split;
+        ASSERT_EQ(got.headers.size(), whole.request.headers.size()) << split;
+        for (std::size_t i = 0; i < got.headers.size(); ++i) {
+            ASSERT_EQ(got.headers[i].name, whole.request.headers[i].name)
+                << split << " header " << i;
+            ASSERT_EQ(got.headers[i].value, whole.request.headers[i].value)
+                << split << " header " << i;
+        }
     }
 }
 
@@ -121,6 +134,31 @@ TEST(HttpRequestParser, TrimsValueWhitespaceAndKeepsDuplicates) {
 TEST(HttpRequestParser, AcceptsObsTextInValuesButNotInNames) {
     EXPECT_TRUE(run("GET / HTTP/1.1\r\nX: caf\xC3\xA9\r\n\r\n").complete);
     EXPECT_EQ(run("GET / HTTP/1.1\r\nX\xC3\xA9: v\r\n\r\n").status, 400);
+}
+
+TEST(HttpRequestParser, AcceptsTheCharactersBrowsersSendRawInUrls) {
+    // WHATWG URL: browsers percent-encode only controls, space, " < > # (and a few more), so these
+    // arrive raw.
+    for (const char* target : {"/chat?ids=[1,2]",
+                               "/chat?q={a}",
+                               "/chat?a|b",
+                               "/a^b",
+                               "/a`b",
+                               "/%7Euser/;p?b=c&d=e",
+                               "/chat?x=a:b@c",
+                               "/"}) {
+        const std::string text = std::string{"GET "} + target + " HTTP/1.1\r\n\r\n";
+        const Outcome out = run(text);
+        EXPECT_TRUE(out.complete) << target;
+        EXPECT_EQ(out.request.target, target);
+    }
+}
+
+TEST(HttpRequestParser, StillRejectsTheCharactersThatAreUnsafeInATarget) {
+    for (const char* target : {"/a b", "/a\"b", "/a<b", "/a>b", "/a#b", "/a\\b"}) {
+        const std::string text = std::string{"GET "} + target + " HTTP/1.1\r\n\r\n";
+        EXPECT_EQ(run(text).status, 400) << target;
+    }
 }
 
 TEST(HttpRequestParser, ParsesHttp10WithMinorZero) {

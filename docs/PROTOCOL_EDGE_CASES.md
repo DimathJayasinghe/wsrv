@@ -12,7 +12,7 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | EC-H02 | HTTP/1.0 or version < 1.1 | 400 / 505, close |
 | EC-H03 | Missing `Host` | 400 |
 | EC-H04 | Duplicate `Host` / `Sec-WebSocket-Key` / `Sec-WebSocket-Version` | 400 |
-| EC-H05 | `Upgrade` missing or not `websocket` (any case: `WebSocket`, `WEBSOCKET` OK) | 400 (426 if otherwise valid upgrade to other protocol) |
+| EC-H05 | `Upgrade` missing or not `websocket` (any case: `WebSocket`, `WEBSOCKET` OK) | 400. (An Upgrade to another protocol is a request this endpoint does not serve; RFC 9110 lets a server ignore Upgrade. 426 is used for an unsupported `Sec-WebSocket-Version`, EC-H08.) |
 | EC-H06 | `Connection` lacks `upgrade` token; token list (`keep-alive, Upgrade`) | Case-insensitive token match; list accepted |
 | EC-H07 | `Sec-WebSocket-Key` missing / invalid base64 / decoded ≠ 16 bytes | 400 |
 | EC-H08 | `Sec-WebSocket-Version` ≠ 13 (or multiple values) | 426 + `Sec-WebSocket-Version: 13` |
@@ -21,7 +21,7 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | EC-H11 | Origin absent (non-browser client) | Per policy (default allow only if `allow_missing_origin`) |
 | EC-H12 | Subprotocol: none requested / none match / multiple offered / duplicate tokens / invalid token chars | Select first server-preferred match; otherwise omit header (or 400 per strict policy); never echo invalid token |
 | EC-H13 | Extension offer unknown / malformed / duplicate params | Ignore unknown; reject malformed with 400; never 101 with partially-parsed extension |
-| EC-H14 | Request line > limit; header line > limit; total > 8 KiB; > 64 headers | 431 / 414, close |
+| EC-H14 | Request line > 4096 bytes; total head > 8 KiB; > 64 headers (there is no separate per-header-line limit: the total bounds it) | 414 / 431, close |
 | EC-H15 | Bare LF, bare CR, NUL byte, obs-fold, space before colon, empty header name, non-ASCII in header name | 400 |
 | EC-H16 | Request has body (`Content-Length>0`) or `Transfer-Encoding` | 400 |
 | EC-H17 | Request arrives 1 byte at a time | Works; timeout still enforced |
@@ -32,7 +32,7 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | EC-H22 | Non-HTTP garbage / TLS ClientHello on plain port / empty connection | Close, counted in metrics, no log spam (rate-limited log) |
 | EC-H23 | Absolute-URI or `*` request target; fragments; invalid percent-encoding in path | Reject 400 (path routing only on origin-form) |
 | EC-H24 | Very long idle keep-alive after 101 failure | Close |
-| EC-H25 | Auth hook rejects / throws / times out | 401/403/500 mapped; exception contained |
+| EC-H25 | Auth hook rejects / throws / times out | 401/403/500 mapped; exception contained and flagged (`from_exception`); an invalid refusal or a rule that alters the negotiated subprotocol/extensions becomes 500. Timeouts: M6 (rules are synchronous in M2) |
 | EC-H26 | `/healthz` request without Upgrade (if enabled) | 200, then close |
 
 ## 2. Framing (EC-F)
@@ -192,7 +192,8 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 |---|---|---|
 | EC-U01..U06, U08, U09 | done (M1) | `Utf8.*` in `tests/protocol/utf8_test.cpp`, `fuzz_utf8` |
 | EC-H07, H09 | done (M1/M2) | `Base64.RfcSampleKeyDecodesToSixteenBytes`, `Sha1.WebSocketAcceptInputFromTheRfc`, `Handshake.AcceptKeyMatchesTheRfcSample` |
-| EC-H01..H06, H08, H10..H13, H16, H25 | done (M2) | `Handshake.*` in `tests/protocol/handshake_test.cpp` |
+| EC-H01..H13, H16 | done (M2) | `Handshake.*` in `tests/protocol/handshake_test.cpp`, `HostHeader.*` |
+| EC-H25 | done except timeouts (M6) | `Handshake.AUserRule*`, `Handshake.AThrownException*` |
 | EC-H14, H15, H17, H18, H19, H22 (parser side), H23 | done (M2) | `HttpRequestParser.*`, `HandshakeFlow.*`, `fuzz_http_request` |
 | EC-H20, H21, H22 (logging), H24 | M6 (connection level: timers, disconnects) | - |
 | EC-H26 | M10 (MAY) | - |

@@ -94,6 +94,7 @@ jobs:
           cmake --build --preset tsan
           ctest --preset tsan
       - name: fuzz (corpus replay + 5 s smoke per target)
+        shell: bash   # bash -eo pipefail: a crash found by the fuzzer must fail the step, not be hidden by `| tail`
         run: |
           cmake --preset fuzz -DCMAKE_CXX_COMPILER=clang++-18
           cmake --build --preset fuzz --target fuzz_utf8 fuzz_base64 fuzz_sha1 fuzz_http_request fuzz_handshake

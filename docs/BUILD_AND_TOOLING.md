@@ -81,6 +81,10 @@ Usage: `cmake --preset dev && cmake --build --preset dev && ctest --preset dev`.
 
 Implemented gate targets (all run in CI): `cmake --build --preset dev --target format-check | check-banned | check-includes | header-check`; `tools/format.sh fix` rewrites formatting; `cmake --preset tidy && cmake --build --preset tidy` runs clang-tidy on production code (`src/`; this is what CI runs, ~15 s); `tidy-all` also covers tests (slow: ~10 s per GoogleTest file; run it before pushing test changes). Tests use the relaxed `tests/.clang-tidy` profile, without `clang-analyzer-*`, which spent 15-30 s per test file expanding GoogleTest macros. The tools themselves are tested (`ctest -L tools`) against fixtures in `tests/tools/fixtures/`. `module_graph` (ctest) diffs the real CMake link graph against `tests/module_graph.expected`. Sanitizer self-tests: `ctest -L sanitizer-selftest`.
 
+### 5.0 Known toolchain defect: libc++ 18.1.3 and ASan (found in M2)
+
+With Ubuntu 24.04's libc++ 18.1.3, ASan reports `alloc-dealloc-mismatch (operator new vs free)` whenever a `std::exception` subclass that carries a message (`runtime_error`, `invalid_argument`, ...) is destroyed: the message string is allocated with `operator new` and one destructor copy inside the libc++/libc++abi runtime frees it with `free()` (which copy is used depends on symbol folding, so it showed up in CI first and locally later). It is a defect of that runtime, not of our code. The `dev-clang` test preset therefore sets `ASAN_OPTIONS=alloc_dealloc_mismatch=0`; the GCC `dev` preset (libstdc++) keeps the check on. Revisit when the toolchain moves to LLVM 19+.
+
 ### 5.1 Fuzzing (implemented in M1)
 
 ```bash

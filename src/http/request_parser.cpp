@@ -17,13 +17,17 @@ constexpr std::size_t kVersionLength = 8;  // "HTTP/1.1"
     return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f');
 }
 
-/// Characters allowed raw in an origin-form target (RFC 3986 unreserved, sub-delims, ':' '@' '/'
-/// '?'), plus '%' which must introduce a valid escape (checked separately).
+/// Characters allowed raw in an origin-form target: RFC 3986 unreserved, sub-delims, ':' '@' '/'
+/// '?', and
+/// "[]{}|^`", which browsers send unencoded (WHATWG URL percent-encodes only controls, space, " < >
+/// # and a few more) and which cannot create framing ambiguity. '%' must introduce a valid escape
+/// (checked separately). Backslash stays rejected: browsers rewrite it in paths, accepting it
+/// invites path confusion.
 [[nodiscard]] bool is_target_char(char c) noexcept {
     if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
         return true;
     }
-    return std::string_view{"-._~!$&'()*+,;=:@/?%"}.find(c) != std::string_view::npos;
+    return std::string_view{"-._~!$&'()*+,;=:@/?%[]{}|^`"}.find(c) != std::string_view::npos;
 }
 
 /// RFC 9112 origin-form: starts with '/', no fragment, no raw spaces/controls/non-ASCII, valid %XX.

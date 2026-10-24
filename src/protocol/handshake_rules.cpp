@@ -2,6 +2,7 @@
 #include "protocol/handshake_rules.hpp"
 
 #include "crypto/base64.hpp"
+#include "http/host.hpp"
 #include "http/token.hpp"
 
 #include <algorithm>
@@ -14,7 +15,8 @@ namespace {
 
 using Verdict = std::optional<HandshakeReject>;
 
-constexpr std::size_t kKeyBytes = 16;  // a Sec-WebSocket-Key is Base64 of 16 random bytes
+constexpr std::size_t kKeyBytes = 16;        // a Sec-WebSocket-Key is Base64 of 16 random bytes...
+constexpr std::size_t kKeyBase64Chars = 24;  // ...which is exactly 24 characters
 constexpr std::string_view kSupportedVersion = "13";
 
 [[nodiscard]] Verdict reject(int status, std::vector<HttpHeader> headers = {}) {
@@ -51,7 +53,7 @@ Verdict check_http_version(const HttpRequest& request, HandshakeContext& /*conte
 
 Verdict check_host(const HttpRequest& request, HandshakeContext& /*context*/) {
     const std::vector<std::string_view> hosts = request.values("Host");
-    return (hosts.size() == 1 && !hosts.front().empty()) ? Verdict{} : reject(400);
+    return (hosts.size() == 1 && is_valid_host_header(hosts.front())) ? Verdict{} : reject(400);
 }
 
 /// An upgrade request has no body; anything that frames one (or is ambiguous about it) is
@@ -88,6 +90,9 @@ Verdict check_key(const HttpRequest& request, HandshakeContext& /*context*/) {
     if (keys.size() != 1) {
         return reject(400);
     }
+    if (keys.front().size() != kKeyBase64Chars) {
+        return reject(400);  // cheap length check before any decoding
+    }
     const Result<std::vector<std::byte>> decoded = base64_decode(keys.front());
     return (decoded.has_value() && decoded->size() == kKeyBytes) ? Verdict{} : reject(400);
 }
@@ -98,7 +103,9 @@ Verdict check_ws_version(const HttpRequest& request, HandshakeContext& /*context
         return reject(400);  // missing, or duplicated header lines (ambiguous)
     }
     if (versions.front() != kSupportedVersion) {
-        return reject(426, {{"Sec-WebSocket-Version", std::string{kSupportedVersion}}});
+        return reject(
+            426,
+            {{"Sec-WebSocket-Version", std::string{kSupportedVersion}}, {"Upgrade", "websocket"}});
     }
     return {};
 }
@@ -131,7 +138,7 @@ collect_subprotocol_offers(const HttpRequest& request) {
     for (const std::string_view line : request.values("Sec-WebSocket-Protocol")) {
         for (const std::string_view token : split_list(line)) {
             const bool duplicate = std::ranges::find(offers, token) != offers.end();
-            if (!is_token(token) || duplicate) {
+            if (!is_token(token) || duplicate || offers.size() >= kMaxSubprotocolOffers) {
                 return std::nullopt;
             }
             offers.push_back(token);
@@ -189,6 +196,9 @@ Verdict check_extensions(const HttpRequest& request, HandshakeContext& context) 
             return reject(400);
         }
         std::ranges::move(*offers, std::back_inserter(context.extension_offers));
+        if (context.extension_offers.size() > kMaxExtensionOffers) {
+            return reject(400);  // work cap across all header lines
+        }
     }
     return {};
 }

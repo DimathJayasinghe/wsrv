@@ -39,7 +39,11 @@ TEST(HttpResponse, AddsNothingImplicitlyAndWorksWithoutHeaders) {
 TEST(HttpResponse, ReasonPhrasesForTheStatusesTheHandshakeUses) {
     EXPECT_EQ(wsrv::reason_phrase(101), "Switching Protocols");
     EXPECT_EQ(wsrv::reason_phrase(400), "Bad Request");
+    EXPECT_EQ(wsrv::reason_phrase(401), "Unauthorized");
     EXPECT_EQ(wsrv::reason_phrase(403), "Forbidden");
+    EXPECT_EQ(wsrv::reason_phrase(301), "Moved Permanently");
+    EXPECT_EQ(wsrv::reason_phrase(302), "Found");
+    EXPECT_EQ(wsrv::reason_phrase(307), "Temporary Redirect");
     EXPECT_EQ(wsrv::reason_phrase(405), "Method Not Allowed");
     EXPECT_EQ(wsrv::reason_phrase(414), "URI Too Long");
     EXPECT_EQ(wsrv::reason_phrase(426), "Upgrade Required");
@@ -86,6 +90,14 @@ TEST(HttpResponse, HeaderInjectionAttemptsAreRejected) {  // response splitting,
         ASSERT_FALSE(text.has_value()) << "accepted a value with a control character";
         EXPECT_EQ(text.error().code, ErrorCode::InvalidArgument);
     }
+}
+
+TEST(HttpResponse, HeaderValueValidityIsExposedForOtherLayers) {
+    EXPECT_TRUE(wsrv::is_valid_header_value(""));
+    EXPECT_TRUE(wsrv::is_valid_header_value("with\ttab and caf\xC3\xA9"));
+    EXPECT_FALSE(wsrv::is_valid_header_value("a\r\nb"));
+    EXPECT_FALSE(wsrv::is_valid_header_value(std::string_view{"a\0b", 3}));
+    EXPECT_FALSE(wsrv::is_valid_header_value("del\x7f"));
 }
 
 TEST(HttpResponse, InvalidHeaderNamesAreRejected) {

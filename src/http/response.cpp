@@ -12,7 +12,9 @@ namespace {
 constexpr int kMinStatus = 100;
 constexpr int kMaxStatus = 599;
 
-[[nodiscard]] bool is_valid_value(std::string_view value) noexcept {
+}  // namespace
+
+bool is_valid_header_value(std::string_view value) noexcept {
     return std::ranges::all_of(value, [](char c) {
         const auto byte = static_cast<unsigned char>(c);
         return byte == '\t' ||
@@ -20,14 +22,20 @@ constexpr int kMaxStatus = 599;
     });
 }
 
-}  // namespace
-
 std::string_view reason_phrase(int status) noexcept {
     switch (status) {
     case 101:
         return "Switching Protocols";
     case 200:
         return "OK";
+    case 301:
+        return "Moved Permanently";
+    case 302:
+        return "Found";
+    case 307:
+        return "Temporary Redirect";
+    case 401:
+        return "Unauthorized";
     case 400:
         return "Bad Request";
     case 403:
@@ -68,7 +76,7 @@ Result<std::string> serialize(const HttpResponse& response) {
         if (!is_token(header.name)) {
             return fail(ErrorCode::InvalidArgument, "invalid response header name");
         }
-        if (!is_valid_value(header.value)) {
+        if (!is_valid_header_value(header.value)) {
             return fail(ErrorCode::InvalidArgument, "control character in response header value");
         }
         out += header.name;

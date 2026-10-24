@@ -73,6 +73,26 @@ private:
 
 /// param = token [ "=" ( token / quoted-string ) ]; appended to `offer`. False if malformed or
 /// duplicate.
+/// The part after '=': a token, or a quoted-string that is a token once unescaped (RFC 6455
+/// section 9.1).
+[[nodiscard]] std::optional<std::string> parse_param_value(Cursor& cursor) {
+    if (cursor.at_end()) {
+        return std::nullopt;
+    }
+    if (cursor.peek() == '"') {
+        std::optional<std::string> quoted = cursor.take_quoted();
+        if (!quoted || !is_token(*quoted)) {
+            return std::nullopt;
+        }
+        return quoted;
+    }
+    const std::string_view token = cursor.take_token();
+    if (token.empty()) {
+        return std::nullopt;
+    }
+    return std::string{token};
+}
+
 [[nodiscard]] bool parse_param(Cursor& cursor, ExtensionOffer& offer) {
     const std::string_view name = cursor.take_token();
     if (name.empty()) {
@@ -81,22 +101,14 @@ private:
     std::string value;
     if (!cursor.at_end() && cursor.peek() == '=') {
         cursor.advance();
-        if (cursor.at_end()) {
+        std::optional<std::string> parsed = parse_param_value(cursor);
+        if (!parsed) {
             return false;
         }
-        if (cursor.peek() == '"') {
-            std::optional<std::string> quoted = cursor.take_quoted();
-            if (!quoted) {
-                return false;
-            }
-            value = std::move(*quoted);
-        } else {
-            const std::string_view token = cursor.take_token();
-            if (token.empty()) {
-                return false;
-            }
-            value = std::string{token};
-        }
+        value = std::move(*parsed);
+    }
+    if (offer.params.size() >= kMaxExtensionParams) {
+        return false;  // work cap
     }
     const bool duplicate =
         std::ranges::any_of(offer.params, [name](const auto& p) { return p.first == name; });
@@ -146,7 +158,7 @@ std::optional<std::vector<ExtensionOffer>> parse_extension_offers(std::string_vi
             continue;
         }
         std::optional<ExtensionOffer> offer = parse_offer(cursor);
-        if (!offer) {
+        if (!offer || offers.size() >= kMaxExtensionOffers) {
             return std::nullopt;
         }
         offers.push_back(std::move(*offer));

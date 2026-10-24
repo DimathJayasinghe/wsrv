@@ -36,9 +36,32 @@ TEST(ExtensionOffer, ParsesAParameterWithoutValueOnItsOwn) {
 }
 
 TEST(ExtensionOffer, QuotedStringValuesAreUnquotedAndUnescaped) {
-    const auto offers = parse_extension_offers(R"(ext; a="15"; b="x\"y"; c="1,2;3")");
+    const auto offers = parse_extension_offers(R"(ext; a="15"; b="x\y"; c="a-b")");
     ASSERT_TRUE(offers.has_value());
-    EXPECT_EQ((*offers)[0].params, (Params{{"a", "15"}, {"b", "x\"y"}, {"c", "1,2;3"}}));
+    EXPECT_EQ((*offers)[0].params, (Params{{"a", "15"}, {"b", "xy"}, {"c", "a-b"}}));
+}
+
+TEST(ExtensionOffer, ARuleOfRfc6455QuotedValuesMustBeTokensAfterUnescaping) {
+    for (const char* text :
+         {R"(a; b="x y")", R"(a; b="1,2")", R"(a; b="x;y")", R"(a; b="")", R"(a; b="x\"y")"}) {
+        EXPECT_FALSE(parse_extension_offers(text).has_value()) << text;
+    }
+}
+
+TEST(ExtensionOffer, CapsBoundTheWorkAnAttackerCanBuyWithOneHeader) {
+    std::string many_params = "ext";
+    for (std::size_t i = 0; i < wsrv::kMaxExtensionParams; ++i) {
+        many_params += "; p" + std::to_string(i);
+    }
+    EXPECT_TRUE(parse_extension_offers(many_params).has_value());
+    EXPECT_FALSE(parse_extension_offers(many_params + "; one-too-many").has_value());
+
+    std::string many_offers;
+    for (std::size_t i = 0; i < wsrv::kMaxExtensionOffers; ++i) {
+        many_offers += (i == 0 ? "e" : ", e") + std::to_string(i);
+    }
+    EXPECT_TRUE(parse_extension_offers(many_offers).has_value());
+    EXPECT_FALSE(parse_extension_offers(many_offers + ", e-too-many").has_value());
 }
 
 TEST(ExtensionOffer, MultipleOffersAreSeparatedByCommasAndKeepTheirOrder) {

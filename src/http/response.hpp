@@ -20,6 +20,11 @@ struct HttpResponse {
 /// Thread-affinity: any-thread.
 [[nodiscard]] std::string_view reason_phrase(int status) noexcept;
 
+/// True if `value` is acceptable in a response header value: HTAB, printable ASCII and obs-text; no
+/// CR, LF, NUL or other control characters (response splitting, SECURITY_DESIGN T9). Pure,
+/// any-thread.
+[[nodiscard]] bool is_valid_header_value(std::string_view value) noexcept;
+
 /// Serialise `response` as "HTTP/1.1 <status> <reason>\r\n<name>: <value>\r\n...\r\n".
 /// Fails closed with Error{InvalidArgument} if the status is outside 100..599, a header name is not
 /// a token, or a header value contains CR, LF, NUL or another control character (response

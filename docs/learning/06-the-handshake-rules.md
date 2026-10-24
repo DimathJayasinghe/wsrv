@@ -33,12 +33,12 @@ class IHandshakeRule {
 |---|---|---|
 | 1 | method is `GET` | `405` + `Allow: GET` |
 | 2 | HTTP/1.1 | `400` |
-| 3 | exactly one non-empty `Host` | `400` |
+| 3 | exactly one valid `Host` (`name`, `a.b.c.d` or `[ipv6]`, optional `:port`) | `400` |
 | 4 | no body (`Content-Length` absent or `0`, no `Transfer-Encoding`) | `400` |
 | 5 | `Upgrade` contains token `websocket` | `400` |
 | 6 | `Connection` contains token `upgrade` | `400` |
 | 7 | exactly one `Sec-WebSocket-Key` = Base64 of 16 bytes | `400` |
-| 8 | exactly one `Sec-WebSocket-Version` = `13` | `400` / `426` + `Sec-WebSocket-Version: 13` |
+| 8 | exactly one `Sec-WebSocket-Version` = `13` | `400` / `426` + `Sec-WebSocket-Version: 13` + `Upgrade: websocket` (RFC 9110 requires an `Upgrade` header on a 426) |
 | 9 | Origin policy | `403` / `400` |
 | 10 | subprotocol selection | `400` |
 | 11 | extension-offer syntax | `400` |
@@ -65,11 +65,19 @@ Note this protects browsers' users; a malicious *non-browser* program can send a
 - `Sec-WebSocket-Protocol` lists application protocols the client can speak. We pick by **server preference**: the first of *our* list that the client offered. Offers must be tokens (no quotes, no `;`), and a repeated name is rejected. If nothing matches the header is simply omitted (or `400` with `require_subprotocol`). We only ever echo a value from our own configured list, never raw client text.
 - `Sec-WebSocket-Extensions` offers things like compression. M2 only checks the *syntax* with a small quote-aware parser (`extension_offer.cpp`): tokens, `;`-separated parameters, quoted strings, no duplicate parameter names, no whitespace around `=`. Valid offers are collected for M9 (permessage-deflate) and none are accepted yet; the 101 never mentions them.
 
-## 5. Your own rules, safely
-`HandshakeConfig::user_rules` are run after all built-in rules, in order. Each call is inside an exception barrier: a rule that throws (authentication backend down) produces a `500` and the server carries on (FR-S6). Rules are `const` and shared between connections, so they must be thread-safe.
+## 5. Your own rules: a trust boundary
+`HandshakeConfig::user_rules` run after all built-in rules, in order. Application code is *untrusted input to the server's output*, and a first version of ours trusted it too much. The independent review of this milestone demonstrated that a user rule could (a) return status 999 so that nothing could be sent, (b) return `101` or `200` as a "refusal", (c) add its own `Content-Length` next to ours (ambiguous framing), or (d) overwrite the negotiated subprotocol with a value the client never offered. We fixed every one, each with a test that failed first and a mutation check showing the test fails if the guard is removed:
+
+- A rule's **refusal is validated**: status 400-599, token header names, clean values, and none of the headers the server owns (`Connection`, `Content-Length`, `Transfer-Encoding`, `Upgrade`, `Sec-WebSocket-*`). Anything else becomes a `500`.
+- A rule may **only add annotations** (`context.annotations`, e.g. the user id and claims, handed to the application with the accepted connection and never sent to the peer). If it changes the negotiated subprotocol or extension offers, the result is a `500`.
+- Every call is inside an **exception barrier**: a rule that throws *anything* (a `std::exception`, your own type, even an `int`) produces a `500` with `from_exception` set so the connection layer can log it (FR-S6).
+- A **bad configuration** (a null rule, a subprotocol that is not a token or is listed twice, an allowed origin such as `*` or `https://a.com/` that could never match) throws `std::invalid_argument` when the negotiator is constructed: config errors are startup errors, found at startup instead of as mysterious 403s in production.
+- Rules are `const` and shared between connections, so they must be thread-safe.
 
 ## 6. Responses
-`to_response` produces the exact `101` text (verified byte for byte against the RFC sample), or the refusal plus `Connection: close` and `Content-Length: 0`. Because every response passes through `serialize`, a rule cannot produce an invalid or splittable response; the handshake fuzz target asserts that for arbitrary parsed requests the response always has exactly `headers + 2` CRLFs and never echoes extension offers.
+`to_response` produces the exact `101` text (verified byte for byte against the RFC sample), or the refusal plus `Connection: close` and `Content-Length: 0`. `render_response` always yields bytes to send: if a response ever could not be serialised it returns a fixed, well-formed `500` instead of nothing. The handshake fuzz target now includes a deliberately hostile user rule that builds its refusal (status, header name, header value, including CR/LF/NUL) from the raw fuzz input, and asserts the response always has exactly `headers + 2` CRLFs and never echoes extension offers or annotations. We proved it: removing the refusal validation makes the fuzzer fail within seconds, and that input is kept in the corpus as a regression test.
+
+Two more review-driven limits: subprotocol offers are capped at 32, and extension offers/parameters at 16 each, because duplicate detection is linear and an uncapped 8 KiB header measured about 6 ms of CPU per request (about 6,000x a normal handshake) on the loop thread.
 
 ## 7. Exercises
 1. The allow-list is `["https://app.example.com"]`. Which of these get `101`: `https://APP.example.com`, `https://app.example.com:443`, `null`, no Origin header?

@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -26,10 +28,40 @@ std::size_t count_occurrences(std::string_view text, std::string_view needle) {
     return count;
 }
 
+/// An application rule built from the raw input: whatever it asks for (any status, any header name
+/// or value, including CR/LF/NUL), the negotiator must turn into a safe, well-formed answer.
+class HostileRule final : public wsrv::IHandshakeRule {
+public:
+    explicit HostileRule(wsrv::ByteView raw) : raw_{raw} {}
+    [[nodiscard]] std::optional<wsrv::HandshakeReject>
+    evaluate(const wsrv::HttpRequest& /*request*/, wsrv::HandshakeContext& context) const override {
+        if (raw_.size() < 3) {
+            return std::nullopt;
+        }
+        context.annotations["raw-size"] = std::to_string(raw_.size());
+        const auto status =
+            100 + (std::to_integer<int>(raw_[0]) * 3);  // 100..865: valid and invalid statuses
+        const std::size_t cut =
+            std::min<std::size_t>(1 + std::to_integer<std::size_t>(raw_[1]) % 24, raw_.size() - 2);
+        wsrv::HandshakeReject refusal;
+        refusal.status = status;
+        refusal.headers.push_back({std::string{wsrv::as_chars(raw_.subspan(2, cut))},
+                                   std::string{wsrv::as_chars(raw_.subspan(2 + cut))}});
+        if (std::to_integer<unsigned>(raw_[0]) % 4 == 0) {
+            return std::nullopt;  // sometimes the rule just passes
+        }
+        return refusal;
+    }
+
+private:
+    wsrv::ByteView raw_;  // valid for the duration of one fuzz iteration
+};
+
 void check_response(const wsrv::HandshakeDecision& decision) {
     const wsrv::HttpResponse response = wsrv::to_response(decision);
     const auto text = wsrv::serialize(response);
-    WSRV_ASSERT(text.has_value());  // every decision we can make must be serialisable
+    WSRV_ASSERT(text.has_value());  // every decision the negotiator makes must be serialisable
+    WSRV_ASSERT(wsrv::render_response(decision) == *text);  // ...and rendering agrees
     // Framing: status line + one line per header + blank line, each ended by exactly one CRLF,
     // nothing injected.
     WSRV_ASSERT(count_occurrences(*text, "\r\n") == response.headers.size() + 2);
@@ -40,7 +72,8 @@ void check_response(const wsrv::HandshakeDecision& decision) {
         WSRV_ASSERT(text->find("Sec-WebSocket-Extensions") ==
                     std::string::npos);  // offers are never echoed
     } else {
-        WSRV_ASSERT(text->find("Connection: close\r\n") != std::string::npos);
+        WSRV_ASSERT(text->find("Connection: close\r\n") != std::string::npos ||
+                    text->find("Connection: Upgrade, close\r\n") != std::string::npos);
     }
 }
 
@@ -62,7 +95,10 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     open.subprotocols = {"chat", "superchat"};
     open.require_subprotocol = true;
 
-    for (const wsrv::HandshakeConfig& config : {strict, open}) {
+    wsrv::HandshakeConfig hostile = open;
+    hostile.user_rules.push_back(std::make_shared<HostileRule>(all));
+
+    for (const wsrv::HandshakeConfig& config : {strict, open, hostile}) {
         const wsrv::HandshakeDecision decision =
             wsrv::HandshakeNegotiator{config}.negotiate(request);
         check_response(decision);
