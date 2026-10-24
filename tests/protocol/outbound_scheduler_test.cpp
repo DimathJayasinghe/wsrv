@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "protocol/outbound_scheduler.hpp"
 
+#include "support/sanitized.hpp"
 #include "support/wire.hpp"
 
 #include <gtest/gtest.h>
@@ -244,6 +245,23 @@ TEST(OutboundScheduler, TheWireBufferStaysSmallWhateverTheMessageSize) {
         s.consume(view.size());
     }
     EXPECT_LE(largest, 1024U + wsrv::kMaxHeaderSize);
+}
+
+TEST(OutboundScheduler, AnAllocationFailureWhileQueueingIsAnErrorAndLeavesTheQueueIntact) {
+#ifdef WSRV_TEST_SANITIZED
+    GTEST_SKIP() << "sanitizer allocators abort instead of throwing bad_alloc; covered by release";
+#endif
+    OutboundScheduler s{config(64, std::size_t{1} << 60)};
+    const std::byte anchor{0};
+    const wsrv::ByteView absurd{&anchor,
+                                std::size_t{1} << 50};  // never read: allocation fails first
+    const auto r = s.enqueue_message(Opcode::Binary, absurd);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, ErrorCode::ResourceExhausted);
+    EXPECT_FALSE(s.has_pending());
+    EXPECT_FALSE(s.failed());
+    EXPECT_TRUE(s.enqueue_message(Opcode::Text, bytes_of("still works")).has_value());
+    EXPECT_EQ(parse_server_output(drain(s)).frames.size(), 1U);
 }
 
 }  // namespace

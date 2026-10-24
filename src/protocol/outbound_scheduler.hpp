@@ -78,6 +78,13 @@ public:
     }
     [[nodiscard]] bool has_pending() const noexcept;
 
+    /// True once the wire buffer could not be allocated (out of memory). The scheduler then
+    /// produces nothing more and the session must give up on the connection: there is no memory
+    /// left to even frame a Close.
+    [[nodiscard]] bool failed() const noexcept {
+        return failed_;
+    }
+
 private:
     struct Control {
         std::array<std::byte, kMaxControlPayload> payload{};
@@ -90,7 +97,7 @@ private:
     };
 
     void refill();
-    void append_frame(Opcode opcode, bool fin, ByteView payload);
+    [[nodiscard]] bool append_frame(Opcode opcode, bool fin, ByteView payload);
     void append_control(Opcode opcode, Control& slot);
     void append_next_fragment();
     static void fill(Control& slot, ByteView payload) noexcept;
@@ -106,6 +113,7 @@ private:
     Control close_;
     bool close_queued_ = false;
     bool close_in_wire_ = false;
+    bool failed_ = false;
 };
 
 }  // namespace wsrv

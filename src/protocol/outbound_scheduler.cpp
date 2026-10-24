@@ -95,7 +95,9 @@ void OutboundScheduler::queue_close(std::optional<std::uint16_t> code, std::stri
     close_.present = true;
 }
 
-void OutboundScheduler::append_frame(Opcode opcode, bool fin, ByteView payload) {
+/// The wire buffer is sized for exactly this (wire_bound), so the only way an append can fail is
+/// the allocator running dry. Then the half-written frame is dropped and the scheduler is failed.
+bool OutboundScheduler::append_frame(Opcode opcode, bool fin, ByteView payload) {
     FrameHeader header;
     header.fin = fin;
     header.opcode = opcode;
@@ -103,14 +105,21 @@ void OutboundScheduler::append_frame(Opcode opcode, bool fin, ByteView payload) 
     std::array<std::byte, kMaxHeaderSize> head{};
     const Result<std::size_t> n = encode_header(head, header);
     WSRV_ASSERT(n.has_value());  // lengths are bounded by construction
-    // The wire buffer is sized for exactly this (wire_bound); a failure would be a logic error.
-    WSRV_ASSERT(wire_.append(ByteView{head}.first(*n)).has_value());
-    WSRV_ASSERT(wire_.append(payload).has_value());
+    const Result<void> wrote_head = wire_.append(ByteView{head}.first(*n));
+    const Result<void> wrote_payload = wrote_head ? wire_.append(payload) : wrote_head;
+    if (!wrote_payload) {
+        WSRV_ASSERT(wrote_payload.error().code == ErrorCode::ResourceExhausted);
+        wire_.clear();
+        failed_ = true;
+        return false;
+    }
+    return true;
 }
 
 void OutboundScheduler::append_control(Opcode opcode, Control& slot) {
-    append_frame(opcode, true, ByteView{slot.payload}.first(slot.length));
-    slot.present = false;
+    if (append_frame(opcode, true, ByteView{slot.payload}.first(slot.length))) {
+        slot.present = false;
+    }
 }
 
 void OutboundScheduler::append_next_fragment() {
@@ -118,8 +127,11 @@ void OutboundScheduler::append_next_fragment() {
     const std::size_t remaining = front.length - front_offset_;
     const std::size_t take = std::min(remaining, config_.max_frame_payload);
     const bool last = take == remaining;
-    append_frame(
-        front_offset_ == 0 ? front.opcode : Opcode::Continuation, last, data_.view().first(take));
+    if (!append_frame(front_offset_ == 0 ? front.opcode : Opcode::Continuation,
+                      last,
+                      data_.view().first(take))) {
+        return;
+    }
     data_.consume(take);
     queued_ -= take;
     front_offset_ += take;
@@ -133,21 +145,24 @@ void OutboundScheduler::append_next_fragment() {
 void OutboundScheduler::refill() {
     if (close_.present) {
         append_control(Opcode::Close, close_);
-        close_in_wire_ = true;
+        close_in_wire_ = !failed_;
         return;
     }
     if (pong_.present) {
         append_control(Opcode::Pong, pong_);
     }
-    if (ping_.present) {
+    if (ping_.present && !failed_) {
         append_control(Opcode::Ping, ping_);
     }
-    if (!messages_.empty()) {
+    if (!messages_.empty() && !failed_) {
         append_next_fragment();
     }
 }
 
 ByteView OutboundScheduler::pending() {
+    if (failed_) {
+        return {};
+    }
     if (wire_.size() == 0) {
         refill();
     }
@@ -159,8 +174,8 @@ void OutboundScheduler::consume(std::size_t count) noexcept {
 }
 
 bool OutboundScheduler::has_pending() const noexcept {
-    return wire_.size() > 0 || pong_.present || ping_.present || close_.present ||
-           !messages_.empty();
+    return !failed_ && (wire_.size() > 0 || pong_.present || ping_.present || close_.present ||
+                        !messages_.empty());
 }
 
 }  // namespace wsrv
