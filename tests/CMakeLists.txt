@@ -16,6 +16,7 @@ find_package(OpenSSL QUIET)
 
 wsrv_add_test(NAME crypto_base64_test SOURCES crypto/base64_test.cpp LINK wsrv::crypto)
 wsrv_add_test(NAME crypto_sha1_test SOURCES crypto/sha1_test.cpp LINK wsrv::crypto)
+wsrv_add_test(NAME protocol_utf8_test SOURCES protocol/utf8_test.cpp LINK wsrv::protocol)
 if(TARGET OpenSSL::Crypto)
     target_link_libraries(crypto_sha1_test PRIVATE OpenSSL::Crypto)
     target_compile_definitions(crypto_sha1_test PRIVATE WSRV_TEST_HAS_OPENSSL=1)
