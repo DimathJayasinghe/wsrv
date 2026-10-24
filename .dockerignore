@@ -1,0 +1,12 @@
+.git
+build/
+out/
+*.o
+*.a
+*.so
+.vscode/
+.idea/
+graphify-out/
+docs/
+*.md
+!README.md

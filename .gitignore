@@ -1,0 +1,45 @@
+# Build outputs
+/build/
+/out/
+/cmake-build-*/
+CMakeUserPresets.json
+compile_commands.json
+
+# Objects / binaries
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dylib
+*.exe
+*.gcda
+*.gcno
+*.profraw
+*.profdata
+
+# Fuzzing / sanitizer / profiling artefacts
+crash-*
+leak-*
+timeout-*
+oom-*
+*.log
+perf.data*
+core
+core.*
+vgcore.*
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local tooling
+.claude/
+graphify-out/
+.env
+.env.*
+
+# Autobahn reports
+/build/autobahn-reports/

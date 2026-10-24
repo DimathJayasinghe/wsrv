@@ -1,0 +1,46 @@
+# Development environment. Usage: see Makefile (`make help`) or docs/BUILD_AND_TOOLING.md §10.
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: dev
+      args:
+        USER_UID: ${USER_UID:-1000}
+        USER_GID: ${USER_GID:-1000}
+    image: wsrv-dev:latest
+    # Repo is mounted at the SAME absolute path as on the host (PROJECT_DIR, else PWD), so paths in
+    # compiler errors, IDE links and logs are identical inside and outside the container.
+    # (PROJECT_DIR comes from the Makefile; falls back to the shell PWD for bare `docker compose`.)
+    working_dir: ${PROJECT_DIR:-${PWD}}
+    volumes:
+      - .:${PROJECT_DIR:-${PWD}}
+      - ccache:/home/dev/.ccache
+    # Needed by gdb, LeakSanitizer and perf inside the container. Dev only.
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    ports:
+      - "8080:8080"   # WebSocket server
+      - "9100:9100"   # admin/metrics (later)
+    stdin_open: true
+    tty: true
+    command: sleep infinity
+
+  # Conformance suite (M6+). Start the server in `dev`, then: docker compose --profile conformance run --rm autobahn
+  autobahn:
+    profiles: ["conformance"]
+    image: crossbario/autobahn-testsuite:0.8.2
+    network_mode: host
+    volumes:
+      - ./tests/autobahn:/config
+      - ./build/autobahn-reports:/reports
+    command: wstest -m fuzzingclient -s /config/fuzzingclient.json
+
+volumes:
+  ccache:
