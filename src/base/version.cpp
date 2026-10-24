@@ -3,7 +3,7 @@
 
 namespace wsrv {
 
-// The value is injected by CMake from project(VERSION ...), so there is a single place to change it.
+// The value is injected by CMake from project(VERSION ...): one place to change it.
 std::string_view version() noexcept {
     return WSRV_VERSION;
 }
