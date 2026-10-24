@@ -81,7 +81,20 @@ Usage: `cmake --preset dev && cmake --build --preset dev && ctest --preset dev`.
 
 Implemented gate targets (all run in CI): `cmake --build --preset dev --target format-check | check-banned | check-includes | header-check`; `tools/format.sh fix` rewrites formatting; `cmake --preset tidy && cmake --build --preset tidy` runs clang-tidy on every first-party compile. The tools themselves are tested (`ctest -L tools`) against fixtures in `tests/tools/fixtures/`. `module_graph` (ctest) diffs the real CMake link graph against `tests/module_graph.expected`. Sanitizer self-tests: `ctest -L sanitizer-selftest`.
 
-## 6. CI pipeline (GitHub Actions assumed)
+## 6. CI pipeline (GitHub Actions)
+
+### 6.1 Implemented (M0) and its cost design
+
+| Workflow | Runs when | Jobs | Measured |
+|---|---|---|---|
+| `ci.yml` | push to `main` and PRs, **except** docs-only changes (`docs/**`, `*.md`, `LICENSE`) | `gcc`: quality gates + `dev` + `release`; `clang`: `dev-clang` + `tsan` + `tidy` | ~2.3 billed minutes |
+| `image.yml` | only when `docker/**`, `docker-compose.yml` or the dev-env action change | builds the dev image and runs a build + test inside it | ~1.5 min, rarely |
+
+Why it looks like this: the first version built the Docker dev image in each of five jobs and billed ~19 minutes, ~16 of them image builds, for 16–35 s of real work per job. Now CI uses the runner's preinstalled GCC/Clang/CMake/Ninja (only libc++ and clang-tidy are installed), runs few jobs (each job pays runner start-up), skips changes that cannot affect the build, and rebuilds the image only when it can have changed. Trade-off: CI is not byte-identical to the dev container (runner GCC 13/14 vs container GCC 14.2); the CMake version floors and the `image.yml` check bound that risk. Reproduce a CI job locally with `tools/ci-run.sh '<command>'` (runs inside the dev image).
+
+Further savings when builds grow: cache ccache across runs (`actions/cache` keyed on preset + compiler), split a slow job only if wall-clock matters (billed minutes stay equal). Actions are pinned to commit SHAs and the token is read-only.
+
+### 6.2 Planned pipeline (later milestones)
 
 1. **lint** — format, tidy (changed files), banned functions, include graph, markdown/link check, license headers.
 2. **build-test matrix** — {gcc-13, gcc-latest, clang-17+} × {debug+asan-ubsan, release}.
