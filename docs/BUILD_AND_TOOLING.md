@@ -81,6 +81,16 @@ Usage: `cmake --preset dev && cmake --build --preset dev && ctest --preset dev`.
 
 Implemented gate targets (all run in CI): `cmake --build --preset dev --target format-check | check-banned | check-includes | header-check`; `tools/format.sh fix` rewrites formatting; `cmake --preset tidy && cmake --build --preset tidy` runs clang-tidy on every first-party compile. The tools themselves are tested (`ctest -L tools`) against fixtures in `tests/tools/fixtures/`. `module_graph` (ctest) diffs the real CMake link graph against `tests/module_graph.expected`. Sanitizer self-tests: `ctest -L sanitizer-selftest`.
 
+### 5.1 Fuzzing (implemented in M1)
+
+```bash
+cmake --preset fuzz && cmake --build --preset fuzz            # Clang + libc++, ASan+UBSan, libFuzzer
+cd build/fuzz && ctest -L fuzz-regression                      # replay the committed seed/regression corpora
+./tests/fuzz/fuzz_utf8 ../../tests/fuzz/corpus/utf8 -max_total_time=60   # real fuzzing; writes crash-* on failure
+```
+
+Targets: `fuzz_utf8`, `fuzz_base64`, `fuzz_sha1` (properties asserted inside each harness). Every crashing input must be added to `tests/fuzz/corpus/<target>/` together with its fix. Toolchain traps (documented in `tests/fuzz/CMakeLists.txt`): Ubuntu's libFuzzer runtime is built against libstdc++ while our Clang builds use libc++, and the Clang driver rewrites `-lstdc++` into `-lc++` under `-stdlib=libc++`, so the fuzz executables link `-l:libstdc++.so.6` with `--no-as-needed`. CI does not run the fuzzers yet (cost); the corpus replay is cheap and will be added once the number of targets justifies a job.
+
 ## 6. CI pipeline (GitHub Actions)
 
 ### 6.1 Implemented (M0) and its cost design
