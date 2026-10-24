@@ -25,7 +25,8 @@ OutboundScheduler::OutboundScheduler(OutboundConfig config)
 }
 
 Result<void> OutboundScheduler::enqueue_message(Opcode text_or_binary, ByteView payload) {
-    WSRV_ASSERT(text_or_binary == Opcode::Text || text_or_binary == Opcode::Binary);
+    const bool is_data_opcode = text_or_binary == Opcode::Text || text_or_binary == Opcode::Binary;
+    WSRV_ASSERT(is_data_opcode);
     if (close_queued_) {
         return fail(ErrorCode::Closing, "outbound: closing");
     }
