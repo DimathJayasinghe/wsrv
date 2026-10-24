@@ -21,6 +21,12 @@ std::string_view to_string(ErrorCode code) noexcept {
         return "RandomUnavailable";
     case ErrorCode::ResourceExhausted:
         return "ResourceExhausted";
+    case ErrorCode::Closing:
+        return "Closing";
+    case ErrorCode::Backpressure:
+        return "Backpressure";
+    case ErrorCode::InvalidConfig:
+        return "InvalidConfig";
     }
     return "Unknown";
 }

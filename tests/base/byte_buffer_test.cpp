@@ -2,6 +2,7 @@
 #include "base/byte_buffer.hpp"
 
 #include "base/bytes.hpp"
+#include "support/sanitized.hpp"
 
 #include <gtest/gtest.h>
 
@@ -154,17 +155,6 @@ TEST(ByteBuffer, AppendingAViewOfItsOwnContentsIsSafe) {
     ASSERT_TRUE(buffer.append(buffer.view().subspan(2, 3)).has_value());  // a partial self-view
     EXPECT_EQ(wsrv::as_chars(buffer.view()), "fghfghhfg");
 }
-
-// ASan/TSan treat an impossible `operator new` as fatal (they cannot throw bad_alloc), so this
-// behaviour can only be observed in unsanitised builds; the `release` preset runs it.
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
-#define WSRV_TEST_SANITIZED 1
-#elif defined(__has_feature)
-#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) ||                         \
-    __has_feature(memory_sanitizer)
-#define WSRV_TEST_SANITIZED 1
-#endif
-#endif
 
 TEST(ByteBuffer, AllocationFailureIsAResourceExhaustedErrorNotAnException) {
 #ifdef WSRV_TEST_SANITIZED
