@@ -11,6 +11,15 @@ wsrv_add_test(NAME base_logger_test SOURCES base/logger_test.cpp LINK wsrv::base
 wsrv_add_test(NAME base_random_test SOURCES base/random_test.cpp LINK wsrv::base)
 wsrv_add_test(NAME net_system_random_test SOURCES net/system_random_test.cpp LINK wsrv::net)
 
+# Differential tests against OpenSSL are test-only and optional (ADR-0005: no runtime dependency).
+find_package(OpenSSL QUIET)
+
+wsrv_add_test(NAME crypto_sha1_test SOURCES crypto/sha1_test.cpp LINK wsrv::crypto)
+if(TARGET OpenSSL::Crypto)
+    target_link_libraries(crypto_sha1_test PRIVATE OpenSSL::Crypto)
+    target_compile_definitions(crypto_sha1_test PRIVATE WSRV_TEST_HAS_OPENSSL=1)
+endif()
+
 # Architecture guard: the real link graph must equal the allowed graph (docs/ARCHITECTURE.md 2.1).
 include(WsrvModuleGraph)
 wsrv_write_module_graph("${CMAKE_BINARY_DIR}/module_graph.actual"
