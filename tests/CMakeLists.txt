@@ -26,6 +26,7 @@ wsrv_add_test(NAME protocol_handshake_test SOURCES protocol/handshake_test.cpp L
 wsrv_add_test(NAME protocol_handshake_flow_test SOURCES protocol/handshake_flow_test.cpp LINK wsrv::protocol)
 wsrv_add_test(NAME protocol_opcode_test SOURCES protocol/opcode_test.cpp LINK wsrv::protocol)
 wsrv_add_test(NAME protocol_close_code_test SOURCES protocol/close_code_test.cpp LINK wsrv::protocol)
+wsrv_add_test(NAME protocol_masker_test SOURCES protocol/masker_test.cpp LINK wsrv::protocol)
 wsrv_add_test(NAME protocol_utf8_test SOURCES protocol/utf8_test.cpp LINK wsrv::protocol)
 if(TARGET OpenSSL::Crypto)
     target_link_libraries(crypto_sha1_test PRIVATE OpenSSL::Crypto)
