@@ -55,6 +55,19 @@ examples/          echo, chat
 docs/              this documentation set
 ```
 
+## Quick start (Docker, recommended)
+
+```bash
+make image      # once: builds the dev image (GCC 14, Clang 18, CMake, sanitizers, ...)
+make shell      # shell inside the container; same path as on the host, passwordless sudo
+# inside the container:
+cmake --preset dev && cmake --build --preset dev && ctest --preset dev --output-on-failure
+cmake --build --preset dev --target format-check check-banned check-includes header-check
+```
+
+Other presets: `dev-clang`, `release`, `tsan`, `tidy`, `coverage` (see [Lesson 01](docs/learning/01-build-system-and-quality-gates.md)).
+If a build ignores an edit you can see on the host, run `make restart` (Docker Desktop bind-mount quirk, see docs/BUILD_AND_TOOLING.md §10).
+
 ## Toolchain baseline
 
 C++23, GCC ≥ 13 or Clang ≥ 17, CMake ≥ 3.25, Linux first (epoll). Details: [BUILD_AND_TOOLING.md](docs/BUILD_AND_TOOLING.md).
