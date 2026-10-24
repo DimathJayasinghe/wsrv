@@ -20,6 +20,8 @@ wsrv_add_test(NAME http_request_parser_test SOURCES http/request_parser_test.cpp
 wsrv_add_test(NAME http_response_test SOURCES http/response_test.cpp LINK wsrv::http)
 wsrv_add_test(NAME crypto_base64_test SOURCES crypto/base64_test.cpp LINK wsrv::crypto)
 wsrv_add_test(NAME crypto_sha1_test SOURCES crypto/sha1_test.cpp LINK wsrv::crypto)
+wsrv_add_test(NAME protocol_extension_offer_test SOURCES protocol/extension_offer_test.cpp LINK wsrv::protocol)
+wsrv_add_test(NAME protocol_handshake_test SOURCES protocol/handshake_test.cpp LINK wsrv::protocol)
 wsrv_add_test(NAME protocol_utf8_test SOURCES protocol/utf8_test.cpp LINK wsrv::protocol)
 if(TARGET OpenSSL::Crypto)
     target_link_libraries(crypto_sha1_test PRIVATE OpenSSL::Crypto)
