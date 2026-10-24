@@ -30,7 +30,7 @@ Result<void> OutboundScheduler::enqueue_message(Opcode text_or_binary, ByteView 
         return fail(ErrorCode::Closing, "outbound: closing");
     }
     const std::size_t limit = config_.max_queued_bytes;
-    if (payload.size() > limit || limit - payload.size() < kMessageOverhead) {
+    if (limit < kMessageOverhead || payload.size() > limit - kMessageOverhead) {
         return fail(ErrorCode::BufferFull, "outbound: message can never fit the queue");
     }
     const std::size_t cost = payload.size() + kMessageOverhead;

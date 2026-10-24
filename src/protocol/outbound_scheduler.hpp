@@ -20,7 +20,7 @@ struct OutboundConfig {
     /// Largest payload of one outgoing frame; longer messages are fragmented (FRAGMENTATION.md
     /// section 2.1, EC-F31). Small enough that a Pong or Close never waits long behind a data
     /// frame.
-    std::size_t max_frame_payload = 64U * 1024;
+    std::size_t max_frame_payload = std::size_t{64} * 1024;
     /// Bound on queued, not yet framed data: payload bytes plus kMessageOverhead per message (so
     /// empty messages cannot be queued without limit). Over it: Backpressure (EC-N09).
     std::size_t max_queued_bytes = 1U << 20;
