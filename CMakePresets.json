@@ -68,6 +68,12 @@
       }
     },
     {
+      "name": "tidy",
+      "displayName": "Clang+libc++, clang-tidy on every compile",
+      "inherits": "clang",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "WSRV_CLANG_TIDY": "ON" }
+    },
+    {
       "name": "coverage",
       "displayName": "GCC, Debug, gcov coverage",
       "inherits": "gcc",
@@ -88,6 +94,7 @@
     { "name": "tsan", "configurePreset": "tsan" },
     { "name": "msan", "configurePreset": "msan" },
     { "name": "fuzz", "configurePreset": "fuzz" },
+    { "name": "tidy", "configurePreset": "tidy" },
     { "name": "coverage", "configurePreset": "coverage" },
     { "name": "bench", "configurePreset": "bench" }
   ],

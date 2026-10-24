@@ -10,3 +10,4 @@ add_test(NAME module_graph
             "${CMAKE_CURRENT_SOURCE_DIR}/module_graph.expected"
             "${CMAKE_BINARY_DIR}/module_graph.actual")
 add_subdirectory(sanitizer_selftest)
+add_subdirectory(tools)

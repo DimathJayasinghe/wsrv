@@ -79,6 +79,8 @@ Usage: `cmake --preset dev && cmake --build --preset dev && ctest --preset dev`.
 - `pre-commit` hooks (format, trailing whitespace, banned functions, markdown links) — optional locally, enforced in CI.
 - `.editorconfig`: LF, UTF-8, final newline, 4 spaces (2 for YAML/JSON/CMake).
 
+Implemented gate targets (all run in CI): `cmake --build --preset dev --target format-check | check-banned | check-includes | header-check`; `tools/format.sh fix` rewrites formatting; `cmake --preset tidy && cmake --build --preset tidy` runs clang-tidy on every first-party compile. The tools themselves are tested (`ctest -L tools`) against fixtures in `tests/tools/fixtures/`. `module_graph` (ctest) diffs the real CMake link graph against `tests/module_graph.expected`. Sanitizer self-tests: `ctest -L sanitizer-selftest`.
+
 ## 6. CI pipeline (GitHub Actions assumed)
 
 1. **lint** — format, tidy (changed files), banned functions, include graph, markdown/link check, license headers.

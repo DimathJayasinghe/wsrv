@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// Deliberate bug: two threads increment a plain int with no synchronisation. Must be reported by TSan.
+// Deliberate bug: two threads increment a plain int with no synchronisation. Must be reported by
+// TSan.
 #include <thread>
 
 namespace {

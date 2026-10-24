@@ -24,6 +24,10 @@ option(WSRV_BUILD_BENCH       "Build benchmarks"                    OFF)
 option(WSRV_ENABLE_TLS        "Build the OpenSSL TLS transport"     OFF)
 option(WSRV_ENABLE_DEFLATE    "Build permessage-deflate (zlib)"     OFF)
 option(WSRV_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"  ON)
+option(WSRV_CLANG_TIDY        "Run clang-tidy on first-party code"  OFF)
+if(WSRV_CLANG_TIDY)
+    find_program(WSRV_CLANG_TIDY_EXE NAMES clang-tidy-18 clang-tidy REQUIRED)
+endif()
 
 # ---- Language level: C++23, no compiler extensions (ADR-0001) ----
 set(CMAKE_CXX_STANDARD 23)
@@ -49,6 +53,10 @@ add_subdirectory(src/protocol)
 add_subdirectory(src/extensions)
 add_subdirectory(src/net)
 add_subdirectory(src/server)
+
+if(PROJECT_IS_TOP_LEVEL)
+    include(WsrvChecks)         # format-check, check-banned, check-includes, header-check
+endif()
 
 if(WSRV_BUILD_TESTS)
     enable_testing()

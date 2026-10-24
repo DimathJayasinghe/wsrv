@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: Apache-2.0
+# docs/CODING_STANDARDS.md section 2. Verified with clang-format 18.
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: Latest
+IndentWidth: 4
+ColumnLimit: 100
+AccessModifierOffset: -4
+BreakBeforeBraces: Attach
+PointerAlignment: Left
+BinPackArguments: false
+BinPackParameters: false
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AlwaysBreakTemplateDeclarations: Yes
+SpacesBeforeTrailingComments: 2
+FixNamespaceComments: true
+NamespaceIndentation: None
+InsertNewlineAtEOF: true
+ReflowComments: true
+SortIncludes: CaseSensitive
+# Order: own header (main), project headers, third-party, C++ standard library, C / system headers.
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^"(base|crypto|http|protocol|extensions|net|server|wsrv)/'
+    Priority: 1
+  - Regex: '^<(gtest|gmock|openssl|zlib)'
+    Priority: 2
+  - Regex: '^<[a-z_0-9]+>$'
+    Priority: 3
+  - Regex: '^<.*>$'
+    Priority: 4
+IncludeIsMainRegex: '(_test)?$'
