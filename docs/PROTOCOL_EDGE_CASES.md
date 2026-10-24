@@ -186,6 +186,18 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | Integration (real sockets, fault injection) | EC-N, EC-A, EC-H20/21/26 |
 | Soak / chaos | EC-N09–N15 |
 
-## 10. Maintenance
+## 10. Implementation status (updated per milestone)
+
+| Rows | Status | Tests |
+|---|---|---|
+| EC-U01..U06, U08, U09 | done (M1) | `Utf8.*` in `tests/protocol/utf8_test.cpp`, `fuzz_utf8` |
+| EC-H07, H09 | done (M1/M2) | `Base64.RfcSampleKeyDecodesToSixteenBytes`, `Sha1.WebSocketAcceptInputFromTheRfc`, `Handshake.AcceptKeyMatchesTheRfcSample` |
+| EC-H01..H06, H08, H10..H13, H16, H25 | done (M2) | `Handshake.*` in `tests/protocol/handshake_test.cpp` |
+| EC-H14, H15, H17, H18, H19, H22 (parser side), H23 | done (M2) | `HttpRequestParser.*`, `HandshakeFlow.*`, `fuzz_http_request` |
+| EC-H20, H21, H22 (logging), H24 | M6 (connection level: timers, disconnects) | - |
+| EC-H26 | M10 (MAY) | - |
+| EC-F*, EC-C*, EC-N*, EC-A*, EC-T*, EC-D* | later milestones | - |
+
+## 11. Maintenance
 
 New bug ⇒ new row (or extend one) + regression test in the same PR.
