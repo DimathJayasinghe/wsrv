@@ -11,12 +11,13 @@ We teach as we build. Each lesson answers three questions: **What** are we build
 | 04 | [UTF-8 as a state machine](04-utf8-as-a-state-machine.md) | M1 | written |
 | 05 | [Parsing HTTP strictly](05-parsing-http-strictly.md) | M2 | written |
 | 06 | [The handshake rules](06-the-handshake-rules.md) | M2 | written |
-| 07 | The frame codec: bits, masking, lengths | M3 | next |
-| 08 | The protocol state machine (sans-I/O) | M4 | planned |
-| 09 | Sockets, epoll, and the event loop | M5 | planned |
-| 10 | Backpressure and connection lifecycle | M6 | planned |
-| 11 | Threads without locks | M7 | planned |
-| 12 | TLS as a decorator | M8 | planned |
-| 13 | The C ABI and talking to PHP | M11–M12 | planned |
+| 07 | [The frame codec: bits, masking, lengths](07-the-frame-codec.md) | M3 | written |
+| 08 | [Messages: fragmentation, control frames, streaming](08-messages-fragmentation-and-streaming.md) | M3 | written |
+| 09 | The protocol state machine (sans-I/O) | M4 | next |
+| 10 | Sockets, epoll, and the event loop | M5 | planned |
+| 11 | Backpressure and connection lifecycle | M6 | planned |
+| 12 | Threads without locks | M7 | planned |
+| 13 | TLS as a decorator | M8 | planned |
+| 14 | The C ABI and talking to PHP | M11–M12 | planned |
 
 Lesson template: *Goal → Background (the problem) → Design (why this way) → Walkthrough (code, small steps) → Tests (what proves it works) → Pitfalls → Exercises.*

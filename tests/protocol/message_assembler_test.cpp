@@ -490,6 +490,22 @@ TEST(MessageAssemblerStreaming, TextPartsEndOnCodePointBoundaries) {  // EC-F29
 }
 
 TEST(MessageAssemblerStreaming,
+     ByteAtATimeDeliveryHoldsBackOnlyTheUnfinishedCharacter) {  // used by lesson 08
+    // "a", euro sign (E2 82 AC), "b", one wire byte per read: the euro is withheld until its last
+    // byte.
+    const Collected out = pipeline(wire({{Opcode::Text,
+                                          true,
+                                          "a\xE2\x82\xAC"
+                                          "b"}}),
+                                   streaming(),
+                                   1);
+    EXPECT_EQ(out.events,
+              (std::vector<Ev>{part(MessageType::Text, "a", false),
+                               part(MessageType::Text, "\xE2\x82\xAC", false),
+                               part(MessageType::Text, "b", true)}));
+}
+
+TEST(MessageAssemblerStreaming,
      ACharacterSplitAcrossFragmentsAndAPingIsHeldAndThenDelivered) {  // EC-F25, F29
     const Collected out = pipeline(wire({{Opcode::Text, false, "x\xE2\x82"},
                                          {Opcode::Ping, true, "p"},
