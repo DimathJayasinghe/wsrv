@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint (format, banned, includes, headers, tidy)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/dev-env
+      - name: Quality gates
+        run: >
+          tools/ci-run.sh
+          'cmake --preset dev
+          && cmake --build --preset dev --target format-check check-banned check-includes header-check'
+      - name: Tool and architecture tests
+        run: tools/ci-run.sh 'cmake --build --preset dev && ctest --preset dev -L tools -R "tools_|module_graph"'
+      - name: clang-tidy
+        run: tools/ci-run.sh 'cmake --preset tidy && cmake --build --preset tidy'
+
+  build-test:
+    name: build+test (${{ matrix.preset }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [dev, dev-clang, release, tsan]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/dev-env
+      - name: Configure, build, test
+        run: >
+          tools/ci-run.sh
+          'cmake --preset ${{ matrix.preset }}
+          && cmake --build --preset ${{ matrix.preset }}
+          && ctest --preset ${{ matrix.preset }}'

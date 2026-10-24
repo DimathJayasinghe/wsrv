@@ -1,0 +1,23 @@
+name: dev-env
+description: Build the wsrv-dev Docker image (layer-cached) for the runner's UID/GID
+runs:
+  using: composite
+  steps:
+    - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+    - id: ids
+      shell: bash
+      run: |
+        echo "uid=$(id -u)" >> "$GITHUB_OUTPUT"
+        echo "gid=$(id -g)" >> "$GITHUB_OUTPUT"
+    - uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
+      with:
+        context: .
+        file: docker/Dockerfile
+        target: dev
+        load: true
+        tags: wsrv-dev:latest
+        build-args: |
+          USER_UID=${{ steps.ids.outputs.uid }}
+          USER_GID=${{ steps.ids.outputs.gid }}
+        cache-from: type=gha,scope=wsrv-dev
+        cache-to: type=gha,mode=max,scope=wsrv-dev
