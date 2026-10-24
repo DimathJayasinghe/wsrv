@@ -195,6 +195,9 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | EC-H01..H13, H16 | done (M2) | `Handshake.*` in `tests/protocol/handshake_test.cpp`, `HostHeader.*` |
 | EC-H25 | done except timeouts (M6) | `Handshake.AUserRule*`, `Handshake.AThrownException*` |
 | EC-H14, H15, H17, H18, H19, H22 (parser side), H23 | done (M2) | `HttpRequestParser.*`, `HandshakeFlow.*`, `fuzz_http_request` |
+| EC-F01..F17, F19..F22, F24..F26, F28..F30, F37 | done (M3), F29/F30 streaming rules at assembler level (F30: `MessageAssembler.Discard*`, `DiscardMidFrame*`, `ContinuationsOfADiscardedMessage*`, `LimitsStillApplyWhileDraining*`) | `FrameParser.*`, `FrameWriter.*`, `MessageAssembler.*`, `MessageAssemblerStreaming.*`, `Masker.*`, `fuzz_frame_parser`, `fuzz_message_pipeline` |
+| EC-C05..C09 (payload rules) | done (M3) | `ClosePayload.*`, `CloseCode.*` |
+| EC-F18, F23, F31..F36 | M4 (outbound) / M6 (connection level) | - |
 | EC-H20, H21, H22 (logging), H24 | M6 (connection level: timers, disconnects) | - |
 | EC-H26 | M10 (MAY) | - |
 | EC-F*, EC-C*, EC-N*, EC-A*, EC-T*, EC-D* | later milestones | - |

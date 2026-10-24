@@ -57,8 +57,8 @@ A zero-length final continuation frame is valid and completes the message (EC-F3
 
 Rules:
 - Buffered mode of a **single-frame** message that is fully present in the read buffer is zero-copy (a view into the buffer). Fragmented or split messages are assembled into one contiguous pooled buffer that grows geometrically but never beyond `max_message_size`, and never pre-sized from peer-declared lengths.
-- In streaming mode, **text parts always end on UTF-8 code-point boundaries**: the validator holds back an incomplete trailing sequence until the next chunk. Handlers can therefore decode each part independently (EC-U06, EC-F29).
-- Parts are valid only during the call. If the handler closes the session during a part, the rest of the message is dropped (EC-F30).
+- In streaming mode, **text parts always end on UTF-8 code-point boundaries**: the validator holds back an incomplete trailing sequence until the next chunk. Handlers can therefore decode each part independently (EC-U06, EC-F29). When the held-back bytes are completed by the next chunk, the part is delivered as two views, `data` (the 1-4 byte character, from a fixed internal array) and `tail` (the rest of the chunk, still in the caller's buffer), so no chunk is ever copied and memory is O(1) per connection. Each view ends on a boundary, so they may be passed on as two parts or joined.
+- Parts are valid only during the call. If the handler closes the session during a part, the rest of the message is dropped (EC-F30): the assembler's `discard_message()` works even in the middle of a frame; it swallows the rest of that frame and the continuation frames up to FIN without delivering or UTF-8-validating them, but still counts them against the size and fragment limits. The peer may legitimately keep sending them until its own Close arrives (RFC 6455 §5.5.1), so they are not a protocol error; a *new* data frame before that FIN still is (1002).
 - Streaming parts respect backpressure: if the handler signals "not ready" (returns `Backpressure` or sets a pause flag), reading from the socket pauses (ADR-0007).
 - The mode is per handler (a config choice at build time), not switched mid-message.
 
