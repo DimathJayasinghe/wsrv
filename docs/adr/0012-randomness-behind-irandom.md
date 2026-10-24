@@ -1,6 +1,6 @@
 # ADR-0012: Randomness behind `IRandom`; `crypto` stays free of OS calls
 
-- Status: Proposed
+- Status: Accepted (owner approved 2026-10-24)
 - Date: 2026-10-24
 
 ## Context
