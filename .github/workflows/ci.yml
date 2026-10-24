@@ -13,6 +13,14 @@ on:
 permissions:
   contents: read
 
+env:
+  # Cache compiled objects between runs: only files that changed are recompiled. GoogleTest and unchanged
+  # modules are built once per cache key instead of once per run per configuration.
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 400M
+  CCACHE_COMPILERCHECK: content
+  CMAKE_CXX_COMPILER_LAUNCHER: ccache
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}   # never cancel a push to main
@@ -26,8 +34,15 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: ccache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: .ccache
+          key: ccache-gcc-${{ github.sha }}
+          restore-keys: ccache-gcc-
       - name: Toolchain
         run: |
+          command -v ccache >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ccache; }
           g++ --version | head -1
           cmake --version | head -1
           ninja --version
@@ -45,6 +60,9 @@ jobs:
           cmake --preset release
           cmake --build --preset release
           ctest --preset release
+      - name: ccache statistics
+        if: always()
+        run: ccache --show-stats --verbose | head -12
 
   clang:
     name: clang (libc++, dev, tsan, tidy)
@@ -54,10 +72,16 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: ccache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: .ccache
+          key: ccache-clang-${{ github.sha }}
+          restore-keys: ccache-clang-
       - name: Install libc++ and clang-tidy
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends libc++-18-dev libc++abi-18-dev clang-tidy-18
+          sudo apt-get install -y -qq --no-install-recommends libc++-18-dev libc++abi-18-dev clang-tidy-18 ccache
           clang++-18 --version | head -1
       - name: dev-clang (ASan+UBSan)
         run: |
@@ -73,3 +97,6 @@ jobs:
         run: |
           cmake --preset tidy -DCMAKE_CXX_COMPILER=clang++-18
           cmake --build --preset tidy
+      - name: ccache statistics
+        if: always()
+        run: ccache --show-stats --verbose | head -12
