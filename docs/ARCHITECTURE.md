@@ -28,12 +28,13 @@
 ├──────────────────────────────┴────────────────────────────────┤
 │ http/   RequestParser · ResponseWriter                        │
 ├───────────────────────────────────────────────────────────────┤
-│ crypto/ Sha1 · Base64 · Random      base/  Result · Buffers · │
-│                                     Clock · ILogger · Metrics │
+│ crypto/ Sha1 · Base64               base/  Result · Buffers · │
+│                                     Clock · IRandom · ILogger │
+│                                     · IMetrics                │
 └───────────────────────────────────────────────────────────────┘
 ```
 
-### 2.1 Allowed dependencies (enforced by CMake `target_link_libraries` + CI include check)
+### 2.1 Allowed dependencies (enforced by `tools/check_includes.py` on every `#include`; the declared link graph is diffed by the `module_graph` test as a second guard)
 
 | Module | May depend on |
 |---|---|
@@ -56,10 +57,10 @@ Forbidden: `protocol → net`, `protocol → <sys/*>`, `net → protocol`, any c
 ### 3.1 base
 - `Result<T,E>` = alias of `std::expected`; `Error` = `{ErrorCode code; std::string_view context}` (no allocation on hot path).
 - `ByteBuffer` (growable, bounded, contiguous), `RingBuffer` (fixed capacity), `BufferPool` (slab, thread-local per loop), `ByteView = std::span<const std::byte>`.
-- `IClock` (steady + system), `ILogger`, `IMetrics` (injected; no-op defaults). 
+- `IClock` (steady + system), `IRandom` (`fill(span<byte>)`), `ILogger`, `IMetrics` (injected; no-op defaults).
 
 ### 3.2 crypto
-- `Sha1` (streaming), `Base64::encode/decode` (strict), `Random::fill` (wraps `getrandom(2)`).
+- `Sha1` (streaming), `Base64::encode/decode` (strict). Pure computation only: no OS calls. Randomness is *not* here: see `IRandom` in base and `SystemRandom` in net (ADR-0012).
 - Reviewed against RFC test vectors; not for general-purpose security use (documented).
 
 ### 3.3 http
@@ -104,6 +105,7 @@ The session is deterministic: same bytes + same ticks ⇒ same output. This is w
 ### 3.5 net
 | Class | Responsibility |
 |---|---|
+| `SystemRandom` | `IRandom` adapter over `getrandom(2)` (the only CSPRNG source; ADR-0012) |
 | `Fd` / `Socket` | RAII ownership, non-blocking, `CLOEXEC`, `TCP_NODELAY`, `SO_REUSEPORT`, `MSG_NOSIGNAL` |
 | `IPoller` / `EpollPoller` | Register/modify/wait; edge-triggered; returns ready events |
 | `EventLoop` | Owns a poller, timer wheel, task queue (MPSC) + wake-up eventfd; `run()`, `stop()`, `post(fn)`, `run_after(d, fn)` |

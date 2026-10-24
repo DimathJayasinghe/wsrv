@@ -77,6 +77,8 @@ Each milestone is *done* only when its exit criteria and the global Definition o
 | M13 | More bindings & platforms | Python, Node, Go, Rust bindings (Tier 1/2 per GOVERNANCE); macOS (`KqueuePoller`), then Windows | Each binding passes Autobahn in CI; per-OS CI green |
 | M14 | Open-source launch | LICENSE/NOTICE, CoC, GOVERNANCE, templates, website/docs site, roadmap, good-first-issues, signed releases + SBOM | Public repo checklist complete; **1.0 tag** |
 
+> **Status (2026-10-24):** M0 complete on branch `feat/m0-foundation` (PR #1, CI green, ~2.3 CI minutes). Next: M1.
+>
 > Sequencing note: TLS (M8) is required built-in (owner decision). permessage-deflate (M9) may slip behind M11/M12 if needed for the PHP milestone. Decide at M7 exit.
 
 ## 7. Work breakdown rules

@@ -22,6 +22,9 @@ Project: **wsrv**, a from-scratch C++23 WebSocket (RFC 6455) server core with a 
 ## Teaching mode (owner requirement)
 The owner is learning while we build. For every step: say **what** we are building, **why** it exists (the problem, the RFC rule, the attack it prevents), and **how** (the technique/pattern), *before* writing code. Keep code small enough to explain. After each milestone slice, add or update a lesson in `docs/learning/` (concept, walkthrough, pitfalls, exercises). Show tests running and explain failures. Define jargon on first use.
 
+## Docker dev container gotcha
+Builds run in the `wsrv-dev` container (`make shell`; one-off: `docker compose exec -T dev bash -c '...'`). Docker Desktop's bind mount shows **stale content for host files replaced by rename**. Agents: change existing files with the Edit tool (in place) or `rm` before re-creating with Write; if a build behaves as if a fix is missing, compare `wc -l` of the file on host vs container and run `make restart`.
+
 ## Definition of done
 Follow `CONTRIBUTING.md` checklist. Run format, tidy, tests with sanitizers before declaring done. Report failures honestly with output.
 

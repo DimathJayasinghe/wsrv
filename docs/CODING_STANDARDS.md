@@ -28,6 +28,8 @@ Baseline: **C++ Core Guidelines** (https://isocpp.github.io/CppCoreGuidelines). 
 
 - Headers: `#pragma once`; self-contained (each compiles alone — CI "header check" target). **[CI]**
 - Include order: own header, project headers, third-party, std; each group sorted. **[CI via clang-format]**
+- Project includes use the form `#include "<module>/<file>.hpp"` with `src/` as the include root (e.g. `"base/version.hpp"`); module-to-module includes must follow the dependency graph, and `base/crypto/http/protocol` must not include OS headers. **[CI: `check-includes`]**
+- Complexity is enforced as clang-tidy *cognitive* complexity ≤ 15 (≈ cyclomatic 10), function length ≤ 50 lines, parameters ≤ 4. Suppress only with `// NOLINT(check): reason`. **[CI: `tidy` preset]**
 - One public class per header (small helpers may co-locate). Implementation in `.cpp` unless trivial/template/hot-inline.
 - Format: `.clang-format` (LLVM base, 4-space indent, 100 cols, `BinPackArguments: false`). **[CI]**
 - Max function length ~40 lines, params ≤ 4 (use option structs), nesting ≤ 3, cyclomatic complexity ≤ 10 (clang-tidy `readability-function-cognitive-complexity`). **[CI]**

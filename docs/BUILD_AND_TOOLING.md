@@ -46,7 +46,7 @@ tools/            scripts (lint, include-graph check, banned-function scan)
 
 ## 3. CMake rules
 
-- One target per module; `PRIVATE` includes by default; `PUBLIC` only for `include/wsrv`. Linking encodes allowed-dependency graph from ARCHITECTURE §2.1 — a forbidden link is a build error.
+- One target per module. Linking declares the allowed-dependency graph from ARCHITECTURE §2.1 and the `module_graph` test diffs it against `tests/module_graph.expected` (it sees PUBLIC, INTERFACE and PRIVATE links). All modules share the `src/` include root, so a stray `#include` is **not** a build error; `tools/check_includes.py` (`check-includes`) is the primary guard and also rejects OS headers in the sans-I/O modules. (Per-module include roots would make it a hard error; revisit if the checker proves insufficient.)
 - `wsrv::wsrv` alias is the only installable library target; `install()` + `find_package(wsrv)` config files; semantic versioning.
 - No globbing for sources (explicit lists) so CI detects missing files.
 - Options (all default OFF unless stated): `WSRV_BUILD_TESTS` (ON for top-level), `WSRV_BUILD_EXAMPLES`, `WSRV_ENABLE_TLS`, `WSRV_ENABLE_DEFLATE`, `WSRV_BUILD_FUZZERS`, `WSRV_BUILD_BENCH`, `WSRV_WARNINGS_AS_ERRORS` (ON), `WSRV_SANITIZER` (none|asan-ubsan|tsan|msan).
@@ -79,7 +79,24 @@ Usage: `cmake --preset dev && cmake --build --preset dev && ctest --preset dev`.
 - `pre-commit` hooks (format, trailing whitespace, banned functions, markdown links) — optional locally, enforced in CI.
 - `.editorconfig`: LF, UTF-8, final newline, 4 spaces (2 for YAML/JSON/CMake).
 
-## 6. CI pipeline (GitHub Actions assumed)
+Implemented gate targets (all run in CI): `cmake --build --preset dev --target format-check | check-banned | check-includes | header-check`; `tools/format.sh fix` rewrites formatting; `cmake --preset tidy && cmake --build --preset tidy` runs clang-tidy on every first-party compile. The tools themselves are tested (`ctest -L tools`) against fixtures in `tests/tools/fixtures/`. `module_graph` (ctest) diffs the real CMake link graph against `tests/module_graph.expected`. Sanitizer self-tests: `ctest -L sanitizer-selftest`.
+
+## 6. CI pipeline (GitHub Actions)
+
+### 6.1 Implemented (M0) and its cost design
+
+| Workflow | Runs when | Jobs | Measured |
+|---|---|---|---|
+| `ci.yml` | push to `main` and PRs, **except** docs-only changes (`docs/**`, `*.md`, `LICENSE`) | `gcc`: quality gates + `dev` + `release`; `clang`: `dev-clang` + `tsan` + `tidy` | ~2.3 billed minutes |
+| `image.yml` | only when `docker/**`, `docker-compose.yml` or the dev-env action change | builds the dev image and runs a build + test inside it | ~1.5 min, rarely |
+
+Why it looks like this: the first version built the Docker dev image in each of five jobs and billed ~19 minutes, ~16 of them image builds, for 16–35 s of real work per job. Now CI uses the runner's preinstalled GCC/Clang/CMake/Ninja (only libc++ and clang-tidy are installed), runs few jobs (each job pays runner start-up), skips changes that cannot affect the build, and rebuilds the image only when it can have changed. Trade-off: CI is not byte-identical to the dev container (runner GCC 13/14 vs container GCC 14.2); the CMake version floors and the `image.yml` check bound that risk. Reproduce a CI job locally with `tools/ci-run.sh '<command>'` (runs inside the dev image).
+
+Required checks: do **not** make `gcc`/`clang` required status checks while `paths-ignore` is active — a docs-only PR would wait forever for a check that never starts (use an always-running job with an internal path filter first). `cancel-in-progress` applies to PRs only, so a push to `main` is never cancelled. Branch protection is not enabled yet (owner decision; GitHub Free private repositories cannot enforce it).
+
+Further savings when builds grow: cache ccache across runs (`actions/cache` keyed on preset + compiler), split a slow job only if wall-clock matters (billed minutes stay equal). Actions are pinned to commit SHAs and the token is read-only.
+
+### 6.2 Planned pipeline (later milestones)
 
 1. **lint** — format, tidy (changed files), banned functions, include graph, markdown/link check, license headers.
 2. **build-test matrix** — {gcc-13, gcc-latest, clang-17+} × {debug+asan-ubsan, release}.
@@ -139,4 +156,5 @@ Rules:
 - `SYS_PTRACE` and `seccomp=unconfined` exist only in the dev compose service so debuggers and LeakSanitizer work.
 - CI uses the same Dockerfile; base image pinned by digest there.
 - Version floors (GCC ≥ 13, Clang ≥ 17) are asserted by CMake at configure time (M0), so a drifted image fails loudly.
+- **Docker Desktop bind-mount quirk (found 2026-10-24):** a host file that is *replaced by rename* (what many editors, `git checkout`/`git pull`, and "atomic save" do) can stay stale inside the container — the container keeps seeing the old content, so the build silently uses old code. In-place edits and brand-new files are fine. Symptoms: "undefined reference" or tests ignoring a fix you can see on the host. Fixes: `docker compose restart dev` (refreshes everything), or `rm` the file before recreating it, or edit in place. Safest habit: after `git pull`/branch switch, run `make restart`. Native Linux Docker Engine (no VM) does not have this problem.
 - Host-network note: the build needs registry access (`registry-1.docker.io`, `production.cloudfront.docker.com`). If pulls fail with a DNS error, fix the host resolver (e.g. `sudo resolvectl dns <iface> 1.1.1.1 8.8.8.8`) or use another network.
