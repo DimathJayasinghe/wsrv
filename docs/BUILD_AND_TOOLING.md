@@ -79,7 +79,7 @@ Usage: `cmake --preset dev && cmake --build --preset dev && ctest --preset dev`.
 - `pre-commit` hooks (format, trailing whitespace, banned functions, markdown links) — optional locally, enforced in CI.
 - `.editorconfig`: LF, UTF-8, final newline, 4 spaces (2 for YAML/JSON/CMake).
 
-Implemented gate targets (all run in CI): `cmake --build --preset dev --target format-check | check-banned | check-includes | header-check`; `tools/format.sh fix` rewrites formatting; `cmake --preset tidy && cmake --build --preset tidy` runs clang-tidy on every first-party compile. The tools themselves are tested (`ctest -L tools`) against fixtures in `tests/tools/fixtures/`. `module_graph` (ctest) diffs the real CMake link graph against `tests/module_graph.expected`. Sanitizer self-tests: `ctest -L sanitizer-selftest`.
+Implemented gate targets (all run in CI): `cmake --build --preset dev --target format-check | check-banned | check-includes | header-check`; `tools/format.sh fix` rewrites formatting; `cmake --preset tidy && cmake --build --preset tidy` runs clang-tidy on production code (`src/`; this is what CI runs, ~15 s); `tidy-all` also covers tests (slow: ~10 s per GoogleTest file; run it before pushing test changes). Tests use the relaxed `tests/.clang-tidy` profile, without `clang-analyzer-*`, which spent 15-30 s per test file expanding GoogleTest macros. The tools themselves are tested (`ctest -L tools`) against fixtures in `tests/tools/fixtures/`. `module_graph` (ctest) diffs the real CMake link graph against `tests/module_graph.expected`. Sanitizer self-tests: `ctest -L sanitizer-selftest`.
 
 ### 5.1 Fuzzing (implemented in M1)
 

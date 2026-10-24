@@ -104,6 +104,16 @@
       }
     },
     {
+      "name": "tidy-all",
+      "displayName": "Clang+libc++, clang-tidy on src AND tests (slow; local)",
+      "inherits": "clang",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "WSRV_CLANG_TIDY": "ON",
+        "WSRV_CLANG_TIDY_TESTS": "ON"
+      }
+    },
+    {
       "name": "coverage",
       "displayName": "GCC, Debug, gcov coverage",
       "inherits": "gcc",
@@ -154,6 +164,10 @@
     {
       "name": "tidy",
       "configurePreset": "tidy"
+    },
+    {
+      "name": "tidy-all",
+      "configurePreset": "tidy-all"
     },
     {
       "name": "coverage",
