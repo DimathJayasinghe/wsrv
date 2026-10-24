@@ -43,3 +43,7 @@ add_test(NAME module_graph_sees_private_links
     COMMAND ${CMAKE_COMMAND} -E compare_files
             "${CMAKE_CURRENT_SOURCE_DIR}/module_graph_private.expected"
             "${CMAKE_BINARY_DIR}/module_graph_private.actual")
+
+if(WSRV_BUILD_FUZZERS)
+    add_subdirectory(fuzz)
+endif()

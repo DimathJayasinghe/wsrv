@@ -41,3 +41,13 @@ if(WSRV_COVERAGE)
     add_link_options(--coverage)
     message(STATUS "Coverage instrumentation enabled")
 endif()
+
+# Fuzzing (libFuzzer, Clang only). Coverage instrumentation must be present in the LIBRARIES under test
+# too (not just the harness), otherwise the fuzzer cannot see which code paths an input reaches.
+if(WSRV_BUILD_FUZZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        message(FATAL_ERROR "WSRV_BUILD_FUZZERS requires Clang (libFuzzer); use the `fuzz` preset.")
+    endif()
+    add_compile_options(-fsanitize=fuzzer-no-link)
+    message(STATUS "libFuzzer instrumentation enabled")
+endif()
