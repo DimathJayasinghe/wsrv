@@ -519,4 +519,255 @@ TEST(SessionSend, CloseDropsMessagesThatHaveNotStartedAndNothingFollowsTheCloseF
     EXPECT_TRUE(rig.take_output().frames.empty());
 }
 
+// ---- Timers and rate limits -------------------------------------------------------------------
+
+/// Every timer and limit off; tests switch on only what they exercise.
+SessionConfig quiet_config() {
+    SessionConfig c;
+    c.ping_interval = 0ms;
+    c.pong_timeout = 0ms;
+    c.idle_timeout = 0ms;
+    c.close_timeout = 0ms;
+    c.incomplete_message_timeout = 0ms;
+    c.max_control_frames_per_second = 0;
+    c.max_data_frames_per_second = 0;
+    return c;
+}
+
+TEST(SessionTimers, ADisabledTimerNeverFires) {
+    Rig rig{quiet_config()};
+    rig.feed(client_frame(Opcode::Text, false, "unfinished"));
+    rig.tick(24h * 365);
+    EXPECT_EQ(rig.session().state(), SessionState::Open);
+    EXPECT_TRUE(rig.take_output().frames.empty());
+    EXPECT_TRUE(rig.poll().empty());
+}
+
+TEST(SessionTimers, TheIdleTimeoutClosesWith1001ExactlyAtTheLimit) {  // EC-C17
+    SessionConfig config = quiet_config();
+    config.idle_timeout = 60000ms;
+    Rig rig{config};
+    rig.tick(59999ms);
+    EXPECT_EQ(rig.session().state(), SessionState::Open);
+    rig.tick(1ms);
+    EXPECT_EQ(rig.session().state(), SessionState::Closing);
+    EXPECT_EQ(rig.take_output().frames,
+              (std::vector<WireFrame>{{Opcode::Close, true, close_payload(1001, "idle timeout")}}));
+}
+
+TEST(SessionTimers, AnyCompleteFrameResetsTheIdleTimer) {
+    SessionConfig config = quiet_config();
+    config.idle_timeout = 60000ms;
+    Rig rig{config};
+    rig.tick(50000ms);
+    rig.feed(client_frame(Opcode::Binary, true, "x"));
+    rig.tick(59999ms);
+    EXPECT_EQ(rig.session().state(), SessionState::Open);
+    rig.tick(1ms);
+    EXPECT_EQ(rig.session().state(), SessionState::Closing);
+}
+
+TEST(SessionTimers, ASlowTrickleOfOneFrameDoesNotKeepTheConnectionAlive) {  // T2/T7 slowloris
+    SessionConfig config = quiet_config();
+    config.idle_timeout = 10000ms;
+    Rig rig{config};
+    const auto frame = client_frame(Opcode::Binary, true, std::string(100, 'a'));
+    for (std::size_t i = 0; i + 1 < frame.size(); ++i) {  // all but the last byte, 1 s apart
+        rig.feed({frame[i]});
+        rig.tick(1000ms);
+    }
+    EXPECT_EQ(rig.session().state(), SessionState::Closing);
+}
+
+TEST(SessionTimers, AQuietConnectionIsPingedAndAPongKeepsItAlive) {  // FR-C6
+    SessionConfig config = quiet_config();
+    config.ping_interval = 30000ms;
+    config.pong_timeout = 10000ms;
+    Rig rig{config};
+    rig.tick(29999ms);
+    EXPECT_TRUE(rig.take_output().frames.empty());
+    rig.tick(1ms);
+    EXPECT_EQ(rig.take_output().frames, (std::vector<WireFrame>{{Opcode::Ping, true, ""}}));
+    rig.tick(9999ms);
+    EXPECT_EQ(rig.session().state(), SessionState::Open);
+    EXPECT_TRUE(rig.take_output().frames.empty());  // only one Ping in flight
+    rig.feed(client_frame(Opcode::Pong, true, ""));
+    rig.tick(20000ms);  // 30 s since the Pong's frame: the next Ping is due, no close
+    EXPECT_EQ(rig.session().state(), SessionState::Open);
+    rig.tick(10000ms);
+    EXPECT_EQ(rig.take_output().frames, (std::vector<WireFrame>{{Opcode::Ping, true, ""}}));
+}
+
+TEST(SessionTimers, NoPongWithinTheTimeoutClosesWith1001) {  // EC-C16
+    SessionConfig config = quiet_config();
+    config.ping_interval = 30000ms;
+    config.pong_timeout = 10000ms;
+    Rig rig{config};
+    rig.tick(30000ms);
+    rig.take_output();                                                     // the Ping
+    rig.feed(client_frame(Opcode::Text, true, "busy but not answering"));  // not a Pong
+    rig.tick(9999ms);
+    EXPECT_EQ(rig.session().state(), SessionState::Open);
+    rig.tick(1ms);
+    EXPECT_EQ(rig.session().state(), SessionState::Closing);
+    EXPECT_EQ(rig.take_output().frames,
+              (std::vector<WireFrame>{{Opcode::Close, true, close_payload(1001, "pong timeout")}}));
+}
+
+TEST(SessionTimers, ActivityDelaysTheHeartbeat) {
+    SessionConfig config = quiet_config();
+    config.ping_interval = 30000ms;
+    Rig rig{config};
+    rig.tick(20000ms);
+    rig.feed(client_frame(Opcode::Text, true, "alive"));
+    rig.tick(29999ms);
+    EXPECT_TRUE(rig.take_output().frames.empty());
+    rig.tick(1ms);
+    EXPECT_EQ(rig.take_output().frames.size(), 1U);
+}
+
+TEST(SessionTimers, TimeNeverMovesBackwards) {
+    SessionConfig config = quiet_config();
+    config.idle_timeout = 1000ms;
+    Rig rig{config};
+    rig.tick(999ms);
+    rig.session().tick(wsrv::TimePoint{});  // an earlier time is ignored
+    EXPECT_EQ(rig.session().state(), SessionState::Open);
+    rig.tick(1ms);
+    EXPECT_EQ(rig.session().state(), SessionState::Closing);
+}
+
+TEST(SessionTimers, AnUnfinishedMessageIsAbandonedAfterTheIncompleteTimeout) {  // EC-F27
+    SessionConfig config = quiet_config();
+    config.incomplete_message_timeout = 30000ms;
+    Rig rig{config};
+    rig.tick(20000ms);  // quiet time before the message does not count
+    rig.feed(client_frame(Opcode::Text, false, "first part"));
+    rig.tick(29999ms);
+    EXPECT_EQ(rig.session().state(), SessionState::Open);
+    rig.tick(1ms);
+    const auto events = rig.poll();
+    ASSERT_EQ(events.size(), 1U);
+    EXPECT_EQ(events[0].kind, Kind::ProtocolError);
+    EXPECT_EQ(events[0].code, 1008U);
+    EXPECT_EQ(rig.take_output().frames[0].opcode, Opcode::Close);
+}
+
+TEST(SessionTimers, AFinishedOrControlOnlyMessageStartsNoTimer) {
+    SessionConfig config = quiet_config();
+    config.incomplete_message_timeout = 1000ms;
+    Rig rig{config};
+    rig.feed(client_frame(Opcode::Ping, true, ""));
+    rig.feed(client_frame(Opcode::Text, false, "a"));
+    rig.feed(client_frame(Opcode::Continuation, true, "b"));
+    rig.tick(24h);
+    EXPECT_EQ(rig.session().state(), SessionState::Open);
+}
+
+TEST(SessionTimers, ACloseTheirPeerNeverAnswersEndsAtTheCloseTimeout) {  // EC-C12
+    SessionConfig config = quiet_config();
+    config.close_timeout = 5000ms;
+    Rig rig{config};
+    ASSERT_TRUE(rig.session().close(CloseCode::Normal, "").has_value());
+    rig.take_output();
+    rig.tick(4999ms);
+    EXPECT_TRUE(rig.poll().empty());
+    EXPECT_EQ(rig.session().state(), SessionState::Closing);
+    rig.tick(1ms);
+    EXPECT_EQ(rig.poll(), (std::vector<Seen>{closed(1006, "", false)}));
+    EXPECT_EQ(rig.session().state(), SessionState::Closed);
+}
+
+TEST(SessionTimers, AFailureCloseThatCannotBeWrittenAlsoEndsAtTheCloseTimeout) {
+    SessionConfig config = quiet_config();
+    config.close_timeout = 5000ms;
+    Rig rig{config};
+    const auto events = rig.feed(client_frame(Opcode::Text, true, "\xFF"));
+    ASSERT_EQ(events.size(), 1U);
+    rig.tick(5000ms);  // the peer's TCP window is full: the Close was never written
+    EXPECT_EQ(rig.poll(), (std::vector<Seen>{closed(1006, "", false)}));
+}
+
+TEST(SessionTimers, ThePeersCloseWhoseEchoCannotBeWrittenEndsAtTheCloseTimeoutWithItsCode) {
+    SessionConfig config = quiet_config();
+    config.close_timeout = 5000ms;
+    Rig rig{config};
+    rig.feed(client_frame(Opcode::Close, true, close_payload(3001, "x")));
+    rig.tick(5000ms);
+    EXPECT_EQ(rig.poll(), (std::vector<Seen>{closed(3001, "x", false)}));
+}
+
+TEST(SessionRates, TooManyControlFramesInOneWindowCloseWith1008) {  // EC-C04
+    SessionConfig config = quiet_config();
+    config.max_control_frames_per_second = 5;
+    Rig rig{config};
+    std::vector<std::byte> pings;
+    for (int i = 0; i < 6; ++i) {
+        const auto frame = client_frame(Opcode::Ping, true, "");
+        pings.insert(pings.end(), frame.begin(), frame.end());
+    }
+    const auto events = rig.feed(pings);
+    ASSERT_EQ(events.size(), 6U);  // five Pings, then the violation
+    EXPECT_EQ(events[4].kind, Kind::Ping);
+    EXPECT_EQ(events[5].kind, Kind::ProtocolError);
+    EXPECT_EQ(events[5].code, 1008U);
+}
+
+TEST(SessionRates, TheWindowResetsOnTheFirstTickAtLeastOneSecondLater) {
+    SessionConfig config = quiet_config();
+    config.max_control_frames_per_second = 5;
+    Rig rig{config};
+    auto five_pings = [&] {
+        std::vector<std::byte> pings;
+        for (int i = 0; i < 5; ++i) {
+            const auto frame = client_frame(Opcode::Ping, true, "");
+            pings.insert(pings.end(), frame.begin(), frame.end());
+        }
+        return rig.feed(pings);
+    };
+    EXPECT_EQ(five_pings().size(), 5U);
+    rig.tick(999ms);
+    EXPECT_EQ(rig.feed(client_frame(Opcode::Ping, true, "")).back().kind, Kind::ProtocolError);
+
+    Rig again{config};
+    EXPECT_EQ(again
+                  .feed(cat({client_frame(Opcode::Ping, true, ""),
+                             client_frame(Opcode::Ping, true, ""),
+                             client_frame(Opcode::Ping, true, ""),
+                             client_frame(Opcode::Ping, true, ""),
+                             client_frame(Opcode::Ping, true, "")}))
+                  .size(),
+              5U);
+    again.tick(1000ms);
+    EXPECT_EQ(again.feed(client_frame(Opcode::Ping, true, "")).back().kind, Kind::Ping);
+}
+
+TEST(SessionRates, TooManyDataFramesInOneWindowCloseWith1008) {  // EC-F12, EC-F28
+    SessionConfig config = quiet_config();
+    config.max_data_frames_per_second = 3;
+    Rig rig{config};
+    std::vector<std::byte> frames;
+    for (int i = 0; i < 4; ++i) {
+        const auto frame = client_frame(Opcode::Text, true, "a");
+        frames.insert(frames.end(), frame.begin(), frame.end());
+    }
+    const auto events = rig.feed(frames);
+    ASSERT_EQ(events.size(), 4U);  // three messages, then the violation
+    EXPECT_EQ(events[2].kind, Kind::Message);
+    EXPECT_EQ(events[3].kind, Kind::ProtocolError);
+    EXPECT_EQ(events[3].code, 1008U);
+}
+
+TEST(SessionRates, ZeroDisablesTheLimits) {
+    Rig rig{quiet_config()};
+    std::vector<std::byte> frames;
+    for (int i = 0; i < 300; ++i) {
+        const auto ping = client_frame(Opcode::Ping, true, "");
+        const auto text = client_frame(Opcode::Text, true, "a");
+        frames.insert(frames.end(), ping.begin(), ping.end());
+        frames.insert(frames.end(), text.begin(), text.end());
+    }
+    EXPECT_EQ(rig.feed(frames).size(), 600U);
+}
+
 }  // namespace

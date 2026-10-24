@@ -48,7 +48,7 @@ std::optional<SessionEvent> ProtocolSession::EventQueue::pop() {
 
 ProtocolSession::ProtocolSession(SessionConfig config, TimePoint now)
     : config_{config}, parser_{config.parser}, assembler_{config.assembler}, out_{config.outbound},
-      now_{now} {}
+      now_{now}, last_frame_{now}, last_ping_{now}, closing_since_{now}, window_start_{now} {}
 
 // ---- input ------------------------------------------------------------------------------------
 
@@ -82,7 +82,11 @@ std::optional<SessionEvent> ProtocolSession::pump(MutableByteView& input) {
 }
 
 std::optional<SessionEvent> ProtocolSession::on_frame(const FrameEvent& frame) {
+    if (const std::optional<ProtocolFailure> over_limit = count_frame(frame)) {
+        return fail_connection(*over_limit);
+    }
     const auto step = assembler_.handle(frame);
+    track_message();
     if (!step) {
         return fail_connection(step.error());
     }
@@ -116,6 +120,7 @@ std::optional<SessionEvent> ProtocolSession::on_control(const MessageEvent& even
         out_.queue_pong(event.data);  // same payload, next frame boundary (RFC 6455 section 5.5.3)
         out.kind = SessionEvent::Kind::Ping;
     } else {
+        ping_sent_at_.reset();  // the peer is alive
         out.kind = SessionEvent::Kind::Pong;
     }
     return out;
@@ -162,7 +167,9 @@ void ProtocolSession::begin_close(std::optional<std::uint16_t> code, std::string
     close_sent_ = true;
     sent_code_ = code.value_or(static_cast<std::uint16_t>(CloseCode::NoStatusReceived));
     state_ = SessionState::Closing;
+    closing_since_ = now_;
     assembler_.discard_message();
+    message_started_.reset();
 }
 
 Result<void> ProtocolSession::close(CloseCode code, std::string_view reason) {
@@ -267,8 +274,88 @@ void ProtocolSession::give_up() {
     emit_closed(false);
 }
 
+// ---- time -------------------------------------------------------------------------------------
+
+bool ProtocolSession::elapsed(TimePoint now, TimePoint since, std::chrono::milliseconds limit) {
+    return limit > std::chrono::milliseconds::zero() && now - since >= limit;
+}
+
+/// Rate limits (SECURITY_DESIGN T7): data frames are counted when their header arrives, control
+/// frames when they complete; both per window of at least one second, reset by tick().
+std::optional<ProtocolFailure> ProtocolSession::count_frame(const FrameEvent& frame) {
+    if (frame.kind == FrameEvent::Kind::End) {
+        last_frame_ = now_;
+    }
+    const bool control = is_control(frame.header.opcode);
+    if (!control && frame.kind == FrameEvent::Kind::Header) {
+        const std::uint32_t limit = config_.max_data_frames_per_second;
+        if (limit != 0 && ++data_in_window_ > limit) {
+            return ProtocolFailure{CloseCode::PolicyViolation, "data frame rate limit exceeded"};
+        }
+    }
+    if (control && frame.kind == FrameEvent::Kind::End) {
+        const std::uint32_t limit = config_.max_control_frames_per_second;
+        if (limit != 0 && ++control_in_window_ > limit) {
+            return ProtocolFailure{CloseCode::PolicyViolation, "control frame rate limit exceeded"};
+        }
+    }
+    return std::nullopt;
+}
+
+/// The incomplete-message timer runs from the first fragment's header until FIN (or a discard).
+void ProtocolSession::track_message() {
+    if (!assembler_.in_message()) {
+        message_started_.reset();
+    } else if (!message_started_) {
+        message_started_ = now_;
+    }
+}
+
 void ProtocolSession::tick(TimePoint now) {
     now_ = std::max(now_, now);
+    if (state_ == SessionState::Closed) {
+        return;
+    }
+    if (now_ - window_start_ >= std::chrono::seconds{1}) {
+        window_start_ = now_;
+        control_in_window_ = 0;
+        data_in_window_ = 0;
+    }
+    run_timers();
+}
+
+void ProtocolSession::run_timers() {
+    if (state_ == SessionState::Closing) {  // only the close timeout matters while closing
+        if (elapsed(now_, closing_since_, config_.close_timeout)) {
+            emit_closed(false);
+        }
+        return;
+    }
+    if (elapsed(now_, last_frame_, config_.idle_timeout)) {
+        begin_close(static_cast<std::uint16_t>(CloseCode::GoingAway), "idle timeout");
+    } else if (ping_sent_at_ && elapsed(now_, *ping_sent_at_, config_.pong_timeout)) {
+        begin_close(static_cast<std::uint16_t>(CloseCode::GoingAway), "pong timeout");
+    } else if (message_started_ &&
+               elapsed(now_, *message_started_, config_.incomplete_message_timeout)) {
+        if (const auto event = fail_connection(
+                ProtocolFailure{CloseCode::PolicyViolation, "incomplete message timeout"})) {
+            queue_.push(*event);
+        }
+    } else {
+        heartbeat();
+    }
+}
+
+/// A quiet connection is pinged (RFC 6455 section 5.5.2); one Ping at a time, counted from the
+/// later of the last frame and the last Ping so that an active peer is never pinged.
+void ProtocolSession::heartbeat() {
+    if (ping_sent_at_ || !elapsed(now_, std::max(last_frame_, last_ping_), config_.ping_interval)) {
+        return;
+    }
+    if (out_.queue_ping({}).has_value()) {
+        ping_sent_at_ = now_;
+        last_ping_ = now_;
+    }
 }
 
 }  // namespace wsrv

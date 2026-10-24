@@ -151,6 +151,12 @@ private:
     void check_close_completion();
     void emit_closed(bool clean);
     void give_up();
+    [[nodiscard]] std::optional<ProtocolFailure> count_frame(const FrameEvent& frame);
+    void track_message();
+    void run_timers();
+    void heartbeat();
+    [[nodiscard]] static bool
+    elapsed(TimePoint now, TimePoint since, std::chrono::milliseconds limit);
 
     SessionConfig config_;
     FrameParser parser_;
@@ -165,6 +171,16 @@ private:
     bool failed_ = false;          // the peer violated the protocol; input is ignored
     std::uint16_t sent_code_ = 0;  // the code of our Close
     std::string_view failure_reason_;
+    // timers and rates (all measured against now_, which only tick() advances)
+    TimePoint last_frame_;                      // last complete frame received (idle)
+    TimePoint last_ping_;                       // last Ping we sent (heartbeat)
+    TimePoint closing_since_;                   // when state_ left Open (close timeout)
+    TimePoint window_start_;                    // start of the current rate-limit window
+    std::optional<TimePoint> ping_sent_at_;     // a Ping is waiting for its Pong
+    std::optional<TimePoint> message_started_;  // a fragmented message is in progress since
+    std::uint32_t control_in_window_ = 0;
+    std::uint32_t data_in_window_ = 0;
+
     std::optional<std::uint16_t> peer_code_;
     std::array<char, kMaxCloseReason> peer_reason_{};
     std::size_t peer_reason_length_ = 0;
