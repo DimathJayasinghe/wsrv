@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cerrno>
 #include <utility>
 
@@ -17,8 +18,8 @@ struct Pipe {
     int read_end = -1;
     int write_end = -1;
     Pipe() {
-        int fds[2];
-        EXPECT_EQ(::pipe2(fds, O_CLOEXEC), 0);
+        std::array<int, 2> fds{};
+        EXPECT_EQ(::pipe2(fds.data(), O_CLOEXEC), 0);
         read_end = fds[0];
         write_end = fds[1];
     }

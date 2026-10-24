@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <cerrno>
+#include <vector>
 
 namespace {
 
@@ -16,22 +17,22 @@ struct Mapping {
 };
 
 TEST(IoError, MapsTheErrnoValuesTheServerCaresAbout) {
-    const Mapping table[] = {{EAGAIN, ErrorCode::WouldBlock},
-                             {EWOULDBLOCK, ErrorCode::WouldBlock},
-                             {EPIPE, ErrorCode::ConnectionClosed},
-                             {ECONNRESET, ErrorCode::ConnectionClosed},
-                             {ECONNABORTED, ErrorCode::ConnectionClosed},
-                             {ETIMEDOUT, ErrorCode::ConnectionClosed},
-                             {ENOTCONN, ErrorCode::ConnectionClosed},
-                             {EMFILE, ErrorCode::FdLimit},
-                             {ENFILE, ErrorCode::FdLimit},
-                             {ENOBUFS, ErrorCode::FdLimit},
-                             {ENOMEM, ErrorCode::FdLimit},
-                             {EADDRINUSE, ErrorCode::AddressInUse},
-                             {EIO, ErrorCode::Io},
-                             {EBADF, ErrorCode::Io},
-                             {EACCES, ErrorCode::Io},
-                             {9999, ErrorCode::Io}};
+    const std::vector<Mapping> table{{EAGAIN, ErrorCode::WouldBlock},
+                                     {EWOULDBLOCK, ErrorCode::WouldBlock},
+                                     {EPIPE, ErrorCode::ConnectionClosed},
+                                     {ECONNRESET, ErrorCode::ConnectionClosed},
+                                     {ECONNABORTED, ErrorCode::ConnectionClosed},
+                                     {ETIMEDOUT, ErrorCode::ConnectionClosed},
+                                     {ENOTCONN, ErrorCode::ConnectionClosed},
+                                     {EMFILE, ErrorCode::FdLimit},
+                                     {ENFILE, ErrorCode::FdLimit},
+                                     {ENOBUFS, ErrorCode::FdLimit},
+                                     {ENOMEM, ErrorCode::FdLimit},
+                                     {EADDRINUSE, ErrorCode::AddressInUse},
+                                     {EIO, ErrorCode::Io},
+                                     {EBADF, ErrorCode::Io},
+                                     {EACCES, ErrorCode::Io},
+                                     {9999, ErrorCode::Io}};
     for (const Mapping& m : table) {
         EXPECT_EQ(wsrv::map_errno(m.err, "ctx").code, m.expected) << m.err;
     }
