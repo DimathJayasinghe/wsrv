@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <random>
 #include <string>
@@ -112,11 +113,71 @@ Collected pipeline(const std::vector<std::byte>& bytes,
             }
             if (message_event->has_value()) {
                 const MessageEvent& e = **message_event;
-                out.events.push_back(Ev{e.kind,
-                                        e.type,
-                                        std::string{wsrv::as_chars(e.data)},
-                                        e.final,
-                                        e.control_opcode});
+                out.events.push_back(
+                    Ev{e.kind,
+                       e.type,
+                       std::string{wsrv::as_chars(e.data)} + std::string{wsrv::as_chars(e.tail)},
+                       e.final,
+                       e.control_opcode});
+            }
+        }
+    }
+    return out;
+}
+
+enum class DiscardWhen : std::uint8_t { AfterFirstDataPayload, AfterFirstControl };
+
+/// Like pipeline(), but calls discard_message() once at the chosen moment, the way the session does
+/// after it sends a Close (docs/FRAGMENTATION.md, EC-F30).
+Collected pipeline_with_discard(const std::vector<std::byte>& bytes,
+                                const AssemblerConfig& config,
+                                std::size_t chunk,
+                                DiscardWhen when) {
+    wsrv::FrameParser parser;
+    wsrv::MessageAssembler assembler{config};
+    Collected out;
+    bool discarded = false;
+    Opcode frame_opcode = Opcode::Text;
+    for (std::size_t pos = 0; pos < bytes.size(); pos += chunk) {
+        const std::size_t take = std::min(chunk, bytes.size() - pos);
+        std::vector<std::byte> buffer{bytes.begin() + static_cast<std::ptrdiff_t>(pos),
+                                      bytes.begin() + static_cast<std::ptrdiff_t>(pos + take)};
+        wsrv::MutableByteView input{buffer};
+        for (;;) {
+            const auto frame_event = parser.next(input);
+            if (!frame_event) {
+                out.failure = frame_event.error();
+                return out;
+            }
+            if (!frame_event->has_value()) {
+                break;
+            }
+            const wsrv::FrameEvent& fe = **frame_event;
+            if (fe.kind == wsrv::FrameEvent::Kind::Header) {
+                frame_opcode = fe.header.opcode;
+            }
+            const auto message_event = assembler.handle(fe);
+            if (!message_event) {
+                out.failure = message_event.error();
+                return out;
+            }
+            if (message_event->has_value()) {
+                const MessageEvent& e = **message_event;
+                out.events.push_back(
+                    Ev{e.kind,
+                       e.type,
+                       std::string{wsrv::as_chars(e.data)} + std::string{wsrv::as_chars(e.tail)},
+                       e.final,
+                       e.control_opcode});
+            }
+            const bool trigger =
+                when == DiscardWhen::AfterFirstDataPayload
+                    ? fe.kind == wsrv::FrameEvent::Kind::Payload && !wsrv::is_control(frame_opcode)
+                    : fe.kind == wsrv::FrameEvent::Kind::End && wsrv::is_control(frame_opcode);
+            if (trigger && !discarded) {
+                discarded = true;
+                out.events.clear();  // what came before the discard was delivered legitimately
+                assembler.discard_message();
             }
         }
     }
@@ -271,6 +332,87 @@ TEST(MessageAssembler, ACloseFrameMidMessageIsDeliveredAndTheMessageCanBeDiscard
     EXPECT_TRUE(assembler.in_message());
     assembler.discard_message();
     EXPECT_FALSE(assembler.in_message());
+}
+
+// ---- discard_message(): the session drops a message it will not deliver (EC-F30)
+// -----------------------------------------------------------------------------------------------
+
+/// The rest of the discarded message still arrives after the discard; none of it may surface, and
+/// the stream after the discarded message must be clean.
+TEST(MessageAssembler, DiscardInTheMiddleOfAFrameSwallowsTheRestOfThatFrame) {  // EC-F26, EC-F30
+    // header (6 bytes) + 4 payload bytes in the first read; the other 4 arrive after the discard.
+    const auto bytes = wire({{Opcode::Text, true, "abcdefgh"}, {Opcode::Text, true, "next"}});
+    for (const AssemblerConfig& config : {buffered(), streaming()}) {
+        const Collected out =
+            pipeline_with_discard(bytes, config, 10, DiscardWhen::AfterFirstDataPayload);
+        EXPECT_FALSE(out.failure.has_value()) << config.streaming;
+        ASSERT_EQ(out.events.size(), 1U) << config.streaming;
+        EXPECT_EQ(out.events[0].data, "next") << config.streaming;
+    }
+}
+
+TEST(MessageAssembler, DiscardMidFrameStreamingBinaryDeliversNoFurtherParts) {  // EC-F30
+    const auto bytes = wire({{Opcode::Binary, false, "abcdefgh"},
+                             {Opcode::Continuation, true, "ijkl"},
+                             {Opcode::Binary, true, "next"}});
+    const Collected out =
+        pipeline_with_discard(bytes, streaming(), 12, DiscardWhen::AfterFirstDataPayload);
+    EXPECT_FALSE(out.failure.has_value());
+    EXPECT_EQ(out.events, (std::vector<Ev>{part(MessageType::Binary, "next", true)}));
+}
+
+TEST(MessageAssembler, DiscardInsideAMultiByteCharacterIsNotAnEncodingError) {  // EC-F30, EC-U06
+    // The cut lands inside the euro sign; the validator must not be asked about the rest.
+    const auto bytes = wire({{Opcode::Text, true, "a\xE2\x82\xAC"}, {Opcode::Text, true, "next"}});
+    const Collected out =
+        pipeline_with_discard(bytes, streaming(), 8, DiscardWhen::AfterFirstDataPayload);
+    EXPECT_FALSE(out.failure.has_value());
+    EXPECT_EQ(out.events, (std::vector<Ev>{part(MessageType::Text, "next", true)}));
+}
+
+TEST(MessageAssembler, ContinuationsOfADiscardedMessageAreSwallowedUntilFin) {  // EC-F30, F26
+    // The server sent Close mid-message, but the peer is still sending the rest of that message
+    // (RFC 6455 section 5.5.1: keep reading until the peer's Close). Not a protocol error.
+    const auto bytes = wire({{Opcode::Text, false, "ab"},
+                             {Opcode::Ping, true, "p"},
+                             {Opcode::Continuation, false, "cd"},
+                             {Opcode::Continuation, true, "ef"},
+                             {Opcode::Text, true, "next"}});
+    for (const AssemblerConfig& config : {buffered(), streaming()}) {
+        const Collected out =
+            pipeline_with_discard(bytes, config, 4096, DiscardWhen::AfterFirstControl);
+        EXPECT_FALSE(out.failure.has_value()) << config.streaming;
+        ASSERT_EQ(out.events.size(), 1U) << config.streaming;
+        EXPECT_EQ(out.events[0].data, "next") << config.streaming;
+    }
+}
+
+TEST(MessageAssembler, ANewDataFrameWhileDrainingADiscardedMessageIsStillAProtocolError) {  // F09
+    const auto bytes = wire(
+        {{Opcode::Text, false, "ab"}, {Opcode::Ping, true, "p"}, {Opcode::Text, true, "oops"}});
+    const Collected out =
+        pipeline_with_discard(bytes, buffered(), 4096, DiscardWhen::AfterFirstControl);
+    ASSERT_TRUE(out.failure.has_value());
+    EXPECT_EQ(out.failure->code, CloseCode::ProtocolError);
+}
+
+TEST(MessageAssembler, LimitsStillApplyWhileDrainingADiscardedMessage) {  // EC-F19, EC-F20
+    const auto too_big = wire({{Opcode::Text, false, "ab"},
+                               {Opcode::Ping, true, "p"},
+                               {Opcode::Continuation, true, std::string(11, 'x')}});
+    const Collected big =
+        pipeline_with_discard(too_big, buffered(10), 4096, DiscardWhen::AfterFirstControl);
+    ASSERT_TRUE(big.failure.has_value());
+    EXPECT_EQ(big.failure->code, CloseCode::MessageTooBig);
+
+    std::vector<Spec> flood{{Opcode::Text, false, "a"}, {Opcode::Ping, true, "p"}};
+    for (int i = 0; i < 4; ++i) {
+        flood.push_back({Opcode::Continuation, false, ""});
+    }
+    const Collected many = pipeline_with_discard(
+        wire(flood), buffered(1 << 20, 3), 4096, DiscardWhen::AfterFirstControl);
+    ASSERT_TRUE(many.failure.has_value());
+    EXPECT_EQ(many.failure->code, CloseCode::PolicyViolation);
 }
 
 // ---- limits
@@ -567,6 +709,41 @@ TEST(MessageAssemblerStreaming,
         ASSERT_EQ(whole.events.size(), 1U);
         EXPECT_EQ(whole.events[0].data, joined) << round;
     }
+}
+
+TEST(MessageAssemblerStreaming, AHeldCharacterIsCompletedWithoutCopyingTheChunk) {  // I2, EC-F29
+    // The euro sign is split across two fragments; the second fragment arrives as one 1,001-byte
+    // read. The completed character must come from a 4-byte internal array and the remainder of
+    // the read must be handed on as a view into the caller's own buffer, not copied.
+    const auto bytes = wire({{Opcode::Text, false, "x\xE2\x82"},
+                             {Opcode::Continuation, true, "\xAC" + std::string(1000, 'y')}});
+    wsrv::FrameParser parser;
+    wsrv::MessageAssembler assembler{streaming()};
+    std::vector<std::byte> buffer = bytes;
+    wsrv::MutableByteView input{buffer};
+    std::vector<MessageEvent> seen;
+    std::vector<std::string> heads;
+    for (;;) {
+        const auto fe = parser.next(input);
+        ASSERT_TRUE(fe.has_value());
+        if (!fe->has_value()) {
+            break;
+        }
+        const auto me = assembler.handle(**fe);
+        ASSERT_TRUE(me.has_value());
+        if (me->has_value()) {
+            seen.push_back(**me);
+            heads.emplace_back(wsrv::as_chars((*me)->data));
+        }
+    }
+    ASSERT_EQ(seen.size(), 2U);
+    EXPECT_EQ(heads[0], "x");
+    EXPECT_EQ(heads[1], "\xE2\x82\xAC");  // data: only the completed character
+    EXPECT_LE(seen[1].data.size(), 4U);
+    EXPECT_EQ(seen[1].tail.size(), 1000U);          // tail: the rest of the read
+    EXPECT_GE(seen[1].tail.data(), buffer.data());  // a view into the caller's buffer
+    EXPECT_LT(seen[1].tail.data(), buffer.data() + buffer.size());
+    EXPECT_TRUE(seen[1].final);
 }
 
 }  // namespace

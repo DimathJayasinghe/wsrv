@@ -70,7 +70,8 @@ run(wsrv::ByteView data, const wsrv::AssemblerConfig& config, std::span<const st
                 continue;
             }
             const wsrv::MessageEvent& e = **message_event;
-            const std::string text{wsrv::as_chars(e.data)};
+            const std::string text =
+                std::string{wsrv::as_chars(e.data)} + std::string{wsrv::as_chars(e.tail)};
             if (e.kind == wsrv::MessageEvent::Kind::Control) {
                 out.items.push_back(Item{true, wsrv::MessageType::Text, e.control_opcode, text});
             } else if (e.kind == wsrv::MessageEvent::Kind::Message) {
@@ -79,7 +80,9 @@ run(wsrv::ByteView data, const wsrv::AssemblerConfig& config, std::span<const st
                 streamed += text;  // a Part
                 if (e.type == wsrv::MessageType::Text) {
                     WSRV_ASSERT(wsrv::is_valid_utf8(e.data));  // every part decodes on its own
+                    WSRV_ASSERT(wsrv::is_valid_utf8(e.tail));
                 }
+                WSRV_ASSERT(e.tail.empty() || e.data.size() <= 4);  // tail follows a lone character
                 if (e.final) {
                     out.items.push_back(Item{false, e.type, wsrv::Opcode::Ping, streamed});
                     streamed.clear();

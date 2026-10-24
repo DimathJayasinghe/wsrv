@@ -16,6 +16,7 @@ std::unexpected<ProtocolFailure> MessageAssembler::fail_with(CloseCode code,
 }
 
 void MessageAssembler::discard_message() noexcept {
+    draining_ = in_message_;  // the peer's remaining fragments of this message are still coming
     in_message_ = false;
     fragments_ = 0;
     total_ = 0;
@@ -28,6 +29,7 @@ void MessageAssembler::discard_message() noexcept {
 
 void MessageAssembler::reset() noexcept {
     discard_message();
+    draining_ = false;
     failed_ = false;
     frame_ = FrameHeader{};
     frame_received_ = 0;
@@ -56,12 +58,12 @@ MessageAssembler::StepResult MessageAssembler::handle(const FrameEvent& event) {
 /// Sequencing, fragment-count and size checks, all before any payload byte of this frame is seen.
 FrameResult<void> MessageAssembler::start_or_continue(const FrameHeader& header) {
     if (header.opcode == Opcode::Continuation) {
-        if (!in_message_) {
+        if (!in_message_ && !draining_) {
             return fail_with(CloseCode::ProtocolError,
                              "continuation frame without a message in progress");
         }
     } else {
-        if (in_message_) {
+        if (in_message_ || draining_) {
             return fail_with(CloseCode::ProtocolError,
                              "new data frame during a fragmented message");
         }
@@ -105,6 +107,9 @@ MessageAssembler::StepResult MessageAssembler::on_payload(const FrameEvent& even
     total_ += chunk.size();
     frame_received_ += chunk.size();
     WSRV_ASSERT(total_ <= config_.max_message_size);  // guaranteed by the header check
+    if (draining_) {
+        return std::optional<MessageEvent>{};  // discarded message: counted, never delivered
+    }
     const bool last_of_message = frame_.fin && frame_received_ == frame_.payload_length;
     return config_.streaming ? stream_payload(chunk, last_of_message) : buffer_payload(chunk);
 }
@@ -128,12 +133,27 @@ MessageAssembler::StepResult MessageAssembler::stream_payload(ByteView chunk,
     }
     final_part_sent_ = final_part_sent_ || last_of_message;
     return std::optional<MessageEvent>{
-        MessageEvent{MessageEvent::Kind::Part, type_, chunk, last_of_message, Opcode::Ping}};
+        MessageEvent{MessageEvent::Kind::Part, type_, chunk, {}, last_of_message, Opcode::Ping}};
+}
+
+/// Bytes of `chunk` that, appended to the held bytes, complete the held character; the character is
+/// left in join_ (held + those bytes). 0 means the chunk ends before the character does.
+std::size_t MessageAssembler::complete_held_character(ByteView chunk) {
+    std::copy(held_.begin(), held_.begin() + static_cast<std::ptrdiff_t>(held_len_), join_.begin());
+    const std::size_t room = std::min(chunk.size(), join_.size() - held_len_);
+    for (std::size_t used = 1; used <= room; ++used) {
+        join_[held_len_ + used - 1] = chunk[used - 1];
+        if (is_valid_utf8(ByteView{join_}.first(held_len_ + used))) {
+            return used;
+        }
+    }
+    return 0;
 }
 
 /// Text parts must end on a code-point boundary: bytes of an unfinished character are held back (at
-/// most 3) and delivered with the next part. When a character spans chunks the held bytes and the
-/// chunk are joined in a scratch buffer; otherwise the part is a zero-copy view of the chunk.
+/// most 3) and delivered with the next part. A character that spans chunks is completed in the
+/// 4-byte join_ array and delivered as `data`, the rest of the chunk follows as `tail`; nothing of
+/// the chunk is copied, so memory stays O(1) however large the peer's reads are.
 MessageAssembler::StepResult MessageAssembler::stream_text_payload(ByteView chunk,
                                                                    bool last_of_message) {
     if (!utf8_.feed(chunk)) {
@@ -143,25 +163,33 @@ MessageAssembler::StepResult MessageAssembler::stream_text_payload(ByteView chun
     if (last_of_message && pending != 0) {
         return fail_with(CloseCode::InvalidPayload, "text message ends inside a character");
     }
-    const std::size_t joined_size = held_len_ + chunk.size();
-    const std::size_t deliver_size = joined_size - pending;
-    ByteView joined = chunk;
+    ByteView completed;
+    ByteView rest = chunk;
     if (held_len_ > 0) {
-        scratch_.assign(held_.begin(), held_.begin() + static_cast<std::ptrdiff_t>(held_len_));
-        scratch_.insert(scratch_.end(), chunk.begin(), chunk.end());
-        joined = scratch_;
+        const std::size_t used = complete_held_character(chunk);
+        if (used == 0) {  // still inside the character: hold everything (pending == held + chunk)
+            std::copy(
+                chunk.begin(), chunk.end(), held_.begin() + static_cast<std::ptrdiff_t>(held_len_));
+            held_len_ = pending;
+            return std::optional<MessageEvent>{};
+        }
+        completed = ByteView{join_}.first(held_len_ + used);
+        rest = chunk.subspan(used);
     }
-    const ByteView deliver = joined.first(deliver_size);
-    std::copy(
-        joined.begin() + static_cast<std::ptrdiff_t>(deliver_size), joined.end(), held_.begin());
+    const ByteView deliver = rest.first(rest.size() - pending);
+    std::copy(deliver.end(), rest.end(), held_.begin());
     held_len_ = pending;
     final_part_sent_ = final_part_sent_ || last_of_message;
-    if (deliver.empty() && !last_of_message) {
-        return std::optional<MessageEvent>{};  // everything is held back until the character
-                                               // completes
+    if (completed.empty() && deliver.empty() && !last_of_message) {
+        return std::optional<MessageEvent>{};  // nothing to hand on yet
     }
-    return std::optional<MessageEvent>{
-        MessageEvent{MessageEvent::Kind::Part, type_, deliver, last_of_message, Opcode::Ping}};
+    const bool lead_is_completed = !completed.empty();
+    return std::optional<MessageEvent>{MessageEvent{MessageEvent::Kind::Part,
+                                                    type_,
+                                                    lead_is_completed ? completed : deliver,
+                                                    lead_is_completed ? deliver : ByteView{},
+                                                    last_of_message,
+                                                    Opcode::Ping}};
 }
 
 MessageAssembler::StepResult MessageAssembler::on_end(const FrameHeader& header) {
@@ -169,6 +197,7 @@ MessageAssembler::StepResult MessageAssembler::on_end(const FrameHeader& header)
         return std::optional<MessageEvent>{MessageEvent{MessageEvent::Kind::Control,
                                                         MessageType::Text,
                                                         ByteView{control_}.first(control_len_),
+                                                        {},
                                                         true,
                                                         header.opcode}};
     }
@@ -176,6 +205,10 @@ MessageAssembler::StepResult MessageAssembler::on_end(const FrameHeader& header)
         return std::optional<MessageEvent>{};  // more fragments to come
     }
     in_message_ = false;
+    if (draining_) {
+        draining_ = false;  // the discarded message is complete; the next frame starts a new one
+        return std::optional<MessageEvent>{};
+    }
     if (type_ == MessageType::Text && !utf8_.at_boundary()) {
         return fail_with(CloseCode::InvalidPayload, "text message ends inside a character");
     }
@@ -185,11 +218,11 @@ MessageAssembler::StepResult MessageAssembler::on_end(const FrameHeader& header)
         }
         final_part_sent_ = true;  // a zero-length final frame: close the stream with an empty part
         return std::optional<MessageEvent>{
-            MessageEvent{MessageEvent::Kind::Part, type_, {}, true, Opcode::Ping}};
+            MessageEvent{MessageEvent::Kind::Part, type_, {}, {}, true, Opcode::Ping}};
     }
     clear_buffer_ = true;
     return std::optional<MessageEvent>{
-        MessageEvent{MessageEvent::Kind::Message, type_, buffer_.view(), true, Opcode::Ping}};
+        MessageEvent{MessageEvent::Kind::Message, type_, buffer_.view(), {}, true, Opcode::Ping}};
 }
 
 }  // namespace wsrv

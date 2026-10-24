@@ -26,7 +26,7 @@ All checks happen when the frame **header** arrives, before its payload: sequenc
 ## 3. Control frames in the middle
 Ping, Pong and Close may appear between fragments (an application must be able to answer a Ping even during a long upload). The assembler reports each as a `Control` event and leaves the message state alone. Two consequences we test:
 - Control frames do not count as fragments and do not count toward the message size.
-- A Close frame mid-message is reported; the session then calls `discard_message()` (the partial message is dropped, never delivered).
+- A Close frame mid-message is reported; the session then calls `discard_message()` (the partial message is dropped, never delivered). That call is legal at any moment, even in the middle of a frame: the assembler enters a *draining* state and swallows the rest of that frame and the continuation frames up to FIN, still counting them against the limits. Without it, the tail of a half-delivered frame would surface as a "complete" truncated message, or the peer's still-arriving fragments would look like a continuation without a message (1002), when the peer is behaving correctly. A review found exactly that hole; `DiscardInTheMiddleOfAFrame...` and friends now pin it.
 
 ## 4. UTF-8 across fragments, with a Ping in the middle
 Text must be valid UTF-8, validated **as the bytes arrive** (so an attacker's garbage is rejected at the first bad byte with `1007`, not after the final fragment). The validator state lives across frames, so this works:
@@ -52,7 +52,7 @@ A message that ends in the middle of a character (`..E2 82` with FIN) is `1007`.
 ## 7. Pitfalls we hit
 1. **Order of checks matters for DoS.** Checking `declared length + total` before reading the payload is what prevents a huge allocation; the check uses subtraction (`declared > max - total`) so it cannot overflow.
 2. **A view is only valid until the next call.** The `Message` event's data lives in the assembler's buffer, which is cleared lazily at the *next* `handle()`; delivering and clearing in the same call would hand the application a dangling view.
-3. **Streaming text needs a scratch buffer only when a character spans chunks**; the common case stays zero-copy.
+3. **Streaming text never copies the chunk.** A character that spans chunks is completed in a fixed 4-byte array and delivered as `data`; the rest of the chunk follows as `tail`, still a view into the read buffer. (The first version joined held bytes and chunk in a growing vector: peer-influenced allocation of the size of a whole read, kept for the connection's life. The review flagged it.)
 
 ## 8. Exercises
 1. Frames: `Text fin=0 "ab"`, `Ping "p"`, `Continuation fin=1 "cd"`. Which events come out, in what order?

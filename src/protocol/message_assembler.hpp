@@ -12,7 +12,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <vector>
 
 namespace wsrv {
 
@@ -41,6 +40,11 @@ struct MessageEvent {
     Kind kind = Kind::Message;
     MessageType type = MessageType::Text;  // Message and Part
     ByteView data;
+    /// Part: bytes that follow `data` in the same part. Only set when a character held back from
+    /// the previous chunk was completed: `data` is then that 1-4 byte character (from an internal
+    /// array) and `tail` the rest of the chunk, still a view into the caller's buffer. Both are
+    /// code-point aligned, so a consumer may deliver them as two parts or join them.
+    ByteView tail;
     bool final = false;                    // Part: last part of the message
     Opcode control_opcode = Opcode::Ping;  // Control
 };
@@ -56,6 +60,9 @@ struct MessageEvent {
 ///  mid-fragment;
 ///    a character may span fragments (and interleaved control frames).
 /// A Close frame does not end the message state by itself: the session calls discard_message().
+/// After that the rest of the message (the remainder of the current frame, then its continuation
+/// frames up to FIN) is read and counted against the limits but never delivered or validated, so
+/// the peer may keep sending it until its own Close arrives (RFC 6455 section 5.5.1, EC-F30).
 /// After a failure every call fails until reset().
 ///
 /// Thread-affinity: loop-thread-only (not synchronised).
@@ -72,7 +79,9 @@ public:
         return in_message_;
     }
 
-    /// Drop the message in progress (used after a Close frame arrives mid-message).
+    /// Drop the message in progress, wherever it is, even in the middle of a frame (used when the
+    /// session decides to close). Nothing more of that message is delivered; the frames that
+    /// complete it are drained silently. A no-op when no message is in progress.
     void discard_message() noexcept;
 
     /// Forget everything, including a failure.
@@ -90,6 +99,7 @@ private:
     [[nodiscard]] StepResult buffer_payload(ByteView chunk);
     [[nodiscard]] StepResult stream_payload(ByteView chunk, bool last_of_message);
     [[nodiscard]] StepResult stream_text_payload(ByteView chunk, bool last_of_message);
+    [[nodiscard]] std::size_t complete_held_character(ByteView chunk);
 
     AssemblerConfig config_;
     bool failed_ = false;
@@ -97,6 +107,7 @@ private:
 
     // message state
     bool in_message_ = false;
+    bool draining_ = false;  // discarded: swallow the rest of the message up to its FIN frame
     MessageType type_ = MessageType::Text;
     std::size_t fragments_ = 0;
     std::size_t total_ =
@@ -107,8 +118,8 @@ private:
     bool final_part_sent_ = false;
     std::array<std::byte, 3> held_{};  // streaming text: bytes of an unfinished character
     std::size_t held_len_ = 0;
-    std::vector<std::byte>
-        scratch_;  // streaming text: held bytes + chunk when a character spans chunks
+    std::array<std::byte, 4>
+        join_{};  // streaming text: the held bytes + the bytes that finish them
 
     // frame state
     FrameHeader frame_;
