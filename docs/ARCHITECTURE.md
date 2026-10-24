@@ -79,7 +79,7 @@ Forbidden: `protocol → net`, `protocol → <sys/*>`, `net → protocol`, any c
 | `OutboundScheduler` | Auto-fragmentation of outbound messages; control-frame priority at frame boundaries; one open data message at a time |
 | `MessageWriter` | Streaming send handle with backpressure; closes 1011 if dropped unfinished |
 | `CloseCode` | Legality table and helpers |
-| `ProtocolSession` | FSM: `Connecting → Open → Closing → Closed`; orchestrates parser/assembler/ping/close; **input** `feed(bytes)`, `tick(now)`, `send(...)`; **output** `drain_events()`, `drain_output()` |
+| `ProtocolSession` | FSM: `Open → Closing → Closed` (constructed after the 101 response); orchestrates parser/assembler/scheduler/ping/close; **input** `next_event(input)`, `tick(now)`, `send_*()`, `close()`, `on_transport_closed()`; **output** `pending_output()` / `consume_output(n)` (surface below) |
 | `IExtension` | Frame transform hook (RSV bits, per-message transform) |
 
 `ProtocolSession` surface (as implemented in M4, `src/protocol/session.hpp`):

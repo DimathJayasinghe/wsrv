@@ -44,7 +44,7 @@ Per-fragment checks, in this order (fail closed at the **first** violation):
 3. Fragment count ≤ `max_fragments` → else 1008 (EC-F20, EC-F28).
 4. Total size (checked arithmetic) ≤ `max_message_size` → else 1009 at the offending fragment (EC-F19, EC-F21).
 5. Text only: feed bytes to the incremental UTF-8 validator; invalid ⇒ 1007 immediately, without waiting for `FIN` (EC-U06).
-6. Timer: an unfinished message must progress within `incomplete_message_timeout` (default 30 s) → else 1008 (EC-F27). This stops a peer holding buffers forever by never sending the final fragment.
+6. Timer: a *fragmented* message, measured from the end of its first fragment, must reach FIN within `incomplete_message_timeout` (default 30 s) → else 1008 (EC-F27). One slow single frame is covered by the idle timer (no complete frame for `idle_timeout`). This stops a peer holding buffers forever by never sending the final fragment.
 
 A zero-length final continuation frame is valid and completes the message (EC-F37). A Close frame received mid-message starts the close handshake and the partial message is discarded, never delivered (EC-F26).
 

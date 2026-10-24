@@ -46,9 +46,66 @@ std::optional<SessionEvent> ProtocolSession::EventQueue::pop() {
     return event;
 }
 
+namespace {
+
+[[nodiscard]] Error bad_config(std::string_view field) {
+    return Error{ErrorCode::InvalidConfig, field};
+}
+
+[[nodiscard]] bool duration_ok(std::chrono::milliseconds value) {
+    return value >= std::chrono::milliseconds::zero() && value <= kMaxConfiguredDuration;
+}
+
+[[nodiscard]] bool in_range(std::uint64_t value, std::uint64_t ceiling) {
+    return value > 0 && value <= ceiling;
+}
+
+}  // namespace
+
+Result<void> validate(const SessionConfig& config) {
+    for (const std::chrono::milliseconds value : {config.ping_interval,
+                                                  config.pong_timeout,
+                                                  config.idle_timeout,
+                                                  config.close_timeout,
+                                                  config.incomplete_message_timeout}) {
+        if (!duration_ok(value)) {
+            return std::unexpected{bad_config("a timeout is negative or longer than 24 hours")};
+        }
+    }
+    if (config.close_timeout == std::chrono::milliseconds::zero()) {
+        return std::unexpected{bad_config("close_timeout is mandatory (FR-C2)")};
+    }
+    if (config.incomplete_message_timeout == std::chrono::milliseconds::zero()) {
+        return std::unexpected{bad_config("incomplete_message_timeout is mandatory (FR-F11)")};
+    }
+    if (!in_range(config.parser.max_frame_payload, kMaxConfiguredFrame) ||
+        !in_range(config.outbound.max_frame_payload, kMaxConfiguredFrame)) {
+        return std::unexpected{bad_config("a frame payload limit is zero or above 64 MiB")};
+    }
+    if (!in_range(config.assembler.max_message_size, kMaxConfiguredMessage) ||
+        config.assembler.max_fragments == 0) {
+        return std::unexpected{bad_config("max_message_size or max_fragments out of range")};
+    }
+    if (config.outbound.max_queued_bytes < kMessageOverhead ||
+        config.outbound.max_queued_bytes > kMaxConfiguredQueue) {
+        return std::unexpected{bad_config("max_queued_bytes out of range")};
+    }
+    return {};
+}
+
+namespace {
+
+[[nodiscard]] SessionConfig checked(const SessionConfig& config) {
+    WSRV_ASSERT(validate(config).has_value());  // the server builder reports this error earlier
+    return config;
+}
+
+}  // namespace
+
 ProtocolSession::ProtocolSession(SessionConfig config, TimePoint now)
-    : config_{config}, parser_{config.parser}, assembler_{config.assembler}, out_{config.outbound},
-      now_{now}, last_frame_{now}, last_ping_{now}, closing_since_{now}, window_start_{now} {}
+    : config_{checked(config)}, parser_{config.parser}, assembler_{config.assembler},
+      out_{config.outbound}, now_{now}, last_frame_{now}, last_ping_{now}, closing_since_{now},
+      window_start_{now} {}
 
 // ---- input ------------------------------------------------------------------------------------
 
@@ -86,7 +143,7 @@ std::optional<SessionEvent> ProtocolSession::on_frame(const FrameEvent& frame) {
         return fail_connection(*over_limit);
     }
     const auto step = assembler_.handle(frame);
-    track_message();
+    track_message(frame);
     if (!step) {
         return fail_connection(step.error());
     }
@@ -153,6 +210,7 @@ std::optional<SessionEvent> ProtocolSession::on_peer_close(ByteView payload) {
 std::optional<SessionEvent> ProtocolSession::fail_connection(const ProtocolFailure& failure) {
     failed_ = true;
     failure_reason_ = failure.reason;
+    failure_close_sent_ = !close_sent_;
     if (!close_sent_) {
         begin_close(static_cast<std::uint16_t>(failure.code), failure.reason);
     }
@@ -208,7 +266,9 @@ void ProtocolSession::emit_closed(bool clean) {
         event.reason = std::string_view{peer_reason_.data(), peer_reason_length_};
     } else if (failed_ && out_.close_flushed()) {
         event.code = static_cast<CloseCode>(sent_code_);
-        event.reason = failure_reason_;
+        if (failure_close_sent_) {
+            event.reason = failure_reason_;  // our Close carried it; otherwise it was not sent
+        }
     } else {
         event.code = CloseCode::AbnormalClosure;
     }
@@ -277,7 +337,9 @@ void ProtocolSession::give_up() {
 // ---- time -------------------------------------------------------------------------------------
 
 bool ProtocolSession::elapsed(TimePoint now, TimePoint since, std::chrono::milliseconds limit) {
-    return limit > std::chrono::milliseconds::zero() && now - since >= limit;
+    // Compared in milliseconds: widening the limit to nanoseconds could overflow.
+    return limit > std::chrono::milliseconds::zero() &&
+           std::chrono::duration_cast<std::chrono::milliseconds>(now - since) >= limit;
 }
 
 /// Rate limits (SECURITY_DESIGN T7): data frames are counted when their header arrives, control
@@ -302,11 +364,13 @@ std::optional<ProtocolFailure> ProtocolSession::count_frame(const FrameEvent& fr
     return std::nullopt;
 }
 
-/// The incomplete-message timer runs from the first fragment's header until FIN (or a discard).
-void ProtocolSession::track_message() {
+/// The incomplete-message timer (FRAGMENTATION.md section 1.2) is for FRAGMENTED messages: it
+/// starts when the first fragment has been received completely and stops at FIN (or a discard).
+/// A single frame that arrives slowly is covered by the idle timer, which counts complete frames.
+void ProtocolSession::track_message(const FrameEvent& frame) {
     if (!assembler_.in_message()) {
         message_started_.reset();
-    } else if (!message_started_) {
+    } else if (!message_started_ && frame.kind == FrameEvent::Kind::End) {
         message_started_ = now_;
     }
 }

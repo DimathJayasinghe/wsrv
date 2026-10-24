@@ -197,8 +197,10 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | EC-H14, H15, H17, H18, H19, H22 (parser side), H23 | done (M2) | `HttpRequestParser.*`, `HandshakeFlow.*`, `fuzz_http_request` |
 | EC-F01..F17, F19..F22, F24..F26, F28..F30, F37 | done (M3), F29/F30 streaming rules at assembler level (F30: `MessageAssembler.Discard*`, `DiscardMidFrame*`, `ContinuationsOfADiscardedMessage*`, `LimitsStillApplyWhileDraining*`) | `FrameParser.*`, `FrameWriter.*`, `MessageAssembler.*`, `MessageAssemblerStreaming.*`, `Masker.*`, `fuzz_frame_parser`, `fuzz_message_pipeline` |
 | EC-C05..C09 (payload rules) | done (M3) | `ClosePayload.*`, `CloseCode.*` |
-| EC-C01..C05, C10..C17 (session level; C16/C17 as timers, C12 as `close_timeout`) | done (M4) | `Session.*`, `SessionSend.*`, `SessionTimers.*`, `OutboundScheduler.*`, `fuzz_session` |
-| EC-F12, F27, F28 (rates and incomplete-message timer), F31, F32, F36 (single-shot send), N09 (queue bound: `Backpressure`) | done (M4) | `SessionRates.*`, `SessionTimers.AnUnfinishedMessage*`, `OutboundScheduler.ALargeMessage*`, `SessionSend.*` |
+| EC-C01..C05, C10..C15, C17 (session level; C17 as `idle_timeout`, C12 as `close_timeout`) | done (M4) | `Session.*`, `SessionSend.*`, `SessionTimers.*`, `OutboundScheduler.*`, `fuzz_session` |
+| EC-C16 (heartbeat + pong timeout; the metric arrives with M10) | done except the metric (M4) | `SessionTimers.*Pong*`, `SessionTimers.AQuietConnection*` |
+| EC-F12, F28 (data-frame rate incl. zero-length frames and 1-byte fragments), F27 (incomplete-message timer; buffer release is not asserted separately), F31, F32, F36 (single-shot send) | done (M4) | `SessionRates.*`, `SessionTimers.AnUnfinishedMessage*`, `SessionTimers.TheIncompleteTimer*`, `OutboundScheduler.ALargeMessage*`, `OutboundScheduler.EveryRefill*`, `SessionSend.*` |
+| EC-N09 (outbound queue bound: `Backpressure` / `BufferFull`; the close-1008 slow-consumer policy is connection level) | queue bound done (M4), policy M6 | `OutboundScheduler.TheQueueBound*`, `SessionSend.AFullOutboundQueue*` |
 | EC-F23, N04 (peer EOF -> 1006) | done at session level (M4: `on_transport_closed`) | `Session.TheTransportClosing*` |
 | EC-C18 (server shutdown) | M6 | - |
 | EC-F18, F33..F35 (`MessageWriter`) | M6 (needs connection-level backpressure) | - |

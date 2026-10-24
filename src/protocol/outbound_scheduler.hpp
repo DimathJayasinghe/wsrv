@@ -32,12 +32,13 @@ inline constexpr std::size_t kMessageOverhead = 16;
 /// Decides WHAT goes on the wire next (docs/FRAGMENTATION.md section 2.3). Data messages wait
 /// unframed; at every frame boundary the scheduler emits, in this order: the Close frame (nothing
 /// after it, RFC 6455 section 5.5.1), else the pending Pong, the pending Ping, then the next
-/// fragment of the oldest data message. A frame is never interleaved with another: control frames
-/// wait for the data frame in flight, then go first (FR-F10, EC-F32, EC-C01).
+/// fragment of the oldest data message. Exactly one frame is framed at a time, so a frame is never
+/// interleaved with another: control frames wait for the frame in flight (and only that one), then
+/// go first (FR-F10, EC-F32, EC-C01).
 ///
 /// Every queue is bounded: data by max_queued_bytes, Pong / Ping / Close by one slot each (a newer
 /// Pong replaces an unsent one, which RFC 6455 section 5.5.3 allows, EC-C02). Frames are unmasked
-/// (server role). The wire buffer holds at most one data frame plus the control frames.
+/// (server role). The wire buffer holds exactly one frame.
 ///
 /// Thread-affinity: loop-thread-only (not synchronised).
 class OutboundScheduler {

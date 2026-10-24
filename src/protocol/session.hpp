@@ -44,15 +44,32 @@ struct SessionConfig {
     std::uint32_t max_data_frames_per_second = 10000;
 };
 
+/// Hard ceilings (SECURITY_DESIGN section 3: no "unlimited", misconfiguration is capped).
+inline constexpr std::uint64_t kMaxConfiguredFrame = 64ULL << 20;
+inline constexpr std::size_t kMaxConfiguredMessage = std::size_t{1} << 30;
+inline constexpr std::size_t kMaxConfiguredQueue = std::size_t{1} << 30;
+inline constexpr std::chrono::milliseconds kMaxConfiguredDuration = std::chrono::hours{24};
+
+/// Check a SessionConfig against the ceilings above. Rules: every duration within [0, 24 h]
+/// (larger values overflow clock arithmetic and mean "never" anyway); close_timeout and
+/// incomplete_message_timeout greater than zero because FR-C2 and FR-F11 make them mandatory
+/// (only ping_interval, pong_timeout and idle_timeout may be 0 = off); frame, message and queue
+/// sizes within (0, ceiling]; at least one fragment per message. The server builder calls this
+/// and reports the error; ProtocolSession asserts it as a backstop.
+/// @return Error{InvalidConfig} whose context names the offending field.
+[[nodiscard]] Result<void> validate(const SessionConfig& config);
+
 /// What the session reports to the layer above. Views stay valid until the next call to
 /// next_event() / tick() / send_*() / close() / pending_output() on the same session.
 struct SessionEvent {
     enum class Kind : std::uint8_t {
         Message,        ///< buffered mode: a complete message (type, data)
         Part,           ///< streaming mode: type, data (+ tail), final
-        Ping,           ///< the peer's Ping (a Pong is already queued); data = its payload
+        Ping,           ///< the peer's Ping (a Pong is queued, unless its Close follows in the same
+                        ///< read, RFC 6455 section 5.5.3); data = its payload
         Pong,           ///< the peer's Pong; data = its payload
-        ProtocolError,  ///< the peer broke the protocol: code, reason. A Close was queued.
+        ProtocolError,  ///< the peer broke the protocol: code, reason. A Close with that code was
+                        ///< queued, unless ours was already on its way.
         Closed,         ///< the session is over, exactly once: code, reason, clean
     };
     Kind kind = Kind::Message;
@@ -90,6 +107,7 @@ class ProtocolSession {
 public:
     /// The session starts Open; the HTTP handshake is already done. `now` is the start of time for
     /// every timer.
+    /// Precondition (asserted): validate(config) succeeds.
     ProtocolSession(SessionConfig config, TimePoint now);
 
     /// Consume bytes from the front of `input` (it is advanced past what was used and modified in
@@ -152,7 +170,7 @@ private:
     void emit_closed(bool clean);
     void give_up();
     [[nodiscard]] std::optional<ProtocolFailure> count_frame(const FrameEvent& frame);
-    void track_message();
+    void track_message(const FrameEvent& frame);
     void run_timers();
     void heartbeat();
     [[nodiscard]] static bool
@@ -171,6 +189,7 @@ private:
     bool failed_ = false;          // the peer violated the protocol; input is ignored
     std::uint16_t sent_code_ = 0;  // the code of our Close
     std::string_view failure_reason_;
+    bool failure_close_sent_ = false;  // the Close we sent was caused by the failure
     // timers and rates (all measured against now_, which only tick() advances)
     TimePoint last_frame_;                      // last complete frame received (idle)
     TimePoint last_ping_;                       // last Ping we sent (heartbeat)

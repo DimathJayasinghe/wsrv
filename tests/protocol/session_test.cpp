@@ -187,7 +187,9 @@ TEST(Session, ChunkingNeverChangesWhatTheSessionDoes) {
                            client_frame(Opcode::Continuation, true, "cd")});
     Rig whole;
     Rig bytewise;
-    EXPECT_EQ(whole.feed(wire), bytewise.feed(wire, 1));
+    const std::vector<Seen> expected{ping("p"), message("abcd")};
+    EXPECT_EQ(whole.feed(wire), expected);
+    EXPECT_EQ(bytewise.feed(wire, 1), expected);
     EXPECT_EQ(whole.take_output().frames, bytewise.take_output().frames);
 }
 
@@ -349,6 +351,27 @@ TEST(Session, AProtocolViolationSendsExactlyOneCloseAndThenIgnoresTheConnection)
     EXPECT_EQ(rig.poll(), (std::vector<Seen>{closed(1007, events[0].reason, false)}));
 }
 
+TEST(Session, AFailureAfterOurOwnCloseDoesNotPairOurCodeWithTheFailureReason) {
+    SessionConfig config;
+    config.max_control_frames_per_second = 3;
+    Rig rig{config};
+    ASSERT_TRUE(rig.session().close(CloseCode::Normal, "bye").has_value());
+    rig.take_output();  // our Close is written; the peer keeps talking
+    std::vector<std::byte> pings;
+    for (int i = 0; i < 4; ++i) {
+        const auto frame = client_frame(Opcode::Ping, true, "");
+        pings.insert(pings.end(), frame.begin(), frame.end());
+    }
+    const auto events = rig.feed(pings);
+    ASSERT_EQ(events.size(), 2U);
+    EXPECT_EQ(events[0].kind, Kind::ProtocolError);  // reported for the log...
+    EXPECT_EQ(events[0].code, 1008U);
+    // ...but no 1008 Close was sent, so Closed reports the Close we did send, with no unrelated
+    // reason.
+    EXPECT_EQ(events[1], closed(1000, "", false));
+    EXPECT_TRUE(rig.take_output().frames.empty());
+}
+
 TEST(Session, AnUnmaskedClientFrameIsAProtocolError) {
     Rig rig;
     const std::vector<std::byte> unmasked{std::byte{0x81}, std::byte{0x01}, std::byte{'x'}};
@@ -409,7 +432,7 @@ TEST(Session, ANewSessionHasNothingToSayAndAClosedOneProducesNothing) {
     EXPECT_TRUE(rig.poll().empty());
     EXPECT_TRUE(rig.session().pending_output().empty());
     rig.session().on_transport_closed();
-    rig.poll();
+    EXPECT_EQ(rig.poll(), (std::vector<Seen>{closed(1006, "", false)}));
     EXPECT_TRUE(rig.feed(client_frame(Opcode::Text, true, "x")).empty());
     EXPECT_TRUE(rig.session().pending_output().empty());
 }
@@ -529,25 +552,113 @@ TEST(SessionSend, CloseDropsMessagesThatHaveNotStartedAndNothingFollowsTheCloseF
     EXPECT_TRUE(rig.take_output().frames.empty());
 }
 
+// ---- Configuration ----------------------------------------------------------------------------
+
+TEST(SessionConfigValidation, TheDefaultsAreValid) {
+    EXPECT_TRUE(wsrv::validate(SessionConfig{}).has_value());
+}
+
+TEST(SessionConfigValidation, MandatoryTimeoutsCannotBeDisabled) {  // FR-C2, FR-F11
+    SessionConfig no_close;
+    no_close.close_timeout = 0ms;
+    const auto r = wsrv::validate(no_close);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, ErrorCode::InvalidConfig);
+    SessionConfig no_incomplete;
+    no_incomplete.incomplete_message_timeout = 0ms;
+    EXPECT_FALSE(wsrv::validate(no_incomplete).has_value());
+}
+
+TEST(SessionConfigValidation, DurationsAreCappedAtADayAndNeverNegative) {
+    for (auto SessionConfig::*const field : {&SessionConfig::ping_interval,
+                                             &SessionConfig::pong_timeout,
+                                             &SessionConfig::idle_timeout,
+                                             &SessionConfig::close_timeout,
+                                             &SessionConfig::incomplete_message_timeout}) {
+        SessionConfig ok;
+        ok.*field = 24h;
+        EXPECT_TRUE(wsrv::validate(ok).has_value());
+        SessionConfig too_long;
+        too_long.*field = 24h + 1ms;
+        EXPECT_FALSE(wsrv::validate(too_long).has_value());
+        SessionConfig huge;
+        huge.*field = std::chrono::milliseconds::max();  // would overflow nanosecond arithmetic
+        EXPECT_FALSE(wsrv::validate(huge).has_value());
+        SessionConfig negative;
+        negative.*field = -1ms;
+        EXPECT_FALSE(wsrv::validate(negative).has_value());
+    }
+}
+
+TEST(SessionConfigValidation, SizeLimitsHaveHardCeilingsAndNoZero) {  // SECURITY_DESIGN section 3
+    constexpr std::uint64_t kFrameCeiling = 64ULL << 20;
+    SessionConfig c;
+    c.parser.max_frame_payload = kFrameCeiling;
+    EXPECT_TRUE(wsrv::validate(c).has_value());
+    c.parser.max_frame_payload = kFrameCeiling + 1;
+    EXPECT_FALSE(wsrv::validate(c).has_value());
+    c.parser.max_frame_payload = 0;
+    EXPECT_FALSE(wsrv::validate(c).has_value());
+
+    SessionConfig message;
+    message.assembler.max_message_size = std::size_t{1} << 30;
+    EXPECT_TRUE(wsrv::validate(message).has_value());
+    message.assembler.max_message_size += 1;
+    EXPECT_FALSE(wsrv::validate(message).has_value());
+    message.assembler.max_message_size = 0;
+    EXPECT_FALSE(wsrv::validate(message).has_value());
+
+    SessionConfig fragments;
+    fragments.assembler.max_fragments = 0;
+    EXPECT_FALSE(wsrv::validate(fragments).has_value());
+
+    SessionConfig frame;
+    frame.outbound.max_frame_payload = 0;
+    EXPECT_FALSE(wsrv::validate(frame).has_value());
+    frame.outbound.max_frame_payload = std::size_t{64} << 20;
+    EXPECT_TRUE(wsrv::validate(frame).has_value());
+    frame.outbound.max_frame_payload += 1;
+    EXPECT_FALSE(wsrv::validate(frame).has_value());
+    frame.outbound.max_frame_payload = SIZE_MAX;  // wire_bound() would overflow
+    EXPECT_FALSE(wsrv::validate(frame).has_value());
+
+    SessionConfig queue;
+    queue.outbound.max_queued_bytes = wsrv::kMessageOverhead - 1;
+    EXPECT_FALSE(wsrv::validate(queue).has_value());
+    queue.outbound.max_queued_bytes = std::size_t{1} << 30;
+    EXPECT_TRUE(wsrv::validate(queue).has_value());
+    queue.outbound.max_queued_bytes += 1;
+    EXPECT_FALSE(wsrv::validate(queue).has_value());
+}
+
+TEST(SessionConfigValidationDeathTest, ConstructingASessionWithABadConfigAborts) {
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    SessionConfig bad;
+    bad.close_timeout = 0ms;
+    const auto construct = [&bad] { const ProtocolSession session{bad, wsrv::TimePoint{}}; };
+    EXPECT_DEATH(construct(), "WSRV_ASSERT failed");
+}
+
 // ---- Timers and rate limits -------------------------------------------------------------------
 
-/// Every timer and limit off; tests switch on only what they exercise.
+/// Every optional timer and limit off, the mandatory ones at their maximum; tests switch on only
+/// what they exercise.
 SessionConfig quiet_config() {
     SessionConfig c;
     c.ping_interval = 0ms;
     c.pong_timeout = 0ms;
     c.idle_timeout = 0ms;
-    c.close_timeout = 0ms;
-    c.incomplete_message_timeout = 0ms;
+    c.close_timeout =
+        24h;  // mandatory timeouts cannot be disabled (FR-C2, FR-F11): "never" = a day
+    c.incomplete_message_timeout = 24h;
     c.max_control_frames_per_second = 0;
     c.max_data_frames_per_second = 0;
     return c;
 }
 
-TEST(SessionTimers, ADisabledTimerNeverFires) {
+TEST(SessionTimers, ZeroDisablesThePingAndIdleTimers) {
     Rig rig{quiet_config()};
-    rig.feed(client_frame(Opcode::Text, false, "unfinished"));
-    rig.tick(24h * 365);
+    rig.tick(24h - 1ms);
     EXPECT_EQ(rig.session().state(), SessionState::Open);
     EXPECT_TRUE(rig.take_output().frames.empty());
     EXPECT_TRUE(rig.poll().empty());
@@ -663,6 +774,33 @@ TEST(SessionTimers, AnUnfinishedMessageIsAbandonedAfterTheIncompleteTimeout) {  
     EXPECT_EQ(rig.take_output().frames[0].opcode, Opcode::Close);
 }
 
+TEST(SessionTimers, ASlowSingleFrameMessageIsNotAnIncompleteFragmentedMessage) {
+    // The incomplete-message timer is for fragmented messages (FRAGMENTATION.md 1.2 item 6); a
+    // single frame arriving slowly is the idle timer's business, not this one's.
+    SessionConfig config = quiet_config();
+    config.incomplete_message_timeout = 30000ms;
+    Rig rig{config};
+    const auto frame = client_frame(Opcode::Binary, true, std::string(1000, 'a'));
+    rig.feed(std::vector<std::byte>(frame.begin(), frame.begin() + 506));  // header + 500 bytes
+    rig.tick(29999ms + 1ms);
+    rig.tick(10min);
+    EXPECT_EQ(rig.session().state(), SessionState::Open);
+    EXPECT_TRUE(rig.poll().empty());
+}
+
+TEST(SessionTimers, TheIncompleteTimerRunsFromTheEndOfTheFirstFragment) {
+    SessionConfig config = quiet_config();
+    config.incomplete_message_timeout = 30000ms;
+    Rig rig{config};
+    rig.feed(client_frame(Opcode::Text, false, "a"));
+    rig.tick(29999ms);
+    rig.feed(client_frame(Opcode::Continuation, false, "b"));  // progress does not restart it
+    rig.tick(1ms);
+    const auto events = rig.poll();
+    ASSERT_EQ(events.size(), 1U);
+    EXPECT_EQ(events[0].code, 1008U);
+}
+
 TEST(SessionTimers, AFinishedOrControlOnlyMessageStartsNoTimer) {
     SessionConfig config = quiet_config();
     config.incomplete_message_timeout = 1000ms;
@@ -766,6 +904,29 @@ TEST(SessionRates, TooManyDataFramesInOneWindowCloseWith1008) {  // EC-F12, EC-F
     EXPECT_EQ(events[2].kind, Kind::Message);
     EXPECT_EQ(events[3].kind, Kind::ProtocolError);
     EXPECT_EQ(events[3].code, 1008U);
+}
+
+TEST(SessionRates, ZeroLengthFramesAndOneByteFragmentsCountAsDataFrames) {  // EC-F12, EC-F28
+    SessionConfig config = quiet_config();
+    config.max_data_frames_per_second = 3;
+    Rig empty{config};
+    std::vector<std::byte> frames;
+    for (int i = 0; i < 4; ++i) {
+        const auto frame = client_frame(Opcode::Binary, true, "");
+        frames.insert(frames.end(), frame.begin(), frame.end());
+    }
+    EXPECT_EQ(empty.feed(frames).back().code, 1008U);
+
+    Rig fragments{config};
+    std::vector<std::byte> flood = client_frame(Opcode::Text, false, "a");
+    for (int i = 0; i < 3; ++i) {
+        const auto frame = client_frame(Opcode::Continuation, false, "a");
+        flood.insert(flood.end(), frame.begin(), frame.end());
+    }
+    const auto events = fragments.feed(flood);
+    ASSERT_EQ(events.size(), 1U);
+    EXPECT_EQ(events[0].kind, Kind::ProtocolError);
+    EXPECT_EQ(events[0].code, 1008U);
 }
 
 TEST(SessionRates, ZeroDisablesTheLimits) {

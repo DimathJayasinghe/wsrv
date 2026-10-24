@@ -12,9 +12,10 @@ namespace wsrv {
 
 namespace {
 
-/// One data frame plus a Pong, a Ping and a Close (each header + payload at most 2 + 125 bytes).
+/// The wire buffer holds exactly one frame: a data frame (header + payload) or a control frame
+/// (2 + at most 125 bytes).
 constexpr std::size_t wire_bound(std::size_t max_frame_payload) {
-    return max_frame_payload + kMaxHeaderSize + 3 * (2 + kMaxControlPayload);
+    return std::max(max_frame_payload + kMaxHeaderSize, 2 + kMaxControlPayload);
 }
 
 }  // namespace
@@ -22,6 +23,7 @@ constexpr std::size_t wire_bound(std::size_t max_frame_payload) {
 OutboundScheduler::OutboundScheduler(OutboundConfig config)
     : config_{config}, wire_{wire_bound(config.max_frame_payload)}, data_{config.max_queued_bytes} {
     WSRV_ASSERT(config.max_frame_payload > 0);
+    WSRV_ASSERT(config.max_frame_payload < (std::size_t{1} << 40));  // keeps wire_bound() exact
 }
 
 Result<void> OutboundScheduler::enqueue_message(Opcode text_or_binary, ByteView payload) {
@@ -142,19 +144,17 @@ void OutboundScheduler::append_next_fragment() {
     }
 }
 
+/// Exactly ONE frame per refill, chosen by priority (Close, Pong, Ping, next data fragment), so a
+/// control frame queued while any frame is partly written waits for that frame only (EC-F32).
 void OutboundScheduler::refill() {
     if (close_.present) {
         append_control(Opcode::Close, close_);
         close_in_wire_ = !failed_;
-        return;
-    }
-    if (pong_.present) {
+    } else if (pong_.present) {
         append_control(Opcode::Pong, pong_);
-    }
-    if (ping_.present && !failed_) {
+    } else if (ping_.present) {
         append_control(Opcode::Ping, ping_);
-    }
-    if (!messages_.empty() && !failed_) {
+    } else if (!messages_.empty()) {
         append_next_fragment();
     }
 }

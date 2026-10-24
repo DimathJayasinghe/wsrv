@@ -22,6 +22,7 @@ enum class ErrorCode : std::uint8_t {
     ResourceExhausted,  ///< An allocation failed; the operation did nothing (Limit).
     Closing,            ///< The session is closing or closed; the request was refused (Internal).
     Backpressure,       ///< An outbound queue is full; retry after it drains (Limit).
+    InvalidConfig,      ///< A configuration value is out of range or missing (Config).
 };
 
 /// A failure. `context` MUST be a string literal (static storage): it is never built from peer
@@ -49,6 +50,8 @@ struct Error {
     case ErrorCode::RandomUnavailable:
     case ErrorCode::Closing:
         return ErrorCategory::Internal;
+    case ErrorCode::InvalidConfig:
+        return ErrorCategory::Config;
     }
     return ErrorCategory::Internal;  // unreachable for valid enumerators; fail safe
 }

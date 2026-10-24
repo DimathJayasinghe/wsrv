@@ -133,6 +133,20 @@ TEST(OutboundScheduler, AControlFrameWaitsForTheFrameInFlightThenJumpsTheQueue) 
     EXPECT_EQ(parsed.frames[2].opcode, Opcode::Continuation);
 }
 
+TEST(OutboundScheduler, EveryRefillIsExactlyOneFrameSoAControlFrameNeverWaitsForAnUnstartedOne) {
+    // EC-F32: only a frame already partially written is finished first. A Pong is half out when
+    // the Close is queued: the Close follows the Pong, not the 1000-byte data frame behind it.
+    OutboundScheduler s{config(1000)};
+    s.queue_pong(bytes_of("pong"));
+    ASSERT_TRUE(s.enqueue_message(Opcode::Binary, bytes_of(std::string(5000, 'd'))).has_value());
+    ASSERT_EQ(s.pending().size(), 6U);  // just the Pong frame: 2 + 4
+    s.consume(1);
+    s.queue_close(1000, "");
+    std::vector<std::byte> rest = drain(s);
+    EXPECT_EQ(rest.size(), 5U + 4U);  // the other 5 Pong bytes, then the 4-byte Close frame
+    EXPECT_EQ(static_cast<unsigned>(rest[5]) & 0x0FU, 0x8U);  // Close opcode right after the Pong
+}
+
 TEST(OutboundScheduler, OnlyTheLatestUnsentPongIsKept) {  // EC-C02
     OutboundScheduler s{config()};
     s.queue_pong(bytes_of("one"));
