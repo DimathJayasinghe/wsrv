@@ -21,6 +21,7 @@ function(wsrv_add_test)
     add_executable(${ARG_NAME} ${ARG_SOURCES})
     target_link_libraries(${ARG_NAME} PRIVATE ${ARG_LINK} GTest::gtest_main)
     set_target_properties(${ARG_NAME} PROPERTIES CXX_EXTENSIONS OFF)
+    target_include_directories(${ARG_NAME} PRIVATE "${PROJECT_SOURCE_DIR}/tests")   # support/fakes.hpp
     wsrv_apply_warnings(${ARG_NAME})
     gtest_discover_tests(${ARG_NAME} DISCOVERY_MODE PRE_TEST)
 endfunction()

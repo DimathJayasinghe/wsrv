@@ -23,7 +23,7 @@ SortIncludes: CaseSensitive
 # Order: own header (main), project headers, third-party, C++ standard library, C / system headers.
 IncludeBlocks: Regroup
 IncludeCategories:
-  - Regex: '^"(base|crypto|http|protocol|extensions|net|server|wsrv)/'
+  - Regex: '^"(base|crypto|http|protocol|extensions|net|server|wsrv|support)/'
     Priority: 1
   - Regex: '^<(gtest|gmock|openssl|zlib)'
     Priority: 2
