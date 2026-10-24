@@ -2,6 +2,10 @@
 wsrv_add_test(NAME base_version_test SOURCES base/version_test.cpp LINK wsrv::base)
 wsrv_add_test(NAME base_error_test SOURCES base/error_test.cpp LINK wsrv::base)
 wsrv_add_test(NAME base_checked_test SOURCES base/checked_test.cpp LINK wsrv::base)
+wsrv_add_test(NAME base_assert_test SOURCES base/assert_test.cpp LINK wsrv::base)
+wsrv_add_test(NAME base_bytes_test SOURCES base/bytes_test.cpp LINK wsrv::base)
+wsrv_add_test(NAME base_byte_buffer_test SOURCES base/byte_buffer_test.cpp LINK wsrv::base)
+wsrv_add_test(NAME base_ring_buffer_test SOURCES base/ring_buffer_test.cpp LINK wsrv::base)
 
 # Architecture guard: the real link graph must equal the allowed graph (docs/ARCHITECTURE.md 2.1).
 include(WsrvModuleGraph)
