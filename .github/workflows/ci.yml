@@ -2,7 +2,8 @@ name: ci
 
 # Cost design: the jobs use the runner's preinstalled toolchain (GCC 13/14, Clang 18, CMake, Ninja) instead
 # of building the Docker dev image, which cost ~3 min per job. The image is verified separately, only when
-# docker/** changes (image.yml). Two jobs, not one per preset, to pay runner start-up twice, not five times.
+# docker/** changes (image.yml). Three jobs run in parallel (gcc, clang, tidy): wall-clock time is the slowest
+# one (~3.5 min) instead of the sum; clang-tidy is its own job because it is not cacheable by ccache.
 on:
   push:
     branches: [main]
@@ -65,7 +66,7 @@ jobs:
         run: ccache --show-stats --verbose | head -12
 
   clang:
-    name: clang (libc++, dev, tsan, tidy)
+    name: clang (libc++, dev, tsan, fuzz)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -78,10 +79,10 @@ jobs:
           path: .ccache
           key: ccache-clang-${{ github.sha }}
           restore-keys: ccache-clang-
-      - name: Install libc++ and clang-tidy
+      - name: Install libc++
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends libc++-18-dev libc++abi-18-dev libclang-rt-18-dev clang-tidy-18 ccache
+          sudo apt-get install -y -qq --no-install-recommends libc++-18-dev libc++abi-18-dev libclang-rt-18-dev ccache
           clang++-18 --version | head -1
       - name: dev-clang (ASan+UBSan)
         run: |
@@ -97,17 +98,33 @@ jobs:
         shell: bash   # bash -eo pipefail: a crash found by the fuzzer must fail the step, not be hidden by `| tail`
         run: |
           cmake --preset fuzz -DCMAKE_CXX_COMPILER=clang++-18
-          cmake --build --preset fuzz --target fuzz_utf8 fuzz_base64 fuzz_sha1 fuzz_http_request fuzz_handshake fuzz_frame_parser fuzz_message_pipeline
+          cmake --build --preset fuzz --target fuzz_utf8 fuzz_base64 fuzz_sha1 fuzz_http_request fuzz_handshake fuzz_frame_parser fuzz_message_pipeline fuzz_session
           ctest --test-dir build/fuzz -L fuzz-regression --output-on-failure
-          for target in utf8 base64 sha1 http_request handshake frame_parser message_pipeline; do
+          for target in utf8 base64 sha1 http_request handshake frame_parser message_pipeline session; do
             mkdir -p "$RUNNER_TEMP/fuzz_$target"
             "build/fuzz/tests/fuzz/fuzz_$target" "$RUNNER_TEMP/fuzz_$target" "tests/fuzz/corpus/$target" \
               -max_total_time=5 -artifact_prefix="$RUNNER_TEMP/" 2>&1 | tail -2
           done
+      - name: ccache statistics
+        if: always()
+        run: ccache --show-stats --verbose | head -12
+
+  tidy:
+    name: clang-tidy (libc++)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CMAKE_CXX_COMPILER_LAUNCHER: ''   # tidy runs are not cacheable; ccache is not installed in this job
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install libc++ and clang-tidy
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libc++-18-dev libc++abi-18-dev clang-tidy-18
+          clang-tidy-18 --version | head -2
       - name: clang-tidy
         run: |
           cmake --preset tidy -DCMAKE_CXX_COMPILER=clang++-18
           cmake --build --preset tidy
-      - name: ccache statistics
-        if: always()
-        run: ccache --show-stats --verbose | head -12
