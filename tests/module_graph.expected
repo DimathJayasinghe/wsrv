@@ -1,0 +1,7 @@
+base:
+crypto: base
+http: base
+protocol: base crypto http
+extensions: base protocol
+net: base
+server: base extensions net protocol

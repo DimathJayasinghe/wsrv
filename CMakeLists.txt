@@ -42,6 +42,12 @@ include(WsrvModule)
 
 # ---- Modules, in dependency order (allowed graph: docs/ARCHITECTURE.md section 2.1) ----
 add_subdirectory(src/base)
+add_subdirectory(src/crypto)
+add_subdirectory(src/http)
+add_subdirectory(src/protocol)
+add_subdirectory(src/extensions)
+add_subdirectory(src/net)
+add_subdirectory(src/server)
 
 if(WSRV_BUILD_TESTS)
     enable_testing()
