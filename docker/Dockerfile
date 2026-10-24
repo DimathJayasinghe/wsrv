@@ -51,6 +51,10 @@ RUN (userdel -r ubuntu 2>/dev/null || true) \
  && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} \
  && chmod 0440 /etc/sudoers.d/${USERNAME}
 
+# Pre-create the ccache directory owned by the dev user. A named volume mounted over a path that does
+# not exist in the image is created root-owned, which makes ccache fail with 'Permission denied'.
+RUN mkdir -p /home/${USERNAME}/.ccache && chown -R ${USER_UID}:${USER_GID} /home/${USERNAME}/.ccache
+
 # Sanitizer/ccache ergonomics.
 ENV CCACHE_DIR=/home/${USERNAME}/.ccache \
     CCACHE_MAXSIZE=5G \

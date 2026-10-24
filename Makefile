@@ -6,7 +6,7 @@ export PROJECT_DIR := $(CURDIR)
 export USER_UID := $(shell id -u)
 export USER_GID := $(shell id -g)
 
-.PHONY: help image up down shell root-shell status clean-cache
+.PHONY: help image up restart down shell root-shell status clean-cache
 
 help: ## Show targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -25,6 +25,9 @@ root-shell: up ## Open a root shell in the container
 
 status: ## Show toolchain versions inside the container
 	$(RUN) bash -c 'g++ --version | head -1; clang++ --version | head -1; cmake --version | head -1; ninja --version; clang-format --version; clang-tidy --version | head -2; openssl version; php --version | head -1'
+
+restart: ## Restart the container (refreshes files Docker Desktop's bind mount cached as stale)
+	$(COMPOSE) restart dev
 
 down: ## Stop the dev container
 	$(COMPOSE) down
