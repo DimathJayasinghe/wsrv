@@ -27,6 +27,16 @@ std::string_view to_string(ErrorCode code) noexcept {
         return "Backpressure";
     case ErrorCode::InvalidConfig:
         return "InvalidConfig";
+    case ErrorCode::WouldBlock:
+        return "WouldBlock";
+    case ErrorCode::ConnectionClosed:
+        return "ConnectionClosed";
+    case ErrorCode::FdLimit:
+        return "FdLimit";
+    case ErrorCode::AddressInUse:
+        return "AddressInUse";
+    case ErrorCode::Io:
+        return "Io";
     }
     return "Unknown";
 }

@@ -24,7 +24,12 @@ constexpr std::array kAllCodes{ErrorCode::InvalidArgument,
                                ErrorCode::ResourceExhausted,
                                ErrorCode::Closing,
                                ErrorCode::Backpressure,
-                               ErrorCode::InvalidConfig};
+                               ErrorCode::InvalidConfig,
+                               ErrorCode::WouldBlock,
+                               ErrorCode::ConnectionClosed,
+                               ErrorCode::FdLimit,
+                               ErrorCode::AddressInUse,
+                               ErrorCode::Io};
 
 TEST(Error, EveryCodeHasANonEmptyDistinctName) {
     std::set<std::string_view> names;

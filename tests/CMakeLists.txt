@@ -10,6 +10,8 @@ wsrv_add_test(NAME base_clock_test SOURCES base/clock_test.cpp LINK wsrv::base)
 wsrv_add_test(NAME base_logger_test SOURCES base/logger_test.cpp LINK wsrv::base)
 wsrv_add_test(NAME base_random_test SOURCES base/random_test.cpp LINK wsrv::base)
 wsrv_add_test(NAME net_system_random_test SOURCES net/system_random_test.cpp LINK wsrv::net)
+wsrv_add_test(NAME net_io_error_test SOURCES net/io_error_test.cpp LINK wsrv::net)
+wsrv_add_test(NAME net_fd_test SOURCES net/fd_test.cpp LINK wsrv::net)
 
 # Differential tests against OpenSSL are test-only and optional (ADR-0005: no runtime dependency).
 find_package(OpenSSL QUIET)
