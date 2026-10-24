@@ -9,3 +9,4 @@ add_test(NAME module_graph
     COMMAND ${CMAKE_COMMAND} -E compare_files
             "${CMAKE_CURRENT_SOURCE_DIR}/module_graph.expected"
             "${CMAKE_BINARY_DIR}/module_graph.actual")
+add_subdirectory(sanitizer_selftest)

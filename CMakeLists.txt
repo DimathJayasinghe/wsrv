@@ -36,6 +36,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 include(WsrvToolchainChecks)   # fails fast on unsupported compilers / standard libraries
+include(WsrvSanitizers)         # global flags: must precede every target, incl. FetchContent deps
 include(WsrvWarnings)
 include(WsrvHardening)
 include(WsrvModule)

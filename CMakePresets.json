@@ -1,0 +1,102 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": { "WSRV_BUILD_TESTS": "ON" }
+    },
+    {
+      "name": "gcc",
+      "hidden": true,
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "g++" }
+    },
+    {
+      "name": "clang",
+      "hidden": true,
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "clang++" }
+    },
+    {
+      "name": "dev",
+      "displayName": "GCC, Debug, ASan+UBSan",
+      "inherits": "gcc",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "WSRV_SANITIZER": "asan-ubsan" }
+    },
+    {
+      "name": "dev-clang",
+      "displayName": "Clang+libc++, Debug, ASan+UBSan",
+      "inherits": "clang",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "WSRV_SANITIZER": "asan-ubsan" }
+    },
+    {
+      "name": "release",
+      "displayName": "GCC, Release, hardening, LTO",
+      "inherits": "gcc",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON" }
+    },
+    {
+      "name": "relwithdebinfo",
+      "displayName": "GCC, RelWithDebInfo (profiling)",
+      "inherits": "gcc",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "tsan",
+      "displayName": "Clang+libc++, ThreadSanitizer",
+      "inherits": "clang",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "WSRV_SANITIZER": "tsan" }
+    },
+    {
+      "name": "msan",
+      "displayName": "Clang+libc++, MemorySanitizer (nightly)",
+      "inherits": "clang",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "WSRV_SANITIZER": "msan" }
+    },
+    {
+      "name": "fuzz",
+      "displayName": "Clang, libFuzzer targets, ASan+UBSan (from M1)",
+      "inherits": "clang",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "WSRV_SANITIZER": "asan-ubsan",
+        "WSRV_BUILD_FUZZERS": "ON"
+      }
+    },
+    {
+      "name": "coverage",
+      "displayName": "GCC, Debug, gcov coverage",
+      "inherits": "gcc",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "WSRV_COVERAGE": "ON" }
+    },
+    {
+      "name": "bench",
+      "displayName": "GCC, Release, benchmarks (from M3)",
+      "inherits": "gcc",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "WSRV_BUILD_BENCH": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev", "configurePreset": "dev" },
+    { "name": "dev-clang", "configurePreset": "dev-clang" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "relwithdebinfo", "configurePreset": "relwithdebinfo" },
+    { "name": "tsan", "configurePreset": "tsan" },
+    { "name": "msan", "configurePreset": "msan" },
+    { "name": "fuzz", "configurePreset": "fuzz" },
+    { "name": "coverage", "configurePreset": "coverage" },
+    { "name": "bench", "configurePreset": "bench" }
+  ],
+  "testPresets": [
+    { "name": "dev", "configurePreset": "dev", "output": { "outputOnFailure": true } },
+    { "name": "dev-clang", "configurePreset": "dev-clang", "output": { "outputOnFailure": true } },
+    { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },
+    { "name": "relwithdebinfo", "configurePreset": "relwithdebinfo", "output": { "outputOnFailure": true } },
+    { "name": "tsan", "configurePreset": "tsan", "output": { "outputOnFailure": true } },
+    { "name": "coverage", "configurePreset": "coverage", "output": { "outputOnFailure": true } }
+  ]
+}
