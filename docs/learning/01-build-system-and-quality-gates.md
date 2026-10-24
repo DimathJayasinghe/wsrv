@@ -61,9 +61,9 @@ CXX=clang++ cmake -S . -B build/neg -DWSRV_USE_LIBCXX=OFF   # fails with a clear
 ```
 
 ## 5. Architecture enforced by the build
-ARCHITECTURE.md says `protocol/` (pure logic) must never depend on `net/` (sockets). A sentence in a document is forgotten; a build error is not. Three layers enforce it:
+ARCHITECTURE.md says `protocol/` (pure logic) must never depend on `net/` (sockets). A sentence in a document is forgotten; a failing gate is not. Three layers enforce it (the include checker is the primary guard: all modules share the `src/` include path, so the compiler alone would happily accept a stray `#include`):
 
-1. **CMake link graph** (`src/<module>/CMakeLists.txt`). Each module declares only its allowed dependencies. The test `module_graph` compares the real graph against `tests/module_graph.expected`; adding a forbidden link makes it fail (we tried: adding `wsrv::net` to `protocol` failed the test).
+1. **CMake link graph** (`src/<module>/CMakeLists.txt`) as a second guard. Each module declares only its allowed dependencies; a review of M0 showed that a private link is recorded differently by CMake, so the writer reads every kind of link and a separate test (`module_graph_sees_private_links`) proves it. The test `module_graph` compares the real graph against `tests/module_graph.expected`; adding a forbidden link makes it fail (we tried: adding `wsrv::net` to `protocol` failed the test).
 2. **`tools/check_includes.py`**: scans `#include` lines. `protocol` may not include `"net/..."`, and the sans-I/O modules may not include `<sys/socket.h>`, `<unistd.h>`, `<openssl/...>` and friends (ADR-0002).
 3. **Header self-containment** (`header-check` target): every header is compiled alone, so a header that forgets `#include <string>` fails immediately instead of working "by accident" when included after another header.
 

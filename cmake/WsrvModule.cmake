@@ -2,10 +2,12 @@
 #
 # wsrv_add_module(NAME <n> [SOURCES <files...>] [DEPS <targets...>])
 #
-# Creates library wsrv_<n> (alias wsrv::<n>). DEPS is the module's *allowed* dependency list: because
-# CMake links exactly what is declared, an illegal dependency is a build error, not a review comment
-# (docs/ARCHITECTURE.md section 2.1). A module with no SOURCES yet becomes an INTERFACE library so the
-# graph can be declared before the code exists.
+# Creates library wsrv_<n> (alias wsrv::<n>). DEPS is the module's *allowed* dependency list
+# (docs/ARCHITECTURE.md section 2.1). NOTE: every module exposes the shared src/ include root, so the link
+# graph alone does NOT stop a stray #include; that is enforced by tools/check_includes.py (the primary guard).
+# The link graph is declared explicitly and diffed by the 'module_graph' test (secondary guard, also catches
+# a forgotten or extra link). A module with no SOURCES yet becomes an INTERFACE library so the graph can be
+# declared before the code exists.
 include_guard(GLOBAL)
 
 function(wsrv_add_module)
@@ -21,7 +23,6 @@ function(wsrv_add_module)
         target_compile_features(${tgt} PUBLIC cxx_std_23)
         set_target_properties(${tgt} PROPERTIES CXX_EXTENSIONS OFF)
         wsrv_apply_warnings(${tgt})
-        wsrv_apply_hardening(${tgt})
         if(ARG_DEPS)
             target_link_libraries(${tgt} PUBLIC ${ARG_DEPS})
         endif()

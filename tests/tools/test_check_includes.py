@@ -39,6 +39,42 @@ class CheckIncludes(unittest.TestCase):
         r = run(FIXTURES / "good")
         self.assertNotIn("net must not include", r.stdout)
 
+    def test_angle_bracket_project_include_is_checked(self):
+        r = run(FIXTURES / "bad_angle")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("a.hpp:4: protocol must not include net", r.stdout)
+
+    def test_relative_include_escaping_the_module_is_checked(self):
+        r = run(FIXTURES / "bad_relative")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("a.hpp:4: protocol must not include net", r.stdout)
+
+    def test_quoted_os_header_is_checked(self):
+        r = run(FIXTURES / "bad_quoted_os")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("protocol must not include <sys/socket.h>", r.stdout)
+
+    def test_more_os_headers_are_rejected_in_sans_io_layer(self):
+        r = run(FIXTURES / "bad_os_extra")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        for header in ("pthread.h", "ifaddrs.h", "linux/if.h", "dlfcn.h", "sched.h", "winsock2.h"):
+            self.assertIn(f"must not include <{header}>", r.stdout, header)
+
+    def test_unknown_module_directory_is_an_error(self):
+        r = run(FIXTURES / "bad_unknown_module")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("unknown module 'tls'", r.stdout)
+
+    def test_include_of_unknown_module_is_an_error(self):
+        r = run(FIXTURES / "bad_unknown_include")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("protocol includes unknown module 'tls'", r.stdout)
+
+    def test_other_header_suffixes_are_scanned(self):
+        r = run(FIXTURES / "bad_suffix")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("a.inl:4: protocol must not include net", r.stdout)
+
     def test_missing_root_is_a_usage_error(self):
         r = run(FIXTURES / "does_not_exist")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)

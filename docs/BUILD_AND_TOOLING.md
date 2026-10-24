@@ -46,7 +46,7 @@ tools/            scripts (lint, include-graph check, banned-function scan)
 
 ## 3. CMake rules
 
-- One target per module; `PRIVATE` includes by default; `PUBLIC` only for `include/wsrv`. Linking encodes allowed-dependency graph from ARCHITECTURE §2.1 — a forbidden link is a build error.
+- One target per module. Linking declares the allowed-dependency graph from ARCHITECTURE §2.1 and the `module_graph` test diffs it against `tests/module_graph.expected` (it sees PUBLIC, INTERFACE and PRIVATE links). All modules share the `src/` include root, so a stray `#include` is **not** a build error; `tools/check_includes.py` (`check-includes`) is the primary guard and also rejects OS headers in the sans-I/O modules. (Per-module include roots would make it a hard error; revisit if the checker proves insufficient.)
 - `wsrv::wsrv` alias is the only installable library target; `install()` + `find_package(wsrv)` config files; semantic versioning.
 - No globbing for sources (explicit lists) so CI detects missing files.
 - Options (all default OFF unless stated): `WSRV_BUILD_TESTS` (ON for top-level), `WSRV_BUILD_EXAMPLES`, `WSRV_ENABLE_TLS`, `WSRV_ENABLE_DEFLATE`, `WSRV_BUILD_FUZZERS`, `WSRV_BUILD_BENCH`, `WSRV_WARNINGS_AS_ERRORS` (ON), `WSRV_SANITIZER` (none|asan-ubsan|tsan|msan).
@@ -91,6 +91,8 @@ Implemented gate targets (all run in CI): `cmake --build --preset dev --target f
 | `image.yml` | only when `docker/**`, `docker-compose.yml` or the dev-env action change | builds the dev image and runs a build + test inside it | ~1.5 min, rarely |
 
 Why it looks like this: the first version built the Docker dev image in each of five jobs and billed ~19 minutes, ~16 of them image builds, for 16–35 s of real work per job. Now CI uses the runner's preinstalled GCC/Clang/CMake/Ninja (only libc++ and clang-tidy are installed), runs few jobs (each job pays runner start-up), skips changes that cannot affect the build, and rebuilds the image only when it can have changed. Trade-off: CI is not byte-identical to the dev container (runner GCC 13/14 vs container GCC 14.2); the CMake version floors and the `image.yml` check bound that risk. Reproduce a CI job locally with `tools/ci-run.sh '<command>'` (runs inside the dev image).
+
+Required checks: do **not** make `gcc`/`clang` required status checks while `paths-ignore` is active — a docs-only PR would wait forever for a check that never starts (use an always-running job with an internal path filter first). `cancel-in-progress` applies to PRs only, so a push to `main` is never cancelled. Branch protection is not enabled yet (owner decision; GitHub Free private repositories cannot enforce it).
 
 Further savings when builds grow: cache ccache across runs (`actions/cache` keyed on preset + compiler), split a slow job only if wall-clock matters (billed minutes stay equal). Actions are pinned to commit SHAs and the token is read-only.
 
