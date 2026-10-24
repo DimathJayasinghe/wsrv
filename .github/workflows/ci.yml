@@ -1,9 +1,14 @@
 name: ci
 
+# Cost design: the jobs use the runner's preinstalled toolchain (GCC 13/14, Clang 18, CMake, Ninja) instead
+# of building the Docker dev image, which cost ~3 min per job. The image is verified separately, only when
+# docker/** changes (image.yml). Two jobs, not one per preset, to pay runner start-up twice, not five times.
 on:
   push:
     branches: [main]
+    paths-ignore: ['docs/**', '**.md', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
   pull_request:
+    paths-ignore: ['docs/**', '**.md', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
 
 permissions:
   contents: read
@@ -13,39 +18,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
-    name: lint (format, banned, includes, headers, tidy)
+  gcc:
+    name: gcc (gates, dev, release)
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - uses: ./.github/actions/dev-env
+      - name: Toolchain
+        run: |
+          g++ --version | head -1
+          cmake --version | head -1
+          ninja --version
+          clang-format-18 --version
       - name: Quality gates
-        run: >
-          tools/ci-run.sh
-          'cmake --preset dev
-          && cmake --build --preset dev --target format-check check-banned check-includes header-check'
-      - name: Tool and architecture tests
-        run: tools/ci-run.sh 'cmake --build --preset dev && ctest --preset dev -L tools -R "tools_|module_graph"'
-      - name: clang-tidy
-        run: tools/ci-run.sh 'cmake --preset tidy && cmake --build --preset tidy'
+        run: |
+          cmake --preset dev
+          cmake --build --preset dev --target format-check check-banned check-includes header-check
+      - name: dev (GCC, ASan+UBSan) and tool tests
+        run: |
+          cmake --build --preset dev
+          ctest --preset dev
+      - name: release (GCC, hardened, LTO)
+        run: |
+          cmake --preset release
+          cmake --build --preset release
+          ctest --preset release
 
-  build-test:
-    name: build+test (${{ matrix.preset }})
+  clang:
+    name: clang (libc++, dev, tsan, tidy)
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        preset: [dev, dev-clang, release, tsan]
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - uses: ./.github/actions/dev-env
-      - name: Configure, build, test
-        run: >
-          tools/ci-run.sh
-          'cmake --preset ${{ matrix.preset }}
-          && cmake --build --preset ${{ matrix.preset }}
-          && ctest --preset ${{ matrix.preset }}'
+      - name: Install libc++ and clang-tidy
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libc++-18-dev libc++abi-18-dev clang-tidy-18
+          clang++-18 --version | head -1
+      - name: dev-clang (ASan+UBSan)
+        run: |
+          cmake --preset dev-clang -DCMAKE_CXX_COMPILER=clang++-18
+          cmake --build --preset dev-clang
+          ctest --preset dev-clang
+      - name: tsan
+        run: |
+          cmake --preset tsan -DCMAKE_CXX_COMPILER=clang++-18
+          cmake --build --preset tsan
+          ctest --preset tsan
+      - name: clang-tidy
+        run: |
+          cmake --preset tidy -DCMAKE_CXX_COMPILER=clang++-18
+          cmake --build --preset tidy

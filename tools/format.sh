@@ -8,8 +8,11 @@ cd "$root"
 files=$(find src include tests examples -type f \( -name '*.cpp' -o -name '*.hpp' \) \
     -not -path '*/fixtures/*' 2>/dev/null | sort)
 [ -z "$files" ] && exit 0
+# Prefer the pinned major version; plain `clang-format` is the fallback (dev container maps it to 18).
+cf=${CLANG_FORMAT:-$(command -v clang-format-18 || command -v clang-format || true)}
+[ -n "$cf" ] || { echo "error: clang-format not found" >&2; exit 2; }
 case "$mode" in
-    check) echo "$files" | xargs clang-format --dry-run -Werror ;;
-    fix)   echo "$files" | xargs clang-format -i ;;
+    check) echo "$files" | xargs "$cf" --dry-run -Werror ;;
+    fix)   echo "$files" | xargs "$cf" -i ;;
     *) echo "usage: $0 check|fix" >&2; exit 2 ;;
 esac
