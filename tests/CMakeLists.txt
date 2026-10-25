@@ -16,6 +16,10 @@ wsrv_add_test(NAME net_syscalls_test SOURCES net/syscalls_test.cpp LINK wsrv::ne
 wsrv_add_test(NAME net_timer_wheel_test SOURCES net/timer_wheel_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_epoll_poller_test SOURCES net/epoll_poller_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_event_loop_test SOURCES net/event_loop_test.cpp LINK wsrv::net)
+wsrv_add_test(NAME net_endpoint_test SOURCES net/endpoint_test.cpp LINK wsrv::net)
+wsrv_add_test(NAME net_plain_transport_test SOURCES net/plain_transport_test.cpp LINK wsrv::net)
+wsrv_add_test(NAME net_acceptor_test SOURCES net/acceptor_test.cpp LINK wsrv::net)
+wsrv_add_test(NAME net_loopback_test SOURCES net/loopback_test.cpp LINK wsrv::net)
 
 # Differential tests against OpenSSL are test-only and optional (ADR-0005: no runtime dependency).
 find_package(OpenSSL QUIET)
