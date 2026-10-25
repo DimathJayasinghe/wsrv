@@ -21,6 +21,12 @@ struct SysResult {
     int err = 0;
 };
 
+/// Socket option identifier: the (level, name) pair of setsockopt(2).
+struct SockOpt {
+    int level;
+    int name;
+};
+
 /// Every kernel call the server makes, behind one interface (docs/TESTING_STRATEGY.md section 2,
 /// "Syscall layer"). Production code uses LinuxSyscalls; tests use a fake that injects failures
 /// (EINTR, EAGAIN, EMFILE, EPIPE...) so every error path runs without a misbehaving kernel.
@@ -45,11 +51,12 @@ public:
     virtual SysResult write(int fd, const void* buf, std::size_t count) = 0;
     virtual SysResult send(int fd, const void* buf, std::size_t count, int flags) = 0;
     virtual SysResult shutdown(int fd, int how) = 0;
-    virtual SysResult setsockopt(int fd, int level, int name, const void* value, socklen_t len) = 0;
+    virtual SysResult setsockopt(int fd, SockOpt option, const void* value, socklen_t len) = 0;
     virtual SysResult getsockname(int fd, sockaddr* addr, socklen_t* len) = 0;
     virtual SysResult epoll_create1(int flags) = 0;
     virtual SysResult epoll_ctl(int epoll_fd, int op, int fd, epoll_event* event) = 0;
-    virtual SysResult epoll_wait(int epoll_fd, epoll_event* events, int max_events, int timeout_ms) = 0;
+    virtual SysResult
+    epoll_wait(int epoll_fd, epoll_event* events, int max_events, int timeout_ms) = 0;
     virtual SysResult eventfd(unsigned initial, int flags) = 0;
     /// Open /dev/null read-only with O_CLOEXEC: the spare descriptor the acceptor keeps for the
     /// EMFILE trick (EC-N05).
@@ -69,11 +76,12 @@ public:
     SysResult write(int fd, const void* buf, std::size_t count) override;
     SysResult send(int fd, const void* buf, std::size_t count, int flags) override;
     SysResult shutdown(int fd, int how) override;
-    SysResult setsockopt(int fd, int level, int name, const void* value, socklen_t len) override;
+    SysResult setsockopt(int fd, SockOpt option, const void* value, socklen_t len) override;
     SysResult getsockname(int fd, sockaddr* addr, socklen_t* len) override;
     SysResult epoll_create1(int flags) override;
     SysResult epoll_ctl(int epoll_fd, int op, int fd, epoll_event* event) override;
-    SysResult epoll_wait(int epoll_fd, epoll_event* events, int max_events, int timeout_ms) override;
+    SysResult
+    epoll_wait(int epoll_fd, epoll_event* events, int max_events, int timeout_ms) override;
     SysResult eventfd(unsigned initial, int flags) override;
     SysResult open_null() override;
     void close(int fd) noexcept override;

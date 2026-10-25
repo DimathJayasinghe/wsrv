@@ -31,6 +31,19 @@ struct Endpoint {
 /// "1.2.3.4:80" or "[::1]:80". Thread-affinity: pure, any-thread.
 [[nodiscard]] std::string format_endpoint(const Endpoint& endpoint);
 
+/// The one place the POSIX `sockaddr_storage` -> `sockaddr` idiom is spelled out, so the rest of
+/// the code never needs a reinterpret_cast.
+[[nodiscard]] inline sockaddr* as_sockaddr(sockaddr_storage& storage) noexcept {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): sockaddr_storage is defined to
+    // be castable
+    return reinterpret_cast<sockaddr*>(&storage);
+}
+[[nodiscard]] inline const sockaddr* as_sockaddr(const sockaddr_storage& storage) noexcept {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): sockaddr_storage is defined to
+    // be castable
+    return reinterpret_cast<const sockaddr*>(&storage);
+}
+
 /// Fill `storage` with the socket address of `endpoint`; @return its length.
 [[nodiscard]] socklen_t to_sockaddr(const Endpoint& endpoint, sockaddr_storage& storage);
 

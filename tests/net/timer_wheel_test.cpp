@@ -15,10 +15,10 @@ namespace {
 
 using namespace std::chrono_literals;
 using wsrv::ErrorCode;
+using wsrv::TimePoint;
 using wsrv::TimerId;
 using wsrv::TimerWheel;
 using wsrv::TimerWheelConfig;
-using wsrv::TimePoint;
 
 const TimePoint kStart{};
 
@@ -65,7 +65,7 @@ TEST(TimerWheel, ADeadlineBetweenTicksFiresAtTheNextTickBoundaryNeverEarly) {
 TEST(TimerWheel, ATimerBeyondOneRevolutionWaitsForItsRound) {
     TimerWheel wheel{small_config(8), kStart};  // one revolution = 80 ms
     const auto id = wheel.schedule(kStart + 250ms);
-    EXPECT_TRUE(advance(wheel, kStart + 80ms).empty());   // same slot, earlier round
+    EXPECT_TRUE(advance(wheel, kStart + 80ms).empty());  // same slot, earlier round
     EXPECT_TRUE(advance(wheel, kStart + 160ms).empty());
     EXPECT_TRUE(advance(wheel, kStart + 249ms).empty());
     EXPECT_EQ(advance(wheel, kStart + 250ms), (std::vector<TimerId>{*id}));
@@ -108,8 +108,7 @@ TEST(TimerWheel, TimersFireEarliestFirstAndTiesByCreationOrder) {
     const auto first = wheel.schedule(kStart + 20ms);
     const auto second = wheel.schedule(kStart + 20ms);
     const auto mid = wheel.schedule(kStart + 40ms);
-    EXPECT_EQ(advance(wheel, kStart + 1s),
-              (std::vector<TimerId>{*first, *second, *mid, *late}));
+    EXPECT_EQ(advance(wheel, kStart + 1s), (std::vector<TimerId>{*first, *second, *mid, *late}));
 }
 
 TEST(TimerWheel, ABigClockJumpFiresEverythingDue) {
@@ -179,7 +178,7 @@ TEST(TimerWheel, NextWakeIsNeverLaterThanTheEarliestDeadline) {
     EXPECT_LE(*wheel.next_wake(), kStart + 700ms);
     const auto soon = wheel.schedule(kStart + 35ms);
     EXPECT_LE(*wheel.next_wake(), kStart + 40ms);  // the deadline tick
-    EXPECT_GT(*wheel.next_wake(), kStart);          // and it is not "right now"
+    EXPECT_GT(*wheel.next_wake(), kStart);         // and it is not "right now"
     EXPECT_TRUE(wheel.cancel(*soon));
     EXPECT_LE(*wheel.next_wake(), kStart + 700ms);
 }
@@ -211,15 +210,14 @@ TEST(TimerWheel, AgreesWithANaiveModelOverTwentyThousandRandomOperations) {
     std::map<TimerId, std::int64_t> model;
     std::set<TimerId> live;
     std::int64_t now_ms = 0;
-    auto boundary = [&](std::int64_t deadline_ms) {
-        return (deadline_ms + 9) / 10 * 10;
-    };
+    auto boundary = [&](std::int64_t deadline_ms) { return (deadline_ms + 9) / 10 * 10; };
     for (int step = 0; step < 20000; ++step) {
         switch (rng() % 5) {
         case 0:
         case 1: {  // schedule, sometimes in the past, sometimes far away
             const std::int64_t deadline = now_ms + static_cast<std::int64_t>(rng() % 3000) - 200;
-            const auto id = wheel.schedule(kStart + std::chrono::milliseconds{std::max<std::int64_t>(deadline, 0)});
+            const auto id = wheel.schedule(
+                kStart + std::chrono::milliseconds{std::max<std::int64_t>(deadline, 0)});
             ASSERT_TRUE(id.has_value());
             model[*id] = boundary(std::max<std::int64_t>(deadline, 0));
             live.insert(*id);
@@ -238,8 +236,10 @@ TEST(TimerWheel, AgreesWithANaiveModelOverTwentyThousandRandomOperations) {
             break;
         }
         default: {  // advance: small steps mostly, occasionally a big jump
-            now_ms += (rng() % 10 == 0) ? static_cast<std::int64_t>(rng() % 5000) : static_cast<std::int64_t>(rng() % 40);
-            const std::vector<TimerId> fired = advance(wheel, kStart + std::chrono::milliseconds{now_ms});
+            now_ms += (rng() % 10 == 0) ? static_cast<std::int64_t>(rng() % 5000)
+                                        : static_cast<std::int64_t>(rng() % 40);
+            const std::vector<TimerId> fired =
+                advance(wheel, kStart + std::chrono::milliseconds{now_ms});
             const std::int64_t tick_floor = now_ms / 10 * 10;
             std::vector<TimerId> expected;
             for (const auto& [id, b] : model) {
@@ -264,9 +264,14 @@ TEST(TimerWheel, AgreesWithANaiveModelOverTwentyThousandRandomOperations) {
         }
         ASSERT_EQ(wheel.size(), model.size()) << "step " << step;
         if (!model.empty()) {
-            const std::int64_t earliest = std::min_element(model.begin(), model.end(), [](const auto& l, const auto& r) { return l.second < r.second; })->second;
+            const std::int64_t earliest =
+                std::min_element(model.begin(), model.end(), [](const auto& l, const auto& r) {
+                    return l.second < r.second;
+                })->second;
             ASSERT_TRUE(wheel.next_wake().has_value());
-            EXPECT_LE(*wheel.next_wake(), kStart + std::chrono::milliseconds{std::max(earliest, now_ms / 10 * 10)}) << "step " << step;
+            EXPECT_LE(*wheel.next_wake(),
+                      kStart + std::chrono::milliseconds{std::max(earliest, now_ms / 10 * 10)})
+                << "step " << step;
         }
     }
 }

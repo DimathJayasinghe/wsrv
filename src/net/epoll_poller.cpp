@@ -46,7 +46,8 @@ constexpr std::size_t kMaxBatch = 256;
 }  // namespace
 
 Result<std::unique_ptr<EpollPoller>> EpollPoller::create(ISyscalls& sys) {
-    const Result<long> epoll_fd = retrying([&] { return sys.epoll_create1(EPOLL_CLOEXEC); }, "epoll_create1");
+    const Result<long> epoll_fd =
+        retrying([&] { return sys.epoll_create1(EPOLL_CLOEXEC); }, "epoll_create1");
     if (!epoll_fd) {
         return std::unexpected{epoll_fd.error()};
     }

@@ -14,10 +14,7 @@ Acceptor::Acceptor(EventLoop& loop,
                    ISyscalls& sys,
                    AcceptCallback on_accept,
                    AcceptorConfig config)
-    : loop_{loop},
-      listener_{listener},
-      sys_{sys},
-      on_accept_{std::move(on_accept)},
+    : loop_{loop}, listener_{listener}, sys_{sys}, on_accept_{std::move(on_accept)},
       config_{config} {}
 
 Acceptor::~Acceptor() {
@@ -39,8 +36,9 @@ Result<void> Acceptor::start() {
 }
 
 void Acceptor::stop() {
+    epoch_ = std::make_shared<char>();  // any task still queued for the old epoch becomes a no-op
     if (backoff_) {
-        loop_.cancel(*backoff_);
+        static_cast<void>(loop_.cancel(*backoff_));
         backoff_.reset();
     }
     if (watch_) {
@@ -57,8 +55,8 @@ SysResult Acceptor::accept_one(sockaddr_storage& peer) {
     SysResult result;
     for (std::size_t attempt = 0; attempt < kMaxEintrRetries; ++attempt) {
         socklen_t length = sizeof(peer);
-        result = sys_.accept4(listener_.fd(), reinterpret_cast<sockaddr*>(&peer), &length,
-                              SOCK_NONBLOCK | SOCK_CLOEXEC);
+        result =
+            sys_.accept4(listener_.fd(), as_sockaddr(peer), &length, SOCK_NONBLOCK | SOCK_CLOEXEC);
         if (result.err != EINTR) {
             break;
         }
@@ -68,7 +66,9 @@ SysResult Acceptor::accept_one(sockaddr_storage& peer) {
 
 void Acceptor::deliver(Fd client, const sockaddr_storage& peer) noexcept {
     const int on = 1;  // best effort: a failure only costs latency
-    (void)sys_.setsockopt(client.get(), IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
+    const bool nodelay =
+        sys_.setsockopt(client.get(), {IPPROTO_TCP, TCP_NODELAY}, &on, sizeof(on)).err == 0;
+    static_cast<void>(nodelay);
     const Result<Endpoint> from = from_sockaddr(peer);
     try {
         on_accept_(std::move(client), from.value_or(Endpoint{}));
@@ -108,8 +108,9 @@ void Acceptor::accept_burst() noexcept {
     }
     // Budget used up: connections may still be queued but the edge was consumed. Re-arm so the
     // kernel reports them again in the next iteration.
-    if (watch_) {
-        (void)loop_.rewatch(*watch_, PollEvents::Read);
+    if (watch_ && !loop_.rewatch(*watch_, PollEvents::Read)) {
+        ++error_count_;
+        pause();  // cannot re-arm the listener: back off instead of leaving queued clients deaf
     }
 }
 
@@ -136,16 +137,32 @@ void Acceptor::pause() noexcept {
         loop_.unwatch(*watch_);
         watch_.reset();
     }
+    schedule_backoff();
+}
+
+/// Arm the back-off timer. If that is impossible (timer table full, out of memory) the attempt is
+/// repeated from a posted task, i.e. paced by the loop, never by re-entering accept on this stack.
+void Acceptor::schedule_backoff() noexcept {
     try {
-        const Result<TimerHandle> timer = loop_.run_after(config_.emfile_backoff, [this] { resume(); });
+        const Result<TimerHandle> timer =
+            loop_.run_after(config_.emfile_backoff, [this] { resume(); });
         if (timer) {
             backoff_ = *timer;
             return;
         }
+        ++error_count_;
+        const std::weak_ptr<char> token = epoch_;
+        const Result<void> queued = loop_.post([this, token] {
+            if (token.lock()) {
+                schedule_backoff();
+            }
+        });
+        if (!queued) {
+            ++error_count_;  // nothing left to try: stay paused until stop() / start()
+        }
     } catch (const std::exception&) {
-        // falls through to the immediate retry below
+        ++error_count_;  // allocating the callback failed: same outcome, stay paused
     }
-    resume();  // cannot schedule a back-off (timer table full): retry now rather than stay deaf
 }
 
 void Acceptor::resume() noexcept {
@@ -153,7 +170,8 @@ void Acceptor::resume() noexcept {
     const Result<WatchHandle> watch = loop_.watch(listener_.fd(), PollEvents::Read, *this);
     if (!watch) {
         ++error_count_;
-        return;  // the descriptor table of the loop is full; start()/stop() own recovery
+        pause();
+        return;
     }
     watch_ = *watch;
     accept_burst();  // the edge may have been missed while we were not watching

@@ -39,7 +39,8 @@ struct Pair {
     Fd far;
     Pair() {
         std::array<int, 2> fds{};
-        EXPECT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, fds.data()), 0);
+        EXPECT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, fds.data()),
+                  0);
         near.reset(fds[0]);
         far.reset(fds[1]);
     }
@@ -64,8 +65,7 @@ struct Recorder final : IEventHandler {
     }
 };
 
-class EventLoopTest : public ::testing::Test {
-protected:
+struct EventLoopTest : public ::testing::Test {
     FakeSyscalls sys;
     FakeClock clock;
     std::unique_ptr<EventLoop> make(EventLoopConfig config = {}) {
@@ -98,9 +98,10 @@ TEST_F(EventLoopTest, ATaskPostedByATaskRunsInTheNextIterationNotRecursively) {
     auto loop = make();
     std::vector<int> order;
     ASSERT_TRUE(loop->post([&] {
-                    order.push_back(1);
-                    EXPECT_TRUE(loop->post([&] { order.push_back(2); }).has_value());
-                }).has_value());
+                        order.push_back(1);
+                        EXPECT_TRUE(loop->post([&] { order.push_back(2); }).has_value());
+                    })
+                    .has_value());
     ASSERT_TRUE(loop->run_once(0ms).has_value());
     EXPECT_EQ(order, (std::vector<int>{1}));
     ASSERT_TRUE(loop->run_once(0ms).has_value());
@@ -152,9 +153,10 @@ TEST_F(EventLoopTest, APostFromAnotherThreadWakesABlockedLoop) {
     std::thread runner{[&] { EXPECT_TRUE(loop->run().has_value()); }};
     std::this_thread::sleep_for(50ms);  // let it block in epoll_wait with nothing to do
     ASSERT_TRUE(loop->post([&] {
-                    ran = true;
-                    loop->stop();
-                }).has_value());
+                        ran = true;
+                        loop->stop();
+                    })
+                    .has_value());
     runner.join();
     EXPECT_TRUE(ran);
 }
@@ -177,9 +179,10 @@ TEST_F(EventLoopTest, APostMadeBeforeRunStartsIsNotLost) {
     auto loop = make();
     std::atomic<int> ran{0};
     ASSERT_TRUE(loop->post([&] {
-                    ++ran;
-                    loop->stop();
-                }).has_value());
+                        ++ran;
+                        loop->stop();
+                    })
+                    .has_value());
     EXPECT_TRUE(loop->run().has_value());
     EXPECT_EQ(ran, 1);
 }
@@ -193,6 +196,7 @@ TEST_F(EventLoopTest, ManyThreadsPostingLoseNothingAndRunEachTaskOnce) {  // TSA
     std::atomic<int> ran{0};
     std::thread runner{[&] { EXPECT_TRUE(loop->run().has_value()); }};
     std::vector<std::thread> producers;
+    producers.reserve(kThreads);
     for (int t = 0; t < kThreads; ++t) {
         producers.emplace_back([&] {
             for (int i = 0; i < kPerThread; ++i) {
@@ -398,7 +402,8 @@ TEST_F(EventLoopTest, AWatchOfAnInvalidDescriptorFailsAndLeaksNoSlot) {
     EXPECT_TRUE(loop->watch(pair.near.get(), PollEvents::Read, handler).has_value());
 }
 
-TEST_F(EventLoopTest, AStaleEventForAReusedDescriptorNumberIsNeverDeliveredToTheNewOwner) {  // EC-N12
+TEST_F(EventLoopTest,
+       AStaleEventForAReusedDescriptorNumberIsNeverDeliveredToTheNewOwner) {  // EC-N12
     auto loop = make();
     Pair a;
     Pair b;
@@ -437,7 +442,7 @@ TEST_F(EventLoopTest, AStaleEventForAReusedDescriptorNumberIsNeverDeliveredToThe
     b.send("y");
     ASSERT_TRUE(loop->run_once(100ms).has_value());
     EXPECT_EQ(handler_a.seen.size() + handler_b.seen.size(), 1U);  // the second event was dropped
-    EXPECT_TRUE(fresh.seen.empty());                                // and not given to the newcomer
+    EXPECT_TRUE(fresh.seen.empty());                               // and not given to the newcomer
 }
 
 TEST_F(EventLoopTest, AHandlerMayUnwatchItsOwnDescriptorFromInsideTheCallback) {

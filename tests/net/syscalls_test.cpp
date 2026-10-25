@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "net/syscalls.hpp"
 
+#include "net/endpoint.hpp"
 #include "support/fake_syscalls.hpp"
 
 #include <gtest/gtest.h>
@@ -53,15 +54,16 @@ TEST(LinuxSyscalls, ListensOnAnEphemeralPortAndReportsIt) {
     wsrv::LinuxSyscalls sys;
     const SysResult fd = sys.socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     ASSERT_EQ(fd.err, 0);
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    ASSERT_EQ(sys.bind(static_cast<int>(fd.value), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)).err, 0);
+    sockaddr_storage addr{};
+    const socklen_t addr_len = wsrv::to_sockaddr(*wsrv::parse_endpoint("127.0.0.1", 0), addr);
+    ASSERT_EQ(sys.bind(static_cast<int>(fd.value), wsrv::as_sockaddr(addr), addr_len).err, 0);
     ASSERT_EQ(sys.listen(static_cast<int>(fd.value), 8).err, 0);
-    sockaddr_in bound{};
+    sockaddr_storage bound{};
     socklen_t len = sizeof(bound);
-    ASSERT_EQ(sys.getsockname(static_cast<int>(fd.value), reinterpret_cast<sockaddr*>(&bound), &len).err, 0);
-    EXPECT_NE(ntohs(bound.sin_port), 0);
+    ASSERT_EQ(sys.getsockname(static_cast<int>(fd.value), wsrv::as_sockaddr(bound), &len).err, 0);
+    const auto local = wsrv::from_sockaddr(bound);
+    ASSERT_TRUE(local.has_value());
+    EXPECT_NE(local->port, 0);
     // Nothing is connecting: a non-blocking accept4 would block.
     EXPECT_EQ(sys.accept4(static_cast<int>(fd.value), nullptr, nullptr, SOCK_NONBLOCK).err, EAGAIN);
     sys.close(static_cast<int>(fd.value));
@@ -76,9 +78,13 @@ TEST(LinuxSyscalls, EventfdEpollAndDevNullWork) {
     epoll_event reg{};
     reg.events = EPOLLIN;
     reg.data.u64 = 42;
-    ASSERT_EQ(sys.epoll_ctl(static_cast<int>(ep.value), EPOLL_CTL_ADD, static_cast<int>(ev.value), &reg).err, 0);
+    ASSERT_EQ(
+        sys.epoll_ctl(static_cast<int>(ep.value), EPOLL_CTL_ADD, static_cast<int>(ev.value), &reg)
+            .err,
+        0);
     std::array<epoll_event, 4> out{};
-    EXPECT_EQ(sys.epoll_wait(static_cast<int>(ep.value), out.data(), 4, 0).value, 0);  // nothing ready
+    EXPECT_EQ(sys.epoll_wait(static_cast<int>(ep.value), out.data(), 4, 0).value,
+              0);  // nothing ready
     const std::uint64_t one = 1;
     ASSERT_EQ(sys.write(static_cast<int>(ev.value), &one, sizeof(one)).value, 8);
     const SysResult ready = sys.epoll_wait(static_cast<int>(ep.value), out.data(), 4, 100);
@@ -108,10 +114,7 @@ TEST(Retrying, ReturnsTheValueOfASuccessfulCall) {
 TEST(Retrying, RetriesEintrUntilTheCallSucceeds) {
     int calls = 0;
     const wsrv::Result<long> r = wsrv::retrying(
-        [&] {
-            return ++calls < 4 ? SysResult{-1, EINTR} : SysResult{5, 0};
-        },
-        "test");
+        [&] { return ++calls < 4 ? SysResult{-1, EINTR} : SysResult{5, 0}; }, "test");
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(*r, 5);
     EXPECT_EQ(calls, 4);
@@ -131,19 +134,23 @@ TEST(Retrying, GivesUpAfterTooManyInterruptions) {
 }
 
 TEST(Retrying, MapsOtherErrorsWithTheCallersContext) {
-    const wsrv::Result<long> again = wsrv::retrying([] { return SysResult{-1, EAGAIN}; }, "read client");
+    const wsrv::Result<long> again =
+        wsrv::retrying([] { return SysResult{-1, EAGAIN}; }, "read client");
     ASSERT_FALSE(again.has_value());
     EXPECT_EQ(again.error().code, ErrorCode::WouldBlock);
     EXPECT_EQ(again.error().context, "read client");
-    const wsrv::Result<long> pipe = wsrv::retrying([] { return SysResult{-1, EPIPE}; }, "write client");
+    const wsrv::Result<long> pipe =
+        wsrv::retrying([] { return SysResult{-1, EPIPE}; }, "write client");
     EXPECT_EQ(pipe.error().code, ErrorCode::ConnectionClosed);
 }
 
 TEST(FakeSyscalls, InjectsAFailureOnceThenFallsThroughToTheKernel) {
     FakeSyscalls sys;
     sys.fail(Call::Accept4, EMFILE);
-    EXPECT_EQ(sys.accept4(-1, nullptr, nullptr, 0).err, EMFILE);  // scripted: the kernel was not asked
-    EXPECT_EQ(sys.accept4(-1, nullptr, nullptr, 0).err, EBADF);   // queue empty: the real kernel says so
+    EXPECT_EQ(sys.accept4(-1, nullptr, nullptr, 0).err,
+              EMFILE);  // scripted: the kernel was not asked
+    EXPECT_EQ(sys.accept4(-1, nullptr, nullptr, 0).err,
+              EBADF);  // queue empty: the real kernel says so
     EXPECT_EQ(sys.calls(Call::Accept4), 2U);
     EXPECT_EQ(sys.pending_script(Call::Accept4), 0U);
 }

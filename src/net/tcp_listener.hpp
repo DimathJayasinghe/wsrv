@@ -8,8 +8,9 @@
 namespace wsrv {
 
 struct ListenerConfig {
-    Endpoint endpoint;     ///< port 0 asks the kernel for a free one (see local_endpoint())
-    int backlog = 511;     ///< kernel accept queue; the effective value is capped by net.core.somaxconn
+    Endpoint endpoint;  ///< port 0 asks the kernel for a free one (see local_endpoint())
+    int backlog =
+        511;  ///< kernel accept queue; the effective value is capped by net.core.somaxconn
     bool reuse_port = false;  ///< SO_REUSEPORT: several listeners (one per loop) share the port
 };
 

@@ -37,15 +37,27 @@ TEST(Endpoint, ParsesIpv6LiteralsIncludingLoopbackWildcardAndMappedIpv4) {  // E
 }
 
 TEST(Endpoint, RejectsEverythingThatIsNotALiteralAddress) {
-    for (const char* bad : {"", "localhost", "example.com", "256.0.0.1", "1.2.3", "1.2.3.4.5", " 1.2.3.4",
-                            "1.2.3.4 ", "01.2.3.4x", "::g", "[::1]", "1.2.3.4:80", "0x7f.0.0.1"}) {
+    for (const char* bad : {"",
+                            "localhost",
+                            "example.com",
+                            "256.0.0.1",
+                            "1.2.3",
+                            "1.2.3.4.5",
+                            " 1.2.3.4",
+                            "1.2.3.4 ",
+                            "01.2.3.4x",
+                            "::g",
+                            "[::1]",
+                            "1.2.3.4:80",
+                            "0x7f.0.0.1"}) {
         const auto e = wsrv::parse_endpoint(bad, 80);
         EXPECT_FALSE(e.has_value()) << bad;
         if (!e.has_value()) {
             EXPECT_EQ(e.error().code, ErrorCode::InvalidArgument) << bad;
         }
     }
-    EXPECT_FALSE(wsrv::parse_endpoint(std::string(100, '1'), 80).has_value());  // longer than any address
+    EXPECT_FALSE(
+        wsrv::parse_endpoint(std::string(100, '1'), 80).has_value());  // longer than any address
 }
 
 TEST(Endpoint, EqualEndpointsCompareEqual) {

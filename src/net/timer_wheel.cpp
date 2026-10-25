@@ -63,7 +63,10 @@ Result<TimerId> TimerWheel::schedule(TimePoint deadline) {
             std::list<Entry>& slot = lists_[static_cast<std::size_t>(expiry) % config_.slots];
             slot.push_back(Entry{id, expiry});
             try {
-                index_.emplace(id, Where{static_cast<std::size_t>(expiry) % config_.slots, std::prev(slot.end()), expiry});
+                index_.emplace(id,
+                               Where{static_cast<std::size_t>(expiry) % config_.slots,
+                                     std::prev(slot.end()),
+                                     expiry});
             } catch (const std::bad_alloc&) {
                 slot.pop_back();
                 throw;
@@ -98,8 +101,8 @@ void TimerWheel::advance(TimePoint now, std::vector<TimerId>& expired, std::size
     const std::int64_t visits =
         std::min<std::int64_t>(target - cursor_, static_cast<std::int64_t>(config_.slots));
     for (std::int64_t i = 1; i <= visits; ++i) {
-        std::list<Entry>& slot =
-            lists_[static_cast<std::size_t>((cursor_ + i) % static_cast<std::int64_t>(config_.slots))];
+        std::list<Entry>& slot = lists_[static_cast<std::size_t>(
+            (cursor_ + i) % static_cast<std::int64_t>(config_.slots))];
         for (auto it = slot.begin(); it != slot.end();) {
             if (it->expiry <= target) {
                 ready_.insert({it->expiry, it->id});
@@ -132,7 +135,8 @@ std::optional<TimePoint> TimerWheel::next_wake() const {
             return time_of(tick);  // a lower bound: the entry may belong to a later round
         }
     }
-    return time_of(cursor_ + static_cast<std::int64_t>(config_.slots));  // unreachable if index_ is consistent
+    return time_of(
+        cursor_ + static_cast<std::int64_t>(config_.slots));  // unreachable if index_ is consistent
 }
 
 }  // namespace wsrv

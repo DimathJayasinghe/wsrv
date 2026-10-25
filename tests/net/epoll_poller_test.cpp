@@ -32,7 +32,8 @@ struct Pair {
     Fd far;
     Pair() {
         std::array<int, 2> fds{};
-        EXPECT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, fds.data()), 0);
+        EXPECT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, fds.data()),
+                  0);
         near.reset(fds[0]);
         far.reset(fds[1]);
     }
@@ -132,10 +133,10 @@ TEST_F(EpollPollerTest, RemoveStopsAllEvents) {
 TEST_F(EpollPollerTest, RegistrationMistakesAreErrorsNotCrashes) {
     const Pair pair;
     ASSERT_TRUE(poller->add(pair.near.get(), kRead, 1).has_value());
-    EXPECT_FALSE(poller->add(pair.near.get(), kRead, 2).has_value());   // twice
-    EXPECT_FALSE(poller->remove(pair.far.get()).has_value());           // never added
+    EXPECT_FALSE(poller->add(pair.near.get(), kRead, 2).has_value());  // twice
+    EXPECT_FALSE(poller->remove(pair.far.get()).has_value());          // never added
     EXPECT_FALSE(poller->modify(pair.far.get(), kRead, 1).has_value());
-    EXPECT_FALSE(poller->add(-1, kRead, 1).has_value());                // not a descriptor
+    EXPECT_FALSE(poller->add(-1, kRead, 1).has_value());  // not a descriptor
 }
 
 TEST_F(EpollPollerTest, DeliversNoMoreEventsThanTheCallerHasRoomForAndKeepsTheRest) {

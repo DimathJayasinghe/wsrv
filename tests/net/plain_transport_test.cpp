@@ -28,13 +28,15 @@ struct Fixture {
 
     static std::pair<Fd, Fd> pair() {
         std::array<int, 2> fds{};
-        EXPECT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, fds.data()), 0);
+        EXPECT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, fds.data()),
+                  0);
         return {Fd{fds[0]}, Fd{fds[1]}};
     }
     Fixture() : Fixture(pair()) {}
 
 private:
-    explicit Fixture(std::pair<Fd, Fd> p) : peer{std::move(p.second)}, transport{std::move(p.first), sys} {}
+    explicit Fixture(std::pair<Fd, Fd> p)
+        : peer{std::move(p.second)}, transport{std::move(p.first), sys} {}
 };
 
 wsrv::ByteView bytes_of(const std::string& s) {
@@ -48,7 +50,7 @@ TEST(PlainTransport, ReadsWhatThePeerSent) {
     const auto n = f.transport.read(buf);
     ASSERT_TRUE(n.has_value());
     EXPECT_EQ(*n, 5U);
-    EXPECT_EQ(std::string(reinterpret_cast<const char*>(buf.data()), 5), "hello");
+    EXPECT_EQ(std::string{wsrv::as_chars(wsrv::ByteView{buf}.first(5))}, "hello");
 }
 
 TEST(PlainTransport, ReadWithNothingAvailableIsWouldBlockNotAnEof) {  // EC-N01
@@ -151,7 +153,8 @@ TEST(PlainTransport, CloseReleasesTheDescriptorAndIsIdempotent) {
     std::array<char, 4> buf{};
     EXPECT_EQ(::read(f.peer.get(), buf.data(), buf.size()), 0);  // the peer sees the close
     std::array<std::byte, 4> in{};
-    EXPECT_FALSE(f.transport.read(in).has_value());  // using a closed transport is an error, not a crash
+    EXPECT_FALSE(
+        f.transport.read(in).has_value());  // using a closed transport is an error, not a crash
 }
 
 }  // namespace

@@ -134,7 +134,8 @@ private:
         bool active = false;
     };
 
-    [[nodiscard]] static std::uint64_t token_of(std::uint32_t index, std::uint32_t generation) noexcept;
+    [[nodiscard]] static std::uint64_t token_of(std::uint32_t index,
+                                                std::uint32_t generation) noexcept;
     [[nodiscard]] Watch* find(WatchHandle handle) noexcept;
     void wake() noexcept;
     void drain_wake() noexcept;
@@ -157,7 +158,7 @@ private:
     std::vector<TimerId> expired_;
 
     std::mutex tasks_mutex_;
-    std::deque<Task> tasks_;  // guarded by tasks_mutex_
+    std::deque<Task> tasks_;   // guarded by tasks_mutex_
     std::vector<Task> batch_;  // loop thread only
     std::atomic<bool> wake_pending_{false};
     std::atomic<bool> stopping_{false};

@@ -54,8 +54,8 @@ SysResult LinuxSyscalls::shutdown(int fd, int how) {
     return captured(::shutdown(fd, how));
 }
 
-SysResult LinuxSyscalls::setsockopt(int fd, int level, int name, const void* value, socklen_t len) {
-    return captured(::setsockopt(fd, level, name, value, len));
+SysResult LinuxSyscalls::setsockopt(int fd, SockOpt option, const void* value, socklen_t len) {
+    return captured(::setsockopt(fd, option.level, option.name, value, len));
 }
 
 SysResult LinuxSyscalls::getsockname(int fd, sockaddr* addr, socklen_t* len) {

@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 
 namespace wsrv {
@@ -73,6 +74,7 @@ private:
     void deliver(Fd client, const sockaddr_storage& peer) noexcept;
     void shed_pending() noexcept;
     void pause() noexcept;
+    void schedule_backoff() noexcept;
     void resume() noexcept;
 
     EventLoop& loop_;
@@ -83,6 +85,9 @@ private:
     Fd reserve_;
     std::optional<WatchHandle> watch_;
     std::optional<TimerHandle> backoff_;
+    /// Lifetime token for tasks posted to the loop: they hold a weak_ptr, and stop() / the
+    /// destructor drop this one, so a task that outlives the acceptor does nothing.
+    std::shared_ptr<char> epoch_ = std::make_shared<char>();
     std::uint64_t shed_count_ = 0;
     std::uint64_t error_count_ = 0;
 };

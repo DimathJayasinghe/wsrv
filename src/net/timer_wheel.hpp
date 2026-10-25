@@ -20,9 +20,10 @@ namespace wsrv {
 using TimerId = std::uint64_t;
 
 struct TimerWheelConfig {
-    std::chrono::milliseconds tick{10};  ///< resolution: a timer fires at its deadline rounded up to a tick
-    std::size_t slots = 256;             ///< wheel size; one revolution = tick * slots
-    std::size_t max_timers = 1U << 20;   ///< hard bound on live timers (schedule() fails beyond it)
+    std::chrono::milliseconds tick{
+        10};                  ///< resolution: a timer fires at its deadline rounded up to a tick
+    std::size_t slots = 256;  ///< wheel size; one revolution = tick * slots
+    std::size_t max_timers = 1U << 20;  ///< hard bound on live timers (schedule() fails beyond it)
 };
 
 /// A hashed timer wheel: a timer with deadline tick T is stored in slot T % slots, so scheduling
@@ -73,7 +74,7 @@ private:
         std::int64_t expiry;
     };
 
-    [[nodiscard]] std::int64_t tick_at(TimePoint t) const;     // rounded down
+    [[nodiscard]] std::int64_t tick_at(TimePoint t) const;            // rounded down
     [[nodiscard]] std::int64_t tick_for_deadline(TimePoint t) const;  // rounded up
     [[nodiscard]] TimePoint time_of(std::int64_t tick) const;
 

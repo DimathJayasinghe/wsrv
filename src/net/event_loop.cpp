@@ -30,10 +30,7 @@ EventLoop::EventLoop(Key /*unused*/,
                      EventLoopConfig config,
                      std::unique_ptr<IPoller> poller,
                      Fd wake_fd)
-    : sys_{sys},
-      clock_{clock},
-      config_{config},
-      poller_{std::move(poller)},
+    : sys_{sys}, clock_{clock}, config_{config}, poller_{std::move(poller)},
       wake_fd_{std::move(wake_fd)},
       wheel_{TimerWheelConfig{std::chrono::milliseconds{10}, 256, config.max_timers}, clock.now()},
       events_(std::max<std::size_t>(config.max_events_per_iteration, 1)),
@@ -51,7 +48,8 @@ EventLoop::create(ISyscalls& sys, const IClock& clock, EventLoopConfig config) {
         return std::unexpected{wake.error()};
     }
     Fd wake_fd{static_cast<int>(*wake)};
-    if (const Result<void> added = (*poller)->add(wake_fd.get(), PollEvents::Read, kWakeToken); !added) {
+    if (const Result<void> added = (*poller)->add(wake_fd.get(), PollEvents::Read, kWakeToken);
+        !added) {
         return std::unexpected{added.error()};
     }
     try {
@@ -67,7 +65,8 @@ bool EventLoop::in_loop_thread() const noexcept {
 }
 
 std::uint64_t EventLoop::token_of(std::uint32_t index, std::uint32_t generation) noexcept {
-    return (static_cast<std::uint64_t>(generation) << 32U) | (static_cast<std::uint64_t>(index) + 1U);
+    return (static_cast<std::uint64_t>(generation) << 32U) |
+           (static_cast<std::uint64_t>(index) + 1U);
 }
 
 EventLoop::Watch* EventLoop::find(WatchHandle handle) noexcept {
@@ -137,7 +136,8 @@ Result<TimerHandle> EventLoop::run_after(std::chrono::milliseconds delay, Task t
     if (!task) {
         return fail(ErrorCode::InvalidArgument, "empty task");
     }
-    const Result<TimerId> id = wheel_.schedule(clock_.now() + std::max(delay, std::chrono::milliseconds{0}));
+    const Result<TimerId> id =
+        wheel_.schedule(clock_.now() + std::max(delay, std::chrono::milliseconds{0}));
     if (!id) {
         return std::unexpected{id.error()};
     }
@@ -174,7 +174,8 @@ Result<WatchHandle> EventLoop::watch(int fd, PollEvents interest, IEventHandler&
         return fail(ErrorCode::BufferFull, "event loop watch table is full");
     }
     Watch& watch = watches_[index];
-    if (const Result<void> added = poller_->add(fd, interest, token_of(index, watch.generation)); !added) {
+    if (const Result<void> added = poller_->add(fd, interest, token_of(index, watch.generation));
+        !added) {
         free_watches_.push_back(index);  // the slot was never used
         return std::unexpected{added.error()};
     }
@@ -200,7 +201,7 @@ void EventLoop::unwatch(WatchHandle handle) {
         return;
     }
     // Ignored on purpose: if the descriptor was already closed the kernel dropped the registration.
-    (void)poller_->remove(watch->fd);
+    static_cast<void>(poller_->remove(watch->fd).has_value());
     watch->active = false;
     watch->handler = nullptr;
     ++watch->generation;  // every event still carrying the old token is now stale

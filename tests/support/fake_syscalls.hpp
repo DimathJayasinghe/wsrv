@@ -106,11 +106,11 @@ public:
         }
         return real_.shutdown(fd, how);
     }
-    SysResult setsockopt(int fd, int level, int name, const void* v, socklen_t len) override {
+    SysResult setsockopt(int fd, SockOpt option, const void* v, socklen_t len) override {
         if (const auto injected = scripted(Call::SetSockOpt)) {
             return *injected;
         }
-        return real_.setsockopt(fd, level, name, v, len);
+        return real_.setsockopt(fd, option, v, len);
     }
     SysResult getsockname(int fd, sockaddr* addr, socklen_t* len) override {
         if (const auto injected = scripted(Call::GetSockName)) {

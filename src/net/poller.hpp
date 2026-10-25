@@ -18,10 +18,13 @@ enum class PollEvents : std::uint8_t {
     Hangup = 8,  ///< the peer closed or reset; reading yields the rest of the data, then EOF
 };
 
+// The analyzer sees PollEvents as a plain enum; combinations of the bits are intended (bit flags).
 [[nodiscard]] constexpr PollEvents operator|(PollEvents a, PollEvents b) noexcept {
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange): bit-flag combination
     return static_cast<PollEvents>(static_cast<std::uint8_t>(a) | static_cast<std::uint8_t>(b));
 }
 [[nodiscard]] constexpr PollEvents operator&(PollEvents a, PollEvents b) noexcept {
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange): bit-flag combination
     return static_cast<PollEvents>(static_cast<std::uint8_t>(a) & static_cast<std::uint8_t>(b));
 }
 /// True if `set` contains every bit of `bits` (and `bits` is not empty).

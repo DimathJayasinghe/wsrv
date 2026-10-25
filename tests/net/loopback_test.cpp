@@ -31,13 +31,15 @@ public:
         : loop_{loop}, transport_{std::move(fd), sys} {}
 
     void start() {
-        const auto watch = loop_.watch(transport_.fd(), wsrv::PollEvents::Read | wsrv::PollEvents::Write, *this);
+        const auto watch =
+            loop_.watch(transport_.fd(), wsrv::PollEvents::Read | wsrv::PollEvents::Write, *this);
         ASSERT_TRUE(watch.has_value());
         watch_ = *watch;
     }
 
     void on_event(wsrv::PollEvents events) noexcept override {
-        if (wsrv::has(events, wsrv::PollEvents::Read) || wsrv::has(events, wsrv::PollEvents::Hangup)) {
+        if (wsrv::has(events, wsrv::PollEvents::Read) ||
+            wsrv::has(events, wsrv::PollEvents::Hangup)) {
             read_all();
         }
         flush();
@@ -46,7 +48,9 @@ public:
         }
     }
 
-    [[nodiscard]] std::size_t echoed() const { return echoed_; }
+    [[nodiscard]] std::size_t echoed() const {
+        return echoed_;
+    }
 
 private:
     void read_all() {
@@ -60,12 +64,16 @@ private:
                 finished_ = true;
                 return;
             }
-            pending_.insert(pending_.end(), buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(*n));
+            pending_.insert(
+                pending_.end(), buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(*n));
         }
     }
     void flush() {
         while (!pending_.empty()) {
-            std::vector<std::byte> chunk(pending_.begin(), pending_.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(pending_.size(), 65536)));
+            std::vector<std::byte> chunk(
+                pending_.begin(),
+                pending_.begin() +
+                    static_cast<std::ptrdiff_t>(std::min<std::size_t>(pending_.size(), 65536)));
             const auto n = transport_.write(chunk);
             if (!n.has_value()) {
                 return;  // WouldBlock: the Write edge will call us again
@@ -87,7 +95,7 @@ class LoopbackTest : public ::testing::TestWithParam<std::size_t> {};
 
 TEST_P(LoopbackTest, EverythingTheClientSendsComesBackIntact) {
     wsrv::test::FakeSyscalls sys;
-    wsrv::test::FakeClock clock;
+    const wsrv::test::FakeClock clock;
     auto loop = wsrv::EventLoop::create(sys, clock);
     ASSERT_TRUE(loop.has_value());
     wsrv::ListenerConfig config;
@@ -96,7 +104,9 @@ TEST_P(LoopbackTest, EverythingTheClientSendsComesBackIntact) {
     ASSERT_TRUE(listener.has_value());
 
     std::vector<std::unique_ptr<EchoConnection>> connections;
-    wsrv::Acceptor acceptor{**loop, *listener, sys,
+    wsrv::Acceptor acceptor{**loop,
+                            *listener,
+                            sys,
                             [&](wsrv::Fd fd, wsrv::Endpoint) {
                                 connections.push_back(
                                     std::make_unique<EchoConnection>(**loop, std::move(fd), sys));
@@ -115,15 +125,17 @@ TEST_P(LoopbackTest, EverythingTheClientSendsComesBackIntact) {
     std::thread client{[&] {
         wsrv::Fd fd = wsrv::test::connect_to(listener->local_endpoint());
         ASSERT_TRUE(fd.valid());
-        std::thread writer{[&] {  // write and read concurrently: a full pipe in one direction must not deadlock
-            std::size_t sent = 0;
-            while (sent < payload.size()) {
-                const ssize_t n = ::send(fd.get(), payload.data() + sent, payload.size() - sent, MSG_NOSIGNAL);
-                ASSERT_GT(n, 0);
-                sent += static_cast<std::size_t>(n);
-            }
-            ::shutdown(fd.get(), SHUT_WR);
-        }};
+        std::thread writer{
+            [&] {  // write and read concurrently: a full pipe in one direction must not deadlock
+                std::size_t sent = 0;
+                while (sent < payload.size()) {
+                    const ssize_t n = ::send(
+                        fd.get(), payload.data() + sent, payload.size() - sent, MSG_NOSIGNAL);
+                    ASSERT_GT(n, 0);
+                    sent += static_cast<std::size_t>(n);
+                }
+                ::shutdown(fd.get(), SHUT_WR);
+            }};
         std::array<char, 65536> buf{};
         for (;;) {
             const ssize_t n = ::read(fd.get(), buf.data(), buf.size());
@@ -146,6 +158,10 @@ TEST_P(LoopbackTest, EverythingTheClientSendsComesBackIntact) {
     EXPECT_TRUE(received == payload);
 }
 
-INSTANTIATE_TEST_SUITE_P(Sizes, LoopbackTest, ::testing::Values(std::size_t{1}, std::size_t{65536}, std::size_t{4U << 20}));
+INSTANTIATE_TEST_SUITE_P(Sizes,
+                         LoopbackTest,
+                         ::testing::Values(std::size_t{1},
+                                           std::size_t{65536},
+                                           std::size_t{4U << 20}));
 
 }  // namespace
