@@ -13,6 +13,7 @@ wsrv_add_test(NAME net_system_random_test SOURCES net/system_random_test.cpp LIN
 wsrv_add_test(NAME net_io_error_test SOURCES net/io_error_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_fd_test SOURCES net/fd_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_syscalls_test SOURCES net/syscalls_test.cpp LINK wsrv::net)
+wsrv_add_test(NAME net_timer_wheel_test SOURCES net/timer_wheel_test.cpp LINK wsrv::net)
 
 # Differential tests against OpenSSL are test-only and optional (ADR-0005: no runtime dependency).
 find_package(OpenSSL QUIET)
