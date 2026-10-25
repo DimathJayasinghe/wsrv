@@ -77,7 +77,7 @@ Each milestone is *done* only when its exit criteria and the global Definition o
 | M13 | More bindings & platforms | Python, Node, Go, Rust bindings (Tier 1/2 per GOVERNANCE); macOS (`KqueuePoller`), then Windows | Each binding passes Autobahn in CI; per-OS CI green |
 | M14 | Open-source launch | LICENSE/NOTICE, CoC, GOVERNANCE, templates, website/docs site, roadmap, good-first-issues, signed releases + SBOM | Public repo checklist complete; **1.0 tag** |
 
-> **Status (2026-10-24):** M0-M4 merged (PR #1-#5; M4 = protocol session, outbound scheduler, timers, rate limits, `fuzz_session`). M5 (net) in progress on `feat/m5-net`.
+> **Status (2026-10-24):** M0-M4 merged (PR #1-#5; M4 = protocol session, outbound scheduler, timers, rate limits, `fuzz_session`). M5 (net: Fd, ISyscalls + fault injection, timer wheel, epoll poller, event loop, acceptor with reserve-fd, plain transport; lesson 10) implemented and gated on `feat/m5-net`, awaiting independent review and PR. M6 (single-thread server) is next.
 >
 > Sequencing note: TLS (M8) is required built-in (owner decision). permessage-deflate (M9) may slip behind M11/M12 if needed for the PHP milestone. Decide at M7 exit.
 
