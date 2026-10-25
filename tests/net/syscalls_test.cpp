@@ -89,7 +89,9 @@ TEST(LinuxSyscalls, EventfdEpollAndDevNullWork) {
     ASSERT_EQ(sys.write(static_cast<int>(ev.value), &one, sizeof(one)).value, 8);
     const SysResult ready = sys.epoll_wait(static_cast<int>(ep.value), out.data(), 4, 100);
     ASSERT_EQ(ready.value, 1);
-    EXPECT_EQ(out[0].data.u64, 42U);
+    // epoll_event is packed on x86-64, so data.u64 is misaligned: copy it, do not bind a reference
+    const std::uint64_t token = out[0].data.u64;
+    EXPECT_EQ(token, 42U);
     const SysResult null_fd = sys.open_null();
     EXPECT_EQ(null_fd.err, 0);
     EXPECT_GE(null_fd.value, 0);

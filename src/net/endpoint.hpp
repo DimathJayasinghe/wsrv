@@ -34,13 +34,13 @@ struct Endpoint {
 /// The one place the POSIX `sockaddr_storage` -> `sockaddr` idiom is spelled out, so the rest of
 /// the code never needs a reinterpret_cast.
 [[nodiscard]] inline sockaddr* as_sockaddr(sockaddr_storage& storage) noexcept {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): sockaddr_storage is defined to
-    // be castable
+    // sockaddr_storage is defined to be castable to sockaddr.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     return reinterpret_cast<sockaddr*>(&storage);
 }
 [[nodiscard]] inline const sockaddr* as_sockaddr(const sockaddr_storage& storage) noexcept {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): sockaddr_storage is defined to
-    // be castable
+    // sockaddr_storage is defined to be castable to sockaddr.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     return reinterpret_cast<const sockaddr*>(&storage);
 }
 

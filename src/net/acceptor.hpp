@@ -50,6 +50,10 @@ public:
              ISyscalls& sys,
              AcceptCallback on_accept,
              AcceptorConfig config);
+    Acceptor(const Acceptor&) = delete;  // the loop and timers hold `this`
+    Acceptor& operator=(const Acceptor&) = delete;
+    Acceptor(Acceptor&&) = delete;
+    Acceptor& operator=(Acceptor&&) = delete;
     ~Acceptor() override;
 
     /// Open the reserve descriptor and start watching the listener.

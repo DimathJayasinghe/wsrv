@@ -137,7 +137,8 @@ private:
     [[nodiscard]] static std::uint64_t token_of(std::uint32_t index,
                                                 std::uint32_t generation) noexcept;
     [[nodiscard]] Watch* find(WatchHandle handle) noexcept;
-    void wake() noexcept;
+    void request_wake() noexcept;
+    void write_wake() noexcept;
     void drain_wake() noexcept;
     void dispatch(const PollEvent& event);
     void run_timers();
@@ -158,9 +159,12 @@ private:
     std::vector<TimerId> expired_;
 
     std::mutex tasks_mutex_;
-    std::deque<Task> tasks_;   // guarded by tasks_mutex_
-    std::vector<Task> batch_;  // loop thread only
-    std::atomic<bool> wake_pending_{false};
+    std::deque<Task> tasks_;  // guarded by tasks_mutex_
+    /// A wake-up is already guaranteed: some producer has written (or is about to write) the
+    /// eventfd, or the loop will pop the queue before it next sleeps. Set by producers and cleared
+    /// by the loop, both ONLY while holding tasks_mutex_ - see request_wake().
+    bool wake_requested_ = false;  // guarded by tasks_mutex_
+    std::vector<Task> batch_;      // loop thread only
     std::atomic<bool> stopping_{false};
     std::atomic<std::thread::id> owner_;
     std::atomic<std::uint64_t> task_failures_{0};

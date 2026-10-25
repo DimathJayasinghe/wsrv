@@ -79,14 +79,8 @@ EventLoop::Watch* EventLoop::find(WatchHandle handle) noexcept {
 
 // ---- cross-thread surface --------------------------------------------------------------------
 
-/// Make a blocked epoll_wait return. The flag collapses many wake-ups into one eventfd write; the
-/// loop clears it BEFORE it looks at the task queue, so a task pushed at any point either sees the
-/// flag still set (and the loop is guaranteed to look at the queue afterwards) or sets it again and
-/// writes: a wake-up is never lost.
-void EventLoop::wake() noexcept {
-    if (wake_pending_.exchange(true)) {
-        return;
-    }
+/// Write to the eventfd so a blocked epoll_wait returns.
+void EventLoop::write_wake() noexcept {
     const std::uint64_t one = 1;
     for (std::size_t attempt = 0; attempt < kMaxEintrRetries; ++attempt) {
         if (sys_.write(wake_fd_.get(), &one, sizeof(one)).err != EINTR) {
@@ -95,8 +89,29 @@ void EventLoop::wake() noexcept {
     }
 }
 
+/// Make sure the loop runs another iteration soon. Many callers collapse into one eventfd write
+/// through `wake_requested_`, which is read and written only under tasks_mutex_, the same lock that
+/// guards the queue. That is what makes it correct: the loop clears the flag in the very critical
+/// section in which it pops the queue (run_tasks), so
+///   - a producer that sees the flag set pushed (or will push) before that pop, and the pop sees
+///   it;
+///   - a producer that sees it clear writes the eventfd after pushing, which wakes the next wait.
+/// (An earlier version used an atomic flag cleared outside the lock; a producer could set it
+/// between the loop's clear and its eventfd read, leaving "flag set, eventfd drained", and every
+/// later post skipped the write: the sleeping loop was never woken.)
+void EventLoop::request_wake() noexcept {
+    bool write = false;
+    {
+        const std::lock_guard<std::mutex> lock{tasks_mutex_};
+        write = !wake_requested_;
+        wake_requested_ = true;
+    }
+    if (write) {
+        write_wake();
+    }
+}
+
 void EventLoop::drain_wake() noexcept {
-    wake_pending_.store(false);  // first the flag, then the counter, then (later) the queue
     std::uint64_t counter = 0;
     for (std::size_t attempt = 0; attempt < kMaxEintrRetries; ++attempt) {
         if (sys_.read(wake_fd_.get(), &counter, sizeof(counter)).err != EINTR) {
@@ -107,13 +122,14 @@ void EventLoop::drain_wake() noexcept {
 
 void EventLoop::stop() noexcept {
     stopping_.store(true);
-    wake();
+    request_wake();
 }
 
 Result<void> EventLoop::post(Task task) {
     if (!task) {
         return fail(ErrorCode::InvalidArgument, "empty task");
     }
+    bool write = false;
     {
         const std::lock_guard<std::mutex> lock{tasks_mutex_};
         if (tasks_.size() >= config_.max_queued_tasks) {
@@ -124,8 +140,12 @@ Result<void> EventLoop::post(Task task) {
         } catch (const std::bad_alloc&) {
             return fail(ErrorCode::ResourceExhausted, "event loop: out of memory");
         }
+        write = !wake_requested_;  // decided in the same critical section as the push
+        wake_requested_ = true;
     }
-    wake();
+    if (write) {
+        write_wake();
+    }
     return {};
 }
 
@@ -271,6 +291,7 @@ void EventLoop::run_tasks() {
     batch_.clear();
     {
         const std::lock_guard<std::mutex> lock{tasks_mutex_};
+        wake_requested_ = false;  // from here on a new post must write the eventfd again
         while (!tasks_.empty() && batch_.size() < config_.max_tasks_per_iteration) {
             batch_.push_back(std::move(tasks_.front()));
             tasks_.pop_front();

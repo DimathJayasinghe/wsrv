@@ -187,31 +187,50 @@ TEST_F(EventLoopTest, APostMadeBeforeRunStartsIsNotLost) {
     EXPECT_EQ(ran, 1);
 }
 
-TEST_F(EventLoopTest, ManyThreadsPostingLoseNothingAndRunEachTaskOnce) {  // TSAN
-    EventLoopConfig config;
-    config.max_queued_tasks = 1U << 20;
-    auto loop = make(config);
-    constexpr int kThreads = 8;
-    constexpr int kPerThread = 5000;
-    std::atomic<int> ran{0};
-    std::thread runner{[&] { EXPECT_TRUE(loop->run().has_value()); }};
-    std::vector<std::thread> producers;
-    producers.reserve(kThreads);
-    for (int t = 0; t < kThreads; ++t) {
-        producers.emplace_back([&] {
-            for (int i = 0; i < kPerThread; ++i) {
-                while (!loop->post([&ran] { ran.fetch_add(1); }).has_value()) {
-                    std::this_thread::yield();
+TEST_F(EventLoopTest, ManyThreadsPostingLoseNothingAndRunEachTaskOnce) {  // TSAN, lost wake-ups
+    // Regression: a wake flag cleared outside the queue's critical section could end up set while
+    // the eventfd was already drained, so later posts skipped the write and the sleeping loop never
+    // woke (found by repeating this test; the 60 s idle cap eventually unstuck it). Many short
+    // rounds raise the odds of hitting the interleaving; a watchdog fails fast instead of hanging.
+    constexpr int kRounds = 15;
+    constexpr int kThreads = 4;
+    constexpr int kPerThread = 1500;
+    for (int round = 0; round < kRounds; ++round) {
+        EventLoopConfig config;
+        config.max_queued_tasks = 1U << 20;
+        auto loop = make(config);
+        std::atomic<int> ran{0};
+        std::thread runner{[&] { EXPECT_TRUE(loop->run().has_value()); }};
+        std::vector<std::thread> producers;
+        producers.reserve(kThreads);
+        for (int t = 0; t < kThreads; ++t) {
+            producers.emplace_back([&] {
+                for (int i = 0; i < kPerThread; ++i) {
+                    while (!loop->post([&ran] { ran.fetch_add(1); }).has_value()) {
+                        std::this_thread::yield();
+                    }
+                    if (i % 97 == 0) {
+                        std::this_thread::sleep_for(
+                            100us);  // let the loop drain and go back to sleep
+                    }
                 }
-            }
-        });
+            });
+        }
+        for (std::thread& p : producers) {
+            p.join();
+        }
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        while (ran.load() < kThreads * kPerThread && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(1ms);
+        }
+        EXPECT_EQ(ran.load(), kThreads * kPerThread)
+            << "round " << round << ": a post was never run";
+        loop->stop();
+        runner.join();
+        if (ran.load() != kThreads * kPerThread) {
+            return;  // do not pile more hung rounds on top of a failure
+        }
     }
-    for (std::thread& p : producers) {
-        p.join();
-    }
-    ASSERT_TRUE(loop->post([&] { loop->stop(); }).has_value());
-    runner.join();
-    EXPECT_EQ(ran.load(), kThreads * kPerThread);
 }
 
 TEST_F(EventLoopTest, AnInterruptedEpollWaitDoesNotStopTheLoop) {  // EC-N01
