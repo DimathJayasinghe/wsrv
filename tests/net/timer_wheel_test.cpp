@@ -146,6 +146,24 @@ TEST(TimerWheel, AFireBudgetLeavesTheRestDueForTheNextCall) {  // EC-N15
     EXPECT_EQ(wheel.size(), 0U);
 }
 
+TEST(TimerWheel, DrainingAHugeBacklogWithASmallBudgetDoesNotRescanItEveryCall) {  // EC-N15
+    // 50,000 timers due at once, taken 10 per call = 5,000 calls. If every call re-collected and
+    // re-sorted the backlog this would take tens of seconds; it must be near-instant.
+    TimerWheel wheel{small_config(8, 100000), kStart};
+    for (int i = 0; i < 50000; ++i) {
+        ASSERT_TRUE(wheel.schedule(kStart + 20ms).has_value());
+    }
+    const auto before = std::chrono::steady_clock::now();
+    std::size_t total = 0;
+    while (total < 50000) {
+        const std::size_t got = advance(wheel, kStart + 20ms, 10).size();
+        ASSERT_GT(got, 0U);
+        total += got;
+    }
+    EXPECT_LT(std::chrono::steady_clock::now() - before, std::chrono::seconds{3});
+    EXPECT_EQ(wheel.size(), 0U);
+}
+
 TEST(TimerWheel, TimeNeverMovesBackwards) {
     TimerWheel wheel{small_config(), kStart};
     advance(wheel, kStart + 100ms);

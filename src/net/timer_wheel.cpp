@@ -17,7 +17,7 @@ constexpr std::chrono::nanoseconds kHorizon = std::chrono::hours{24} * 365 * 100
 }  // namespace
 
 TimerWheel::TimerWheel(TimerWheelConfig config, TimePoint now)
-    : config_{config}, start_{now}, lists_(config.slots + 1) {
+    : config_{config}, start_{now}, lists_(config.slots) {
     WSRV_ASSERT(config.tick >= std::chrono::milliseconds{1});
     WSRV_ASSERT(config.slots >= 1);
 }
@@ -49,17 +49,25 @@ Result<TimerId> TimerWheel::schedule(TimePoint deadline) {
         return fail(ErrorCode::BufferFull, "timer wheel is full");
     }
     const std::int64_t expiry = tick_for_deadline(deadline);
-    const bool already_due = expiry <= cursor_;
-    const std::size_t list = already_due ? config_.slots
-                                         : static_cast<std::size_t>(expiry) % config_.slots;
     const TimerId id = next_id_;
     try {
-        lists_[list].push_back(Entry{id, expiry});
-        try {
-            index_.emplace(id, Where{list, std::prev(lists_[list].end())});
-        } catch (const std::bad_alloc&) {
-            lists_[list].pop_back();
-            throw;
+        if (expiry <= cursor_) {  // already due: straight to the ready set
+            ready_.insert({expiry, id});
+            try {
+                index_.emplace(id, Where{config_.slots, {}, expiry});
+            } catch (const std::bad_alloc&) {
+                ready_.erase({expiry, id});
+                throw;
+            }
+        } else {
+            std::list<Entry>& slot = lists_[static_cast<std::size_t>(expiry) % config_.slots];
+            slot.push_back(Entry{id, expiry});
+            try {
+                index_.emplace(id, Where{static_cast<std::size_t>(expiry) % config_.slots, std::prev(slot.end()), expiry});
+            } catch (const std::bad_alloc&) {
+                slot.pop_back();
+                throw;
+            }
         }
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::ResourceExhausted, "timer wheel: out of memory");
@@ -73,39 +81,41 @@ bool TimerWheel::cancel(TimerId id) {
     if (found == index_.end()) {
         return false;
     }
-    lists_[found->second.list].erase(found->second.entry);
+    const Where& where = found->second;
+    if (where.list == config_.slots) {
+        ready_.erase({where.expiry, id});
+    } else {
+        lists_[where.list].erase(where.entry);
+    }
     index_.erase(found);
     return true;
 }
 
 void TimerWheel::advance(TimePoint now, std::vector<TimerId>& expired, std::size_t max) {
     const std::int64_t target = std::max(tick_at(now), cursor_);
-    due_.clear();
-    for (const Entry& entry : lists_[config_.slots]) {  // already due when they were scheduled
-        due_.push_back({entry.expiry, entry.id});
-    }
-    // Visit the slots of the ticks passed over: at most one full revolution, since N consecutive
-    // ticks cover every slot once and any entry whose tick has been reached is collected.
-    const std::int64_t visits = std::min<std::int64_t>(target - cursor_, static_cast<std::int64_t>(config_.slots));
+    // Move every entry whose tick has been reached into the ready set. Visiting at most one full
+    // revolution of slots suffices: N consecutive ticks cover every slot once.
+    const std::int64_t visits =
+        std::min<std::int64_t>(target - cursor_, static_cast<std::int64_t>(config_.slots));
     for (std::int64_t i = 1; i <= visits; ++i) {
-        const auto slot = static_cast<std::size_t>((cursor_ + i) % static_cast<std::int64_t>(config_.slots));
-        for (const Entry& entry : lists_[slot]) {
-            if (entry.expiry <= target) {
-                due_.push_back({entry.expiry, entry.id});
+        std::list<Entry>& slot =
+            lists_[static_cast<std::size_t>((cursor_ + i) % static_cast<std::int64_t>(config_.slots))];
+        for (auto it = slot.begin(); it != slot.end();) {
+            if (it->expiry <= target) {
+                ready_.insert({it->expiry, it->id});
+                index_.at(it->id) = Where{config_.slots, {}, it->expiry};
+                it = slot.erase(it);
+            } else {
+                ++it;
             }
         }
     }
-    std::sort(due_.begin(), due_.end(), [](const Candidate& a, const Candidate& b) {
-        return a.expiry != b.expiry ? a.expiry < b.expiry : a.id < b.id;
-    });
-    const std::size_t take = std::min(due_.size(), max);
-    for (std::size_t i = 0; i < take; ++i) {
-        expired.push_back(due_[i].id);
-        const bool removed = cancel(due_[i].id);
-        WSRV_ASSERT(removed);
-    }
-    if (take == due_.size()) {
-        cursor_ = target;  // everything up to here is done; otherwise rescan next time
+    cursor_ = target;
+    for (std::size_t taken = 0; taken < max && !ready_.empty(); ++taken) {
+        const TimerId id = ready_.begin()->second;
+        expired.push_back(id);
+        ready_.erase(ready_.begin());
+        index_.erase(id);
     }
 }
 
@@ -113,7 +123,7 @@ std::optional<TimePoint> TimerWheel::next_wake() const {
     if (index_.empty()) {
         return std::nullopt;
     }
-    if (!lists_[config_.slots].empty()) {
+    if (!ready_.empty()) {
         return time_of(cursor_);  // something is already due
     }
     for (std::size_t offset = 1; offset <= config_.slots; ++offset) {

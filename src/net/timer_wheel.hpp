@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <list>
 #include <optional>
+#include <set>
 #include <unordered_map>
 #include <vector>
 
@@ -49,8 +50,8 @@ public:
 
     /// Append to `expired` the ids of timers due at `now`, earliest deadline first, ties in
     /// creation order, at most `max` of them; those are removed. If more are due, the rest stay
-    /// due for the next call (the caller's per-iteration budget, EC-N15). `now` never moves the
-    /// wheel backwards.
+    /// due for the next call (the caller's per-iteration budget, EC-N15) at no extra scanning
+    /// cost. `now` never moves the wheel backwards.
     void advance(TimePoint now, std::vector<TimerId>& expired, std::size_t max = SIZE_MAX);
 
     /// A time at or before the earliest pending deadline (the loop sleeps at most until then);
@@ -67,8 +68,9 @@ private:
         std::int64_t expiry;  // deadline tick, rounded up
     };
     struct Where {
-        std::size_t list;
-        std::list<Entry>::iterator entry;
+        std::size_t list;                  // a slot, or config_.slots when the timer is in ready_
+        std::list<Entry>::iterator entry;  // valid only for a slot
+        std::int64_t expiry;
     };
 
     [[nodiscard]] std::int64_t tick_at(TimePoint t) const;     // rounded down
@@ -79,14 +81,12 @@ private:
     TimePoint start_;
     std::int64_t cursor_ = 0;  // every tick up to here has been fully processed
     TimerId next_id_ = 1;
-    std::vector<std::list<Entry>> lists_;  // [0, slots): the wheel; [slots]: already due
+    std::vector<std::list<Entry>> lists_;  // the wheel: one list per slot
+    /// Timers whose tick has been reached, ordered by (deadline tick, id). A slot's due entries
+    /// move here once, when the cursor passes the slot, so a fire budget makes each advance() cost
+    /// O(slots passed + entries moved + fired), never a rescan of the backlog (EC-N15).
+    std::set<std::pair<std::int64_t, TimerId>> ready_;
     std::unordered_map<TimerId, Where> index_;
-
-    struct Candidate {
-        std::int64_t expiry;
-        TimerId id;
-    };
-    std::vector<Candidate> due_;  // scratch for advance(), reused
 };
 
 }  // namespace wsrv
