@@ -1,6 +1,6 @@
 # ADR-0004: epoll behind `IPoller`
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-24
 
 ## Context

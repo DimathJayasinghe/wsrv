@@ -14,8 +14,8 @@ We teach as we build. Each lesson answers three questions: **What** are we build
 | 07 | [The frame codec: bits, masking, lengths](07-the-frame-codec.md) | M3 | written |
 | 08 | [Messages: fragmentation, control frames, streaming](08-messages-fragmentation-and-streaming.md) | M3 | written |
 | 09 | [The protocol session: Pong, close handshake, timers](09-the-protocol-session.md) | M4 | written |
-| 10 | Sockets, epoll, and the event loop | M5 | next |
-| 11 | Backpressure and connection lifecycle | M6 | planned |
+| 10 | [Sockets, epoll, and the event loop](10-sockets-epoll-and-the-event-loop.md) | M5 | written |
+| 11 | Backpressure and connection lifecycle | M6 | next |
 | 12 | Threads without locks | M7 | planned |
 | 13 | TLS as a decorator | M8 | planned |
 | 14 | The C ABI and talking to PHP | M11–M12 | planned |

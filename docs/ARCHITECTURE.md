@@ -105,15 +105,22 @@ Why `next_event(input)` and not `feed()` + a queue: events carry views into the 
 The session is deterministic: same bytes + same ticks ⇒ same output. This is what makes fuzzing and golden tests cheap.
 
 ### 3.5 net
+As built in M5. Every kernel call goes through `ISyscalls`, so each errno path is testable (`FakeSyscalls`).
 | Class | Responsibility |
 |---|---|
 | `SystemRandom` | `IRandom` adapter over `getrandom(2)` (the only CSPRNG source; ADR-0012) |
-| `Fd` / `Socket` | RAII ownership, non-blocking, `CLOEXEC`, `TCP_NODELAY`, `SO_REUSEPORT`, `MSG_NOSIGNAL` |
-| `IPoller` / `EpollPoller` | Register/modify/wait; edge-triggered; returns ready events |
-| `EventLoop` | Owns a poller, timer wheel, task queue (MPSC) + wake-up eventfd; `run()`, `stop()`, `post(fn)`, `run_after(d, fn)` |
-| `TimerWheel` | Hashed hierarchical wheel; O(1) arm/cancel for per-connection timers |
-| `Acceptor` | Accept loop with `EMFILE` reserve-fd trick and backoff |
-| `ITransport` | `read(span) → Result<size_t|WouldBlock>`, `write(span)`, `shutdown()`, `close()`; plain & TLS implementations |
+| `Fd` | RAII ownership of a descriptor; move-only, closes once |
+| `map_errno`, `retrying` | `errno` to `Error` (`WouldBlock`, `ConnectionClosed`, `FdLimit`, `AddressInUse`, `Io`); bounded `EINTR` retry |
+| `ISyscalls` / `LinuxSyscalls` | One interface for socket, accept4, read, send (`MSG_NOSIGNAL`), epoll, eventfd, open_null, close |
+| `IPoller` / `EpollPoller` | Register/modify/wait; edge-triggered; tokens, never fd numbers, identify registrations |
+| `TimerWheel` | Hashed wheel (10 ms tick), O(1) arm/cancel, fire budget, monotonic deadlines only |
+| `EventLoop` | Poller + wheel + bounded task queue (mutex-protected deque) + wake-up eventfd; `run()`, `run_once()`, `stop()`, `post(fn)`, `run_after(d, fn)`, `watch/rewatch/unwatch` (generation-checked `WatchHandle`); per-iteration budgets for events, timers and tasks |
+| `Endpoint` | Parsed IPv4/IPv6 literal + port (no DNS) |
+| `TcpListener` | Non-blocking listening socket (`SO_REUSEADDR`, optional `SO_REUSEPORT`) |
+| `Acceptor` | Accept burst with a budget; `EMFILE` reserve-fd shedding, back-off timer, `shed_count` |
+| `ITransport` / `PlainTransport` | `read` (0 = EOF, `WouldBlock`), `write` (partial, `ConnectionClosed`), `shutdown_write`, `close`; TLS will decorate it (M8) |
+
+Thread-safe surface of a loop: `post()` and `stop()` only. Everything else runs on the loop thread.
 
 ### 3.6 server
 | Class | Responsibility |

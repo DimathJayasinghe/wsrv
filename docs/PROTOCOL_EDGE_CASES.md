@@ -202,6 +202,7 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | EC-F12, F28 (data-frame rate incl. zero-length frames and 1-byte fragments), F27 (incomplete-message timer; buffer release is not asserted separately), F31, F32, F36 (single-shot send) | done (M4) | `SessionRates.*`, `SessionTimers.AnUnfinishedMessage*`, `SessionTimers.TheIncompleteTimer*`, `OutboundScheduler.ALargeMessage*`, `OutboundScheduler.EveryRefill*`, `SessionSend.*` |
 | EC-N09 (outbound queue bound: `Backpressure` / `BufferFull`; the close-1008 slow-consumer policy is connection level) | queue bound done (M4), policy M6 | `OutboundScheduler.TheQueueBound*`, `SessionSend.AFullOutboundQueue*` |
 | EC-F23, N04 (peer EOF -> 1006) | done at session level (M4: `on_transport_closed`) | `Session.TheTransportClosing*` |
+| EC-N01..N08, N12, N14, N15, N16, N20 (syscall layer, poller, loop, acceptor, transport) | done (M5); N09..N11 are connection level (M6), N13 needs `SessionHandle` (M7), N17 signals (M6), N18/N19 (M6/ops) | `IoError.*`, `Fd.*`, `LinuxSyscalls.*`, `FakeSyscalls.*`, `Retrying.*`, `TimerWheel.*`, `EpollPollerTest.*`, `EventLoopTest.*`, `AcceptorTest.*`, `AcceptorBackoff.*`, `TcpListener.*`, `PlainTransport.*`, `LoopbackTest.*` |
 | EC-C18 (server shutdown) | M6 | - |
 | EC-F18, F33..F35 (`MessageWriter`) | M6 (needs connection-level backpressure) | - |
 | EC-H20, H21, H22 (logging), H24 | M6 (connection level: timers, disconnects) | - |
