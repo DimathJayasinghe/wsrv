@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // The whole server on a real loopback port: accept, handshake, echo, caps, churn, shutdown.
 #include "server/server_builder.hpp"
+#include "server/session_handle.hpp"
 #include "support/running_server.hpp"
 #include "support/tcp_client.hpp"
 
@@ -10,6 +11,7 @@
 #include <csignal>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -202,6 +204,92 @@ TEST(ServerBuilder, APortAlreadyInUseIsAClearStartupError) {  // EC-N20
     } catch (const wsrv::ConfigError& error) {
         EXPECT_NE(std::string{error.what()}.find("AddressInUse"), std::string::npos);
     }
+}
+
+// ---- SessionHandle (ADR-0014) -------------------------------------------------------------------
+
+/// Keeps the handle of the most recent connection, the way an application would.
+class HandleKeeper final : public wsrv::IHandlerFactory {
+public:
+    std::unique_ptr<wsrv::IWebSocketHandler> create(const wsrv::ConnectionInfo&) override {
+        return std::make_unique<Handler>(*this);
+    }
+    /// Wait until on_open stored a handle.
+    wsrv::SessionHandle wait_for_handle() {
+        for (int i = 0; i < 500; ++i) {
+            {
+                const std::lock_guard lock{mutex_};
+                if (handle_.id() != 0) {
+                    return handle_;
+                }
+            }
+            std::this_thread::sleep_for(10ms);
+        }
+        return {};
+    }
+
+private:
+    class Handler final : public wsrv::IWebSocketHandler {
+    public:
+        explicit Handler(HandleKeeper& keeper) : keeper_{keeper} {}
+        void on_open(Session& session) override {
+            const std::lock_guard lock{keeper_.mutex_};
+            keeper_.handle_ = session.handle();
+        }
+
+    private:
+        HandleKeeper& keeper_;
+    };
+
+    std::mutex mutex_;
+    wsrv::SessionHandle handle_;
+};
+
+TEST(ServerHandle, AHandleKeptFromOnOpenSendsFromAnotherThread) {  // FR-S3
+    HandleKeeper keeper;
+    wsrv::ServerBuilder builder;
+    builder.listen("127.0.0.1", 0).handler_factory(keeper);
+    builder.config().handshake.allowed_origins = {"https://app.example.com"};
+    RunningServer running{builder};
+    TcpClient client{running.port()};
+    ASSERT_TRUE(client.upgrade());
+    const wsrv::SessionHandle handle = keeper.wait_for_handle();
+    ASSERT_NE(handle.id(), 0U);
+    std::thread pusher([&] {  // a thread that is not the loop thread
+        EXPECT_TRUE(handle.send_text("pushed").has_value());
+        EXPECT_TRUE(handle.close(CloseCode::Normal, "done").has_value());
+    });
+    pusher.join();
+    const auto text = client.read_frame();
+    ASSERT_TRUE(text.has_value());
+    EXPECT_EQ(text->payload, "pushed");
+    const auto close = client.read_frame();
+    ASSERT_TRUE(close.has_value());
+    EXPECT_EQ(close->opcode, Opcode::Close);
+}
+
+TEST(ServerHandle, AHandleIsHarmlessAfterTheConnectionAndThenTheServerAreGone) {  // EC-N13
+    HandleKeeper keeper;
+    wsrv::SessionHandle handle;
+    {
+        wsrv::ServerBuilder builder;
+        builder.listen("127.0.0.1", 0).handler_factory(keeper);
+        builder.config().handshake.allowed_origins = {"https://app.example.com"};
+        RunningServer running{builder};
+        {
+            TcpClient client{running.port()};
+            ASSERT_TRUE(client.upgrade());
+            handle = keeper.wait_for_handle();
+            ASSERT_NE(handle.id(), 0U);
+            client.close();
+            std::this_thread::sleep_for(200ms);  // the connection ends and is erased
+        }
+        EXPECT_TRUE(handle.send_text("to nobody").has_value());  // accepted, then dropped
+        std::this_thread::sleep_for(50ms);
+    }  // the server, its loop and its table are destroyed here
+    const auto after = handle.send_text("to nothing");
+    ASSERT_FALSE(after.has_value());
+    EXPECT_EQ(after.error().code, wsrv::ErrorCode::Closing);
 }
 
 }  // namespace

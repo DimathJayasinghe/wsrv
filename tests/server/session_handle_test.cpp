@@ -1,0 +1,226 @@
+// SPDX-License-Identifier: Apache-2.0
+// SessionHandle and LoopLink: sending to a connection from another thread (ADR-0014 section 4,
+// EC-N13, EC-N14). Uses a real EventLoop pumped by the test thread and a fake directory of
+// sessions, so every outcome (delivered, dropped, refused) is deterministic.
+#include "server/session_handle.hpp"
+
+#include "base/clock.hpp"
+#include "net/event_loop.hpp"
+#include "net/syscalls.hpp"
+
+#include <gtest/gtest.h>
+
+#include <atomic>
+#include <chrono>
+#include <map>
+#include <string>
+#include <thread>
+#include <vector>
+
+namespace {
+
+using namespace std::chrono_literals;
+using wsrv::CloseCode;
+using wsrv::ConnectionId;
+using wsrv::ErrorCode;
+using wsrv::SessionHandle;
+
+/// A Session that records what it was asked to do, and on which thread.
+class RecordingSession final : public wsrv::Session {
+public:
+    explicit RecordingSession(ConnectionId id) : id_{id} {}
+    [[nodiscard]] ConnectionId id() const noexcept override {
+        return id_;
+    }
+    [[nodiscard]] const wsrv::Endpoint& peer() const noexcept override {
+        return peer_;
+    }
+    [[nodiscard]] wsrv::Result<void> send_text(std::string_view text) override {
+        texts.emplace_back(text);
+        threads.push_back(std::this_thread::get_id());
+        return {};
+    }
+    [[nodiscard]] wsrv::Result<void> send_binary(wsrv::ByteView data) override {
+        binary_sizes.push_back(data.size());
+        return {};
+    }
+    void close(CloseCode code, std::string_view reason) override {
+        closes.emplace_back(code, std::string{reason});
+    }
+    [[nodiscard]] SessionHandle handle() const override {
+        return {};  // not needed here
+    }
+
+    std::vector<std::string> texts;
+    std::vector<std::size_t> binary_sizes;
+    std::vector<std::pair<CloseCode, std::string>> closes;
+    std::vector<std::thread::id> threads;
+
+private:
+    ConnectionId id_;
+    wsrv::Endpoint peer_;
+};
+
+class FakeDirectory final : public wsrv::ISessionDirectory {
+public:
+    void run(ConnectionId id, const wsrv::SessionCommand& command) override {
+        const auto found = sessions.find(id);
+        if (found != sessions.end()) {
+            command(*found->second);
+        }
+    }
+    std::map<ConnectionId, wsrv::Session*> sessions;
+};
+
+class SessionHandleTest : public ::testing::Test {
+protected:
+    explicit SessionHandleTest(std::size_t max_tasks = 4096)
+        : loop_{make_loop(max_tasks)}, link_{std::make_shared<wsrv::LoopLink>(*loop_, directory_)} {
+        directory_.sessions[kId] = &session_;
+    }
+
+    static std::unique_ptr<wsrv::EventLoop> make_loop(std::size_t max_tasks) {
+        wsrv::EventLoopConfig config;
+        config.max_queued_tasks = max_tasks;
+        auto loop = wsrv::EventLoop::create(sys_, clock_, config);
+        EXPECT_TRUE(loop.has_value());
+        return std::move(*loop);
+    }
+
+    /// Run the loop on this thread until `done()` or a timeout.
+    template <class Done>
+    bool pump_until(Done&& done) {
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        while (!done()) {
+            if (std::chrono::steady_clock::now() > deadline) {
+                return false;
+            }
+            EXPECT_TRUE(loop_->run_once(10ms).has_value());
+        }
+        return true;
+    }
+
+    static constexpr ConnectionId kId = 7;
+    static inline wsrv::LinuxSyscalls sys_;
+    static inline wsrv::SteadyClock clock_;
+    FakeDirectory directory_;
+    RecordingSession session_{kId};
+    std::unique_ptr<wsrv::EventLoop> loop_;
+    std::shared_ptr<wsrv::LoopLink> link_;
+};
+
+class SmallQueueTest : public SessionHandleTest {
+protected:
+    SmallQueueTest() : SessionHandleTest{4} {}
+};
+
+TEST_F(SessionHandleTest, AMessageSentFromAnotherThreadRunsOnTheLoopThreadInOrder) {  // FR-S3
+    const SessionHandle handle{link_, kId};
+    std::thread producer([&] {
+        for (int i = 0; i < 500; ++i) {
+            while (!handle.send_text(std::to_string(i)).has_value()) {
+                std::this_thread::yield();  // the loop is behind: the queue is bounded
+            }
+        }
+    });
+    const bool done = pump_until([&] { return session_.texts.size() == 500; });
+    producer.join();
+    ASSERT_TRUE(done);
+    for (int i = 0; i < 500; ++i) {
+        EXPECT_EQ(session_.texts[static_cast<std::size_t>(i)], std::to_string(i));
+    }
+    for (const std::thread::id& thread : session_.threads) {
+        EXPECT_EQ(thread, std::this_thread::get_id());
+    }
+}
+
+TEST_F(SessionHandleTest, BinaryAndCloseReachTheSession) {
+    const SessionHandle handle{link_, kId};
+    const std::vector<std::byte> bytes(10, std::byte{1});
+    ASSERT_TRUE(handle.send_binary(bytes).has_value());
+    ASSERT_TRUE(handle.close(CloseCode::GoingAway, "bye").has_value());
+    ASSERT_TRUE(pump_until([&] { return !session_.closes.empty(); }));
+    EXPECT_EQ(session_.binary_sizes, std::vector<std::size_t>{10});
+    EXPECT_EQ(session_.closes.front().first, CloseCode::GoingAway);
+    EXPECT_EQ(session_.closes.front().second, "bye");
+}
+
+TEST_F(SessionHandleTest, ACommandForASessionThatIsGoneIsDroppedWithoutHarm) {  // EC-N13
+    const SessionHandle handle{link_, kId};
+    ASSERT_TRUE(handle.send_text("late").has_value());  // accepted for delivery...
+    directory_.sessions.clear();                        // ...but the connection ended meanwhile
+    ASSERT_TRUE(handle.send_text("later").has_value());
+    for (int i = 0; i < 3; ++i) {
+        ASSERT_TRUE(loop_->run_once(10ms).has_value());
+    }
+    EXPECT_TRUE(session_.texts.empty());
+}
+
+TEST_F(SessionHandleTest, AClosedLinkRefusesWithClosing) {  // the shard is gone: EC-N13
+    const SessionHandle handle{link_, kId};
+    link_->close();
+    const auto result = handle.send_text("x");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ErrorCode::Closing);
+    EXPECT_EQ(handle.close(CloseCode::Normal, "").error().code, ErrorCode::Closing);
+}
+
+TEST_F(SessionHandleTest, ADefaultConstructedHandleRefusesWithClosing) {
+    const SessionHandle inert;
+    EXPECT_EQ(inert.send_text("x").error().code, ErrorCode::Closing);
+    EXPECT_EQ(inert.id(), 0U);
+}
+
+TEST_F(SessionHandleTest, AHandleOutlivesTheLinkOwnerAndCopiesShareTheTarget) {
+    SessionHandle copy;
+    {
+        const SessionHandle original{link_, kId};
+        copy = original;
+    }
+    link_.reset();  // the copy keeps the link alive: no dangling, the loop is still here
+    ASSERT_TRUE(copy.send_text("still works").has_value());
+    ASSERT_TRUE(pump_until([&] { return !session_.texts.empty(); }));
+    EXPECT_EQ(copy.id(), kId);
+}
+
+TEST_F(SmallQueueTest, AFullTaskQueueIsReportedAsBufferFull) {  // EC-N14
+    const SessionHandle handle{link_, kId};
+    int accepted = 0;
+    wsrv::Result<void> last;
+    for (int i = 0; i < 10; ++i) {
+        last = handle.send_text("m");
+        accepted += last.has_value() ? 1 : 0;
+    }
+    EXPECT_EQ(accepted, 4);
+    ASSERT_FALSE(last.has_value());
+    EXPECT_EQ(last.error().code, ErrorCode::BufferFull);
+    ASSERT_TRUE(pump_until([&] { return session_.texts.size() == 4; }));
+}
+
+TEST_F(SessionHandleTest, ClosingTheLinkWhileThreadsSendIsRaceFree) {  // run under TSan
+    const SessionHandle handle{link_, kId};
+    std::atomic<bool> stop{false};
+    std::vector<std::thread> senders;
+    for (int t = 0; t < 4; ++t) {
+        senders.emplace_back([&] {
+            while (!stop.load()) {
+                const auto result = handle.send_text("x");
+                if (!result.has_value() && result.error().code == ErrorCode::Closing) {
+                    return;
+                }
+                std::this_thread::yield();
+            }
+        });
+    }
+    for (int i = 0; i < 20; ++i) {
+        ASSERT_TRUE(loop_->run_once(1ms).has_value());
+    }
+    link_->close();  // the shard shuts down while senders are mid-call
+    stop.store(true);
+    for (std::thread& sender : senders) {
+        sender.join();
+    }
+    SUCCEED();
+}
+
+}  // namespace

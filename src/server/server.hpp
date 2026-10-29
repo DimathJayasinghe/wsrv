@@ -16,6 +16,7 @@
 #include "server/connection_table.hpp"
 #include "server/handler.hpp"
 #include "server/loop_host.hpp"
+#include "server/session_handle.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -111,6 +112,7 @@ private:
     std::unique_ptr<LoopHost> host_;
     std::unique_ptr<HandshakeNegotiator> negotiator_;
     std::vector<std::byte> scratch_;
+    std::shared_ptr<LoopLink> link_;  // shared with every SessionHandle; closed in ~Server
     std::unique_ptr<ConnectionContext> context_;
     std::unique_ptr<ConnectionTable> table_;
     std::unique_ptr<Acceptor> acceptor_;

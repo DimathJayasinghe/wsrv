@@ -39,7 +39,13 @@ Server::Server(Key /*unused*/, ServerConfig config, const ServerDeps& deps)
       clock_{deps.clock != nullptr ? *deps.clock : static_cast<const IClock&>(own_clock_)},
       logger_{deps.logger != nullptr ? *deps.logger : static_cast<ILogger&>(own_logger_)} {}
 
-Server::~Server() = default;
+Server::~Server() {
+    // Cut handles off before the loop and the table go: a foreign thread still holding one then
+    // gets Closing instead of touching freed memory (ADR-0014 section 4).
+    if (link_) {
+        link_->close();
+    }
+}
 
 Result<std::unique_ptr<Server>> Server::create(ServerConfig config, const ServerDeps& deps) {
     if (deps.factory == nullptr) {
@@ -83,8 +89,9 @@ Result<void> Server::init() {
         return fail(ErrorCode::InvalidConfig, "server: invalid handshake configuration");
     }
     scratch_.resize(kScratchSize);
-    context_ = std::make_unique<ConnectionContext>(
-        ConnectionContext{*host_, config_, *negotiator_, factory_, MutableByteView{scratch_}});
+    link_ = std::make_shared<LoopLink>(*loop_, *table_);
+    context_ = std::make_unique<ConnectionContext>(ConnectionContext{
+        *host_, config_, *negotiator_, factory_, MutableByteView{scratch_}, link_});
 
     acceptor_ = std::make_unique<Acceptor>(
         *loop_,

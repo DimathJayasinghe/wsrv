@@ -4,6 +4,7 @@
 #include "net/event_loop.hpp"
 #include "server/connection.hpp"
 #include "server/loop_host.hpp"
+#include "server/session_handle.hpp"
 
 #include <cstddef>
 #include <functional>
@@ -19,7 +20,7 @@ namespace wsrv {
 ///
 /// The deferred queue cannot overflow: every connection retires once, and the loop's bound is
 /// sized from max_connections by the Server. Thread-affinity: loop-thread-only.
-class ConnectionTable final : public IRetireSink {
+class ConnectionTable final : public IRetireSink, public ISessionDirectory {
 public:
     /// `on_removed` runs after each destruction (the Server uses it to notice a drained shutdown).
     ConnectionTable(EventLoop& loop, std::function<void()> on_removed);
@@ -28,6 +29,9 @@ public:
     Connection& insert(std::unique_ptr<Connection> connection);
 
     void retire(ConnectionId id) override;
+
+    /// ISessionDirectory: run a command on a live (not finished) connection.
+    void run(ConnectionId id, const SessionCommand& command) override;
 
     /// Live connections, including finished ones not yet destroyed.
     [[nodiscard]] std::size_t size() const noexcept {

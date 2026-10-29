@@ -28,6 +28,8 @@ struct CloseInfo {
     bool clean = false;              ///< the closing handshake completed
 };
 
+class SessionHandle;  // session_handle.hpp: include it to keep and use a handle
+
 /// What a handler may do with one connection. Implemented by the server's Connection; handlers
 /// only call it.
 ///
@@ -59,6 +61,10 @@ public:
     /// Start the closing handshake with `code` (must be sendable, RFC 6455 section 7.4) and an
     /// optional reason (cut to 123 bytes).
     virtual void close(CloseCode code, std::string_view reason) = 0;
+
+    /// A copyable handle that stays valid after this reference does and may be used from any
+    /// thread (FR-S3, ADR-0014). This is the only part of a Session that may be kept.
+    [[nodiscard]] virtual SessionHandle handle() const = 0;
 };
 
 /// The application's side of a connection (Observer). Every callback is optional.
