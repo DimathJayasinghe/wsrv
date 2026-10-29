@@ -65,6 +65,22 @@ wsrv::ServerBuilder builder_for(TestFactory& factory) {
     return builder;
 }
 
+/// Joins a thread when the test scope ends (std::jthread is missing from libc++ 18).
+class JoinOnExit {
+public:
+    explicit JoinOnExit(std::thread& thread) : thread_{thread} {}
+    JoinOnExit(const JoinOnExit&) = delete;
+    JoinOnExit& operator=(const JoinOnExit&) = delete;
+    ~JoinOnExit() {
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+private:
+    std::thread& thread_;
+};
+
 /// Close code of a Close frame payload.
 unsigned close_code(const wsrv::test::WireFrame& frame) {
     return (static_cast<unsigned>(static_cast<std::uint8_t>(frame.payload[0])) << 8U) |
@@ -233,6 +249,7 @@ TEST(Integration, AFloodingClientDoesNotStarveAQuietNeighbour) {  // EC-N08, T7
             }
         }
     });
+    const JoinOnExit joiner(flood);  // an early ASSERT must not leave a joinable thread behind
     for (int i = 0; i < 20; ++i) {
         const auto start = std::chrono::steady_clock::now();
         ASSERT_TRUE(quiet.send_frame(Opcode::Text, "q"));
@@ -240,8 +257,7 @@ TEST(Integration, AFloodingClientDoesNotStarveAQuietNeighbour) {  // EC-N08, T7
         ASSERT_TRUE(reply.has_value());
         EXPECT_LT(std::chrono::steady_clock::now() - start, 2s) << "round " << i;
     }
-    flooder.close();
-    flood.join();
+    flood.join();  // never close a socket another thread is still writing to
 }
 
 TEST(Integration, ASilentPeerIsPingedThenClosedByTheHeartbeat) {  // EC-C16, EC-N11
