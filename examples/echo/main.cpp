@@ -119,6 +119,9 @@ wsrv::ServerBuilder make_builder(const Options& options, EchoFactory& factory) {
     wsrv::ServerConfig& config = builder.config();
     config.handshake.allowed_origins = options.allowed_origins;
     config.handshake.allow_missing_origin = options.allow_missing_origin;
+    // An echo must be able to send back every message it accepts (FR-F6): the outbound queue has
+    // to hold a maximum-size message plus per-message overhead, so it is twice the message limit.
+    config.session.outbound.max_queued_bytes = 2 * config.session.assembler.max_message_size;
     if (options.autobahn) {
         raise_limits_for_autobahn(config);
     }

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wsrv echo console</title>
+<link rel="stylesheet" href="demo.css">
+</head>
+<body>
+<header class="bar">
+  <h1>wsrv echo console</h1>
+  <form id="connect" class="connect" autocomplete="off">
+    <label for="url">Server</label>
+    <input id="url" name="url" type="text" value="ws://localhost:8080" spellcheck="false">
+    <button id="toggle" type="submit">Connect</button>
+    <output id="state" class="state" data-state="closed">Disconnected</output>
+  </form>
+</header>
+
+<main class="layout">
+  <section class="controls" aria-label="Send">
+    <form id="text-form" class="group">
+      <label for="text">Text message</label>
+      <textarea id="text" rows="3" spellcheck="false">hello, wsrv</textarea>
+      <button type="submit" data-needs-open>Send text</button>
+    </form>
+
+    <form id="binary-form" class="group">
+      <label for="binary-size">Binary message, bytes</label>
+      <input id="binary-size" type="number" min="0" max="16777216" value="256">
+      <button type="submit" data-needs-open>Send binary</button>
+    </form>
+
+    <div class="group">
+      <h2>Size limit probes</h2>
+      <p class="hint">The server accepts messages up to 1 MiB by default (FR-F6).</p>
+      <button type="button" data-probe="1048576" data-needs-open>Send exactly 1 MiB</button>
+      <button type="button" data-probe="1048577" data-needs-open>Send 1 MiB + 1 byte</button>
+    </div>
+
+    <form id="close-form" class="group">
+      <label for="close-code">Close with code</label>
+      <input id="close-code" type="number" min="1000" max="4999" value="1000">
+      <label for="close-reason">Reason</label>
+      <input id="close-reason" type="text" maxlength="100" value="done" spellcheck="false">
+      <button type="submit" data-needs-open>Close connection</button>
+      <p class="hint">Browsers allow 1000 and 3000 to 4999 only.</p>
+    </form>
+  </section>
+
+  <section class="wire" aria-label="Wire log">
+    <div class="wire-head">
+      <h2>Wire</h2>
+      <button id="clear" type="button">Clear</button>
+    </div>
+    <div class="lanes" aria-hidden="true"><span>You</span><span>Server</span></div>
+    <ol id="log" class="log" aria-live="polite"></ol>
+    <p id="empty" class="empty">Connect to see the handshake, messages and close codes here.</p>
+  </section>
+</main>
+
+<script src="demo.js"></script>
+</body>
+</html>
