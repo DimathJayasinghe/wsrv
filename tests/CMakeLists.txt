@@ -22,6 +22,8 @@ wsrv_add_test(NAME net_plain_transport_test SOURCES net/plain_transport_test.cpp
 wsrv_add_test(NAME net_acceptor_test SOURCES net/acceptor_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_loopback_test SOURCES net/loopback_test.cpp LINK wsrv::net)
 
+wsrv_add_test(NAME server_config_test SOURCES server/config_test.cpp LINK wsrv::server)
+
 # Differential tests against OpenSSL are test-only and optional (ADR-0005: no runtime dependency).
 find_package(OpenSSL QUIET)
 

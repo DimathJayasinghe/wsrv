@@ -25,6 +25,7 @@ A `Connection` is an `IEventHandler` owned by a per-loop table. It can decide to
 The outbound queue bound is `OutboundConfig::max_queued_bytes`. When `send_*` returns `Backpressure`, the application sees the error value; the connection's *policy* is `SlowConsumerPolicy::Close` (default, close 1008) or `DropMessage`. A write stall timer (`write_stall_timeout`, default 30 s, queue non-empty and no byte accepted by the kernel) closes the transport without waiting for a Close handshake that can never complete (the peer is not reading). If the data queue is full, `close()` still works because Close has its own slot in the scheduler (ADR-0007).
 
 ## Consequences
++ `server` may now include `http` directly (ARCHITECTURE section 2.1, `tools/check_includes.py`, module graph): it configures the request parser limits (`HttpLimits`) that `ServerConfig` carries. It already depended on `http` through `protocol`; the edge is now explicit.
 + Teardown ordering is one rule, testable with ASAN. Handlers cannot crash the loop. The unstable API can change freely until 1.0-rc.
 - `defer()` is a small `net` addition (reviewed as such). The catch-all is a deliberate, documented exception to "no catch(...)"; it never swallows silently.
 - Per-IP caps, handshake rate limits and the global buffered-bytes budget (`LimitsEnforcer`) are **not** in M6; only the global connection cap is. They land in M10.
