@@ -5,6 +5,7 @@
 
 #include <fcntl.h>
 #include <sys/eventfd.h>
+#include <sys/signalfd.h>
 #include <unistd.h>
 
 namespace wsrv {
@@ -81,6 +82,16 @@ SysResult LinuxSyscalls::eventfd(unsigned initial, int flags) {
 
 SysResult LinuxSyscalls::open_null() {
     return captured(::open("/dev/null", O_RDONLY | O_CLOEXEC));
+}
+
+SysResult LinuxSyscalls::thread_sigmask(int how, const sigset_t* set, sigset_t* old_set) {
+    const int err =
+        ::pthread_sigmask(how, set, old_set);  // returns the error number, sets no errno
+    return err == 0 ? SysResult{0, 0} : SysResult{-1, err};
+}
+
+SysResult LinuxSyscalls::signalfd(int fd, const sigset_t* mask, int flags) {
+    return captured(::signalfd(fd, mask, flags));
 }
 
 void LinuxSyscalls::close(int fd) noexcept {

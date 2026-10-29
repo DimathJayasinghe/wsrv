@@ -5,6 +5,7 @@
 #include "net/io_error.hpp"
 
 #include <cerrno>
+#include <csignal>
 #include <cstddef>
 #include <string_view>
 
@@ -61,6 +62,11 @@ public:
     /// Open /dev/null read-only with O_CLOEXEC: the spare descriptor the acceptor keeps for the
     /// EMFILE trick (EC-N05).
     virtual SysResult open_null() = 0;
+    /// pthread_sigmask(2) for the calling thread. Note the libc call reports its error as a return
+    /// value, not errno; the wrapper folds it into `err` like every other call.
+    virtual SysResult thread_sigmask(int how, const sigset_t* set, sigset_t* old_set) = 0;
+    /// signalfd(2): `fd == -1` creates a new descriptor.
+    virtual SysResult signalfd(int fd, const sigset_t* mask, int flags) = 0;
     /// Close without retrying on EINTR (on Linux the descriptor is gone either way).
     virtual void close(int fd) noexcept = 0;
 };
@@ -84,6 +90,8 @@ public:
     epoll_wait(int epoll_fd, epoll_event* events, int max_events, int timeout_ms) override;
     SysResult eventfd(unsigned initial, int flags) override;
     SysResult open_null() override;
+    SysResult thread_sigmask(int how, const sigset_t* set, sigset_t* old_set) override;
+    SysResult signalfd(int fd, const sigset_t* mask, int flags) override;
     void close(int fd) noexcept override;
 };
 

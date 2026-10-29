@@ -28,6 +28,8 @@ enum class Call : std::size_t {
     EpollWait,
     EventFd,
     OpenNull,
+    SigMask,
+    SignalFd,
     Close,
     Count
 };
@@ -147,6 +149,18 @@ public:
             return *injected;
         }
         return real_.open_null();
+    }
+    SysResult thread_sigmask(int how, const sigset_t* set, sigset_t* old_set) override {
+        if (const auto injected = scripted(Call::SigMask)) {
+            return *injected;
+        }
+        return real_.thread_sigmask(how, set, old_set);
+    }
+    SysResult signalfd(int fd, const sigset_t* mask, int flags) override {
+        if (const auto injected = scripted(Call::SignalFd)) {
+            return *injected;
+        }
+        return real_.signalfd(fd, mask, flags);
     }
     void close(int fd) noexcept override {
         {

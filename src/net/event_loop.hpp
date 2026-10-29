@@ -29,6 +29,7 @@ struct EventLoopConfig {
     std::size_t max_timers_per_iteration = 256;
     /// Hard bounds (each has a defined overflow result: BufferFull).
     std::size_t max_queued_tasks = 4096;
+    std::size_t max_deferred = 65536;
     std::size_t max_watches = 65536;
     std::size_t max_timers = 1U << 20;
 };
@@ -94,6 +95,16 @@ public:
     /// for an empty task. Tasks posted by a running task run in the next iteration.
     [[nodiscard]] Result<void> post(Task task);
 
+    /// Queue `task` for the end of the current iteration: after its events, timers and posted
+    /// tasks, before the next poll. This is the safe point for work that must not run inside the
+    /// callback that asked for it, such as destroying the object whose on_event() is on the stack
+    /// (ADR-0013). Loop thread only, so no lock. A task deferred from a deferred task waits for the
+    /// next iteration (which does not sleep). Unlike post() it is not a cross-thread channel, so
+    /// callers may rely on it for teardown; it still has a bound.
+    /// @return Error{BufferFull} when max_deferred are already waiting, Error{InvalidArgument} for
+    /// an empty task.
+    [[nodiscard]] Result<void> defer(Task task);
+
     /// Run `task` once, `delay` from now (by the injected clock). Error{BufferFull} at max_timers.
     [[nodiscard]] Result<TimerHandle> run_after(std::chrono::milliseconds delay, Task task);
     /// @return true if the timer was still pending. Safe on fired, cancelled and unknown timers.
@@ -143,6 +154,7 @@ private:
     void dispatch(const PollEvent& event);
     void run_timers();
     void run_tasks();
+    void run_deferred();
     void invoke(Task& task) noexcept;
     [[nodiscard]] int wait_timeout_ms(std::chrono::milliseconds max_wait);
 
@@ -165,6 +177,8 @@ private:
     /// by the loop, both ONLY while holding tasks_mutex_ - see request_wake().
     bool wake_requested_ = false;  // guarded by tasks_mutex_
     std::vector<Task> batch_;      // loop thread only
+    std::vector<Task> deferred_;   // loop thread only: waiting for the end of the iteration
+    std::vector<Task> sweeping_;   // loop thread only: the deferred tasks being run now
     std::atomic<bool> stopping_{false};
     std::atomic<std::thread::id> owner_;
     std::atomic<std::uint64_t> task_failures_{0};

@@ -16,5 +16,6 @@ One decision per file, immutable once *Accepted* (supersede with a new ADR). Use
 | [0010](0010-embedded-and-sidecar-modes.md) | Support embedded and sidecar integration modes | Proposed |
 | [0011](0011-open-source-governance.md) | Open-source licensing & governance | Accepted |
 | [0012](0012-randomness-behind-irandom.md) | Randomness behind `IRandom`; `crypto` stays OS-free | Accepted |
+| [0013](0013-server-connection-model.md) | Server connection model, handler contract, teardown | Proposed |
 
 Statuses: Proposed → Accepted → (Deprecated | Superseded by ADR-NNNN). The project owner moves Proposed → Accepted.

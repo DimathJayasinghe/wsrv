@@ -44,7 +44,7 @@
 | protocol | base, crypto, http |
 | extensions | base, protocol (interfaces only) |
 | net | base |
-| server | base, protocol, net, extensions |
+| server | base, http, protocol, net, extensions |
 | capi (`include/wsrv/wsrv.h`, `src/capi/`) | server (wraps it; catches all exceptions; exports C symbols only) |
 | wsrvd (sidecar daemon) | capi/server, IPC codec |
 | bindings/* | capi only (never C++ internals) |

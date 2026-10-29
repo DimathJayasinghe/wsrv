@@ -16,10 +16,14 @@ wsrv_add_test(NAME net_syscalls_test SOURCES net/syscalls_test.cpp LINK wsrv::ne
 wsrv_add_test(NAME net_timer_wheel_test SOURCES net/timer_wheel_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_epoll_poller_test SOURCES net/epoll_poller_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_event_loop_test SOURCES net/event_loop_test.cpp LINK wsrv::net)
+wsrv_add_test(NAME net_signal_watcher_test SOURCES net/signal_watcher_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_endpoint_test SOURCES net/endpoint_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_plain_transport_test SOURCES net/plain_transport_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_acceptor_test SOURCES net/acceptor_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_loopback_test SOURCES net/loopback_test.cpp LINK wsrv::net)
+
+wsrv_add_test(NAME server_connection_test SOURCES server/connection_test.cpp LINK wsrv::server)
+wsrv_add_test(NAME server_config_test SOURCES server/config_test.cpp LINK wsrv::server)
 
 # Differential tests against OpenSSL are test-only and optional (ADR-0005: no runtime dependency).
 find_package(OpenSSL QUIET)
@@ -33,6 +37,7 @@ wsrv_add_test(NAME crypto_base64_test SOURCES crypto/base64_test.cpp LINK wsrv::
 wsrv_add_test(NAME crypto_sha1_test SOURCES crypto/sha1_test.cpp LINK wsrv::crypto)
 wsrv_add_test(NAME protocol_extension_offer_test SOURCES protocol/extension_offer_test.cpp LINK wsrv::protocol)
 wsrv_add_test(NAME protocol_handshake_test SOURCES protocol/handshake_test.cpp LINK wsrv::protocol)
+wsrv_add_test(NAME protocol_handshake_driver_test SOURCES protocol/handshake_driver_test.cpp LINK wsrv::protocol)
 wsrv_add_test(NAME protocol_handshake_flow_test SOURCES protocol/handshake_flow_test.cpp LINK wsrv::protocol)
 wsrv_add_test(NAME protocol_opcode_test SOURCES protocol/opcode_test.cpp LINK wsrv::protocol)
 wsrv_add_test(NAME protocol_close_code_test SOURCES protocol/close_code_test.cpp LINK wsrv::protocol)
