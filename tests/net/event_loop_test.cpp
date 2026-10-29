@@ -14,6 +14,7 @@
 #include <functional>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -121,6 +122,84 @@ TEST_F(EventLoopTest, TheTaskBudgetCarriesTheRestToTheNextIteration) {  // fairn
     ASSERT_TRUE(loop->run_once(0ms).has_value());
     ASSERT_TRUE(loop->run_once(0ms).has_value());
     EXPECT_EQ(ran, 10);
+}
+
+// ---- defer: safe-point work (ADR-0013 teardown) ------------------------------------------------
+
+TEST_F(EventLoopTest, ADeferredTaskRunsAfterTheEventsOfTheSameIterationButBeforeTheNextPoll) {
+    auto loop = make();
+    Pair pair;
+    std::vector<std::string> order;
+    Recorder recorder;
+    recorder.action = [&] {
+        order.emplace_back("event");
+        EXPECT_TRUE(loop->defer([&] { order.emplace_back("deferred"); }).has_value());
+        order.emplace_back("event-end");
+    };
+    auto watch = loop->watch(pair.near.get(), PollEvents::Read, recorder);
+    ASSERT_TRUE(watch.has_value());
+    pair.send("x");
+    ASSERT_TRUE(loop->post([&] { order.emplace_back("task"); }).has_value());
+    ASSERT_TRUE(loop->run_once(100ms).has_value());
+    // The callback finished before the deferred task ran, and the deferred task did not wait for
+    // another poll: both are in the first iteration, after every other source of work.
+    EXPECT_EQ(order, (std::vector<std::string>{"event", "event-end", "task", "deferred"}));
+}
+
+TEST_F(EventLoopTest, DeferredTasksRunInOrderAndANewOneWaitsForTheNextIteration) {
+    auto loop = make();
+    std::vector<int> order;
+    ASSERT_TRUE(loop->defer([&] {
+                        order.push_back(1);
+                        EXPECT_TRUE(loop->defer([&] { order.push_back(3); }).has_value());
+                    })
+                    .has_value());
+    ASSERT_TRUE(loop->defer([&] { order.push_back(2); }).has_value());
+    ASSERT_TRUE(loop->run_once(0ms).has_value());
+    EXPECT_EQ(order, (std::vector<int>{1, 2}));  // not recursive: 3 is for the next iteration
+    ASSERT_TRUE(loop->run_once(0ms).has_value());
+    EXPECT_EQ(order, (std::vector<int>{1, 2, 3}));
+}
+
+TEST_F(EventLoopTest, ADeferredTaskPreventsTheNextPollFromSleeping) {
+    auto loop = make();
+    int ran = 0;
+    ASSERT_TRUE(
+        loop->defer([&] { ASSERT_TRUE(loop->defer([&ran] { ++ran; }).has_value()); }).has_value());
+    ASSERT_TRUE(loop->run_once(0ms).has_value());
+    // A long max_wait must not delay work that is already waiting: the clock is fake, so a sleeping
+    // poll would block the test for the full minute.
+    ASSERT_TRUE(loop->run_once(60s).has_value());
+    EXPECT_EQ(ran, 1);
+}
+
+TEST_F(EventLoopTest, TheDeferredQueueIsBoundedAndRecovers) {
+    EventLoopConfig config;
+    config.max_deferred = 3;
+    auto loop = make(config);
+    int ran = 0;
+    for (int i = 0; i < 3; ++i) {
+        ASSERT_TRUE(loop->defer([&ran] { ++ran; }).has_value());
+    }
+    const auto rejected = loop->defer([&ran] { ++ran; });
+    ASSERT_FALSE(rejected.has_value());
+    EXPECT_EQ(rejected.error().code, ErrorCode::BufferFull);
+    ASSERT_TRUE(loop->run_once(0ms).has_value());
+    EXPECT_EQ(ran, 3);
+    EXPECT_TRUE(loop->defer([&ran] { ++ran; }).has_value());  // drained: room again
+}
+
+TEST_F(EventLoopTest, AnEmptyDeferredTaskIsRejectedAndAThrowingOneIsContained) {
+    auto loop = make();
+    const auto empty = loop->defer(wsrv::Task{});
+    ASSERT_FALSE(empty.has_value());
+    EXPECT_EQ(empty.error().code, ErrorCode::InvalidArgument);
+    int ran = 0;
+    ASSERT_TRUE(loop->defer([] { throw std::runtime_error{"boom"}; }).has_value());
+    ASSERT_TRUE(loop->defer([&ran] { ++ran; }).has_value());
+    ASSERT_TRUE(loop->run_once(0ms).has_value());
+    EXPECT_EQ(ran, 1);  // the throw did not stop the sweep
+    EXPECT_EQ(loop->task_failures(), 1U);
 }
 
 TEST_F(EventLoopTest, ThePostQueueIsBoundedAndRecovers) {  // EC-N14

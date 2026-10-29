@@ -151,6 +151,22 @@ Result<void> EventLoop::post(Task task) {
 
 // ---- loop-thread API -------------------------------------------------------------------------
 
+Result<void> EventLoop::defer(Task task) {
+    WSRV_ASSERT(in_loop_thread());
+    if (!task) {
+        return fail(ErrorCode::InvalidArgument, "empty task");
+    }
+    if (deferred_.size() >= config_.max_deferred) {
+        return fail(ErrorCode::BufferFull, "event loop deferred queue is full");
+    }
+    try {
+        deferred_.push_back(std::move(task));
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "event loop: out of memory");
+    }
+    return {};
+}
+
 Result<TimerHandle> EventLoop::run_after(std::chrono::milliseconds delay, Task task) {
     WSRV_ASSERT(in_loop_thread());
     if (!task) {
@@ -242,6 +258,9 @@ void EventLoop::invoke(Task& task) noexcept {
 }
 
 int EventLoop::wait_timeout_ms(std::chrono::milliseconds max_wait) {
+    if (!deferred_.empty()) {
+        return 0;  // work deferred during the last sweep: do not sleep
+    }
     {
         const std::lock_guard<std::mutex> lock{tasks_mutex_};
         if (!tasks_.empty()) {
@@ -303,6 +322,17 @@ void EventLoop::run_tasks() {
     batch_.clear();
 }
 
+/// Run what was deferred before this sweep began. Swapping first is what makes a task deferred
+/// from inside the sweep wait for the next iteration instead of extending this one forever.
+void EventLoop::run_deferred() {
+    sweeping_.clear();
+    sweeping_.swap(deferred_);
+    for (Task& task : sweeping_) {
+        invoke(task);
+    }
+    sweeping_.clear();
+}
+
 Result<void> EventLoop::run_once(std::chrono::milliseconds max_wait) {
     owner_.store(std::this_thread::get_id());
     const Result<std::size_t> ready = poller_->wait(wait_timeout_ms(max_wait), events_);
@@ -314,6 +344,7 @@ Result<void> EventLoop::run_once(std::chrono::milliseconds max_wait) {
     }
     run_timers();
     run_tasks();
+    run_deferred();
     return {};
 }
 
