@@ -59,6 +59,10 @@ if(PROJECT_IS_TOP_LEVEL)
     include(WsrvChecks)         # format-check, check-banned, check-includes, header-check
 endif()
 
+if(WSRV_BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()
+
 if(WSRV_BUILD_TESTS)
     enable_testing()
     include(WsrvTests)

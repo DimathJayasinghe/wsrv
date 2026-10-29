@@ -32,15 +32,15 @@ services:
     tty: true
     command: sleep infinity
 
-  # Conformance suite (M6+). Start the server in `dev`, then: docker compose --profile conformance run --rm autobahn
+  # Conformance suite (M6+). Use tests/autobahn/run.sh (starts the echo example in `dev`, then runs this).
   autobahn:
     profiles: ["conformance"]
-    image: crossbario/autobahn-testsuite:0.8.2
-    network_mode: host
+    image: crossbario/autobahn-testsuite:25.10.1
+    # Same compose network as `dev`, so the suite reaches the server as ws://dev:9001.
     volumes:
       - ./tests/autobahn:/config
       - ./build/autobahn-reports:/reports
-    command: wstest -m fuzzingclient -s /config/fuzzingclient.json
+    command: wstest -m fuzzingclient -s /config/${AUTOBAHN_CONFIG:-fuzzingclient.json}
 
 volumes:
   ccache:
