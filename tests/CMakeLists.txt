@@ -36,6 +36,7 @@ wsrv_add_test(NAME crypto_base64_test SOURCES crypto/base64_test.cpp LINK wsrv::
 wsrv_add_test(NAME crypto_sha1_test SOURCES crypto/sha1_test.cpp LINK wsrv::crypto)
 wsrv_add_test(NAME protocol_extension_offer_test SOURCES protocol/extension_offer_test.cpp LINK wsrv::protocol)
 wsrv_add_test(NAME protocol_handshake_test SOURCES protocol/handshake_test.cpp LINK wsrv::protocol)
+wsrv_add_test(NAME protocol_handshake_driver_test SOURCES protocol/handshake_driver_test.cpp LINK wsrv::protocol)
 wsrv_add_test(NAME protocol_handshake_flow_test SOURCES protocol/handshake_flow_test.cpp LINK wsrv::protocol)
 wsrv_add_test(NAME protocol_opcode_test SOURCES protocol/opcode_test.cpp LINK wsrv::protocol)
 wsrv_add_test(NAME protocol_close_code_test SOURCES protocol/close_code_test.cpp LINK wsrv::protocol)
