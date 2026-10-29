@@ -8,9 +8,9 @@
 
 #include <charconv>
 #include <cstdint>
-#include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <iostream>
 #include <memory>
 #include <optional>
 #include <string>
@@ -57,7 +57,7 @@ std::optional<Options> parse_args(const std::vector<std::string_view>& args) {
         } else if (arg == "--port" && has_value) {
             const std::optional<std::uint16_t> port = parse_port(args[++i]);
             if (!port) {
-                std::fputs("echo: --port needs a number from 0 to 65535\n", stderr);
+                std::cerr << "echo: --port needs a number from 0 to 65535\n";
                 return std::nullopt;
             }
             options.port = *port;
@@ -68,12 +68,7 @@ std::optional<Options> parse_args(const std::vector<std::string_view>& args) {
         } else if (arg == "--autobahn") {
             options.autobahn = true;
         } else {
-            std::fprintf(stderr,
-                         "echo: unknown or incomplete option '%.*s'\n%.*s",
-                         static_cast<int>(arg.size()),
-                         arg.data(),
-                         static_cast<int>(kUsage.size()),
-                         kUsage.data());
+            std::cerr << "echo: unknown or incomplete option '" << arg << "'\n" << kUsage;
             return std::nullopt;
         }
     }
@@ -133,16 +128,15 @@ int serve(const Options& options) {
     try {
         const std::unique_ptr<wsrv::Server> server = make_builder(options, factory).build();
         if (const auto signals = server->install_signal_handlers(); !signals) {
-            std::fputs("echo: cannot install signal handlers\n", stderr);
+            std::cerr << "echo: cannot install signal handlers\n";
             return EXIT_FAILURE;
         }
-        std::printf("echo: listening on %s:%u (Ctrl-C to stop)\n",
-                    options.host.c_str(),
-                    static_cast<unsigned>(server->local_endpoint().port));
-        std::fflush(stdout);
+        std::cout << "echo: listening on " << options.host << ':' << server->local_endpoint().port
+                  << " (Ctrl-C to stop)\n"
+                  << std::flush;  // flushed: scripts wait for this line
         return server->run() ? EXIT_SUCCESS : EXIT_FAILURE;
     } catch (const wsrv::ConfigError& error) {
-        std::fprintf(stderr, "echo: %s\n", error.what());
+        std::cerr << "echo: " << error.what() << '\n';
         return EXIT_FAILURE;
     }
 }
@@ -150,7 +144,12 @@ int serve(const Options& options) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    const std::vector<std::string_view> args(argv + 1, argv + argc);
-    const std::optional<Options> options = parse_args(args);
-    return options ? serve(*options) : EXIT_FAILURE;
+    try {
+        const std::vector<std::string_view> args(argv + 1, argv + argc);
+        const std::optional<Options> options = parse_args(args);
+        return options ? serve(*options) : EXIT_FAILURE;
+    } catch (const std::exception& error) {  // for example out of memory while starting up
+        std::cerr << "echo: " << error.what() << '\n';
+        return EXIT_FAILURE;
+    }
 }
