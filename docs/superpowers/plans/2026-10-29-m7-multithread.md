@@ -7,6 +7,8 @@ Goal (PROJECT_PLAN): N loops, connection distribution, cross-thread `SessionHand
 - Tests first: a handle used from another thread delivers a message in order; after the connection closed, after the table dropped it, after the shard's link was closed, and with a full task queue (`BufferFull`) it returns an error and nothing crashes (EC-N13, EC-N14). TSan and `--gtest_repeat`.
 - Lifetime rule: the handle never holds a pointer to a connection; the posted task looks the id up on the loop thread.
 
+**Status:** done. A bug the end-to-end test caught: a command posted from a foreign thread queued its message but nothing wrote it, because in-loop callbacks are followed by `settle()` and posted commands were not. `Connection::apply` now runs the command and then settles; `ISessionDirectory::run` replaced `find`. Also worth knowing: `close()` drops every unsent data message (documented in the outbound scheduler), so "send, then close" from one command loses the message unless it was already written; `SessionHandle` runs each call as its own command, so the text is written before the close.
+
 ## Task 2: extract `LoopShard`
 **Files:** `src/server/loop_shard.hpp/.cpp`, `src/server/server.*`.
 - Move loop, host, table, scratch, context out of `Server` into a shard; `Server` owns shard 0. No behaviour change: all M6 tests pass untouched.

@@ -2,6 +2,7 @@
 #include "server/config.hpp"
 
 #include "server/handler.hpp"
+#include "server/session_handle.hpp"
 
 #include <gtest/gtest.h>
 
@@ -118,6 +119,9 @@ public:
     }
     void close(wsrv::CloseCode /*code*/, std::string_view /*reason*/) override {
         ++closes;
+    }
+    [[nodiscard]] wsrv::SessionHandle handle() const override {
+        return {};
     }
     int sends = 0;
     int closes = 0;

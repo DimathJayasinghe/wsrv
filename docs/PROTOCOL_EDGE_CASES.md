@@ -209,6 +209,7 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | EC-H17, H19, H20, H21, H22 (refusal; the rate-limited log line is M10), H24 at connection level | done (M6) | `ConnectionTest.TheRequestMayArriveOneByte*`, `AMessageInTheSameRead*`, `AHandshakeThatNever*`, `ThePeerLeavingMid*`, `GarbageOnThePlainPort*`, `HandshakeDriverTest.*`, `Integration.ASlowloris*`, `Integration.GarbageAndATlsHello*` |
 | EC-A01, A03, A06 (handler exceptions, send after close, deferred close), EC-C11..C15 at connection level, FR-S1 (connection cap) | done (M6) | `ConnectionTest.AThrowingHandler*`, `ANonStandardThrow*`, `CloseIsIdempotent*`, `OnCloseMayNotSend*`, `Server.TheConnectionCap*`, `Server.Churn*`, `Integration.AThrowingHandler*` |
 | Autobahn sections 1-7, 9, 10 | harness written (M6); first full run pending, see `tests/autobahn/EXCLUDED.md` | `tests/autobahn/run.sh` |
+| EC-N13 (handle after the connection, the loop or the server is gone), EC-N14 (task queue full: `BufferFull`) | done (M7, `SessionHandle`) | `SessionHandleTest.*`, `SmallQueueTest.*`, `ServerHandle.*` |
 | EC-H26 | M10 (MAY) | - |
 | EC-F*, EC-C*, EC-N*, EC-A*, EC-T*, EC-D* | later milestones | - |
 

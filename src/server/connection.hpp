@@ -10,6 +10,7 @@
 #include "server/config.hpp"
 #include "server/connection_host.hpp"
 #include "server/handler.hpp"
+#include "server/session_handle.hpp"
 
 #include <memory>
 #include <optional>
@@ -27,6 +28,8 @@ struct ConnectionContext {
     /// its own, so an idle one costs almost nothing (NFR-P1). The protocol layer consumes each
     /// chunk completely (it keeps its own small partial-frame state), so sharing is safe.
     MutableByteView scratch;
+    /// How a SessionHandle reaches this loop; null (tests, single-use fakes) gives inert handles.
+    std::shared_ptr<LoopLink> link;
 };
 
 /// One client, from accept to close: the glue between a transport, the handshake, the
@@ -69,6 +72,9 @@ public:
     /// Graceful shutdown (FR-S5): an established connection gets Close 1001; one still in the
     /// handshake is dropped.
     void begin_shutdown();
+    /// Run a command from outside a handler callback (a SessionHandle's posted task), then write
+    /// what it queued. Ignored once the connection is finished.
+    void apply(const SessionCommand& command);
     /// Shutdown deadline passed: close the transport now, without waiting for the peer.
     void abort();
 
@@ -86,6 +92,9 @@ public:
     [[nodiscard]] Result<void> send_text(std::string_view text) override;
     [[nodiscard]] Result<void> send_binary(ByteView data) override;
     void close(CloseCode code, std::string_view reason) override;
+    [[nodiscard]] SessionHandle handle() const override {
+        return SessionHandle{ctx_.link, id_};
+    }
 
 private:
     enum class Phase : std::uint8_t { Handshaking, Established, Finished };

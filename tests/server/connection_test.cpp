@@ -120,7 +120,7 @@ struct ConnectionTest : public ::testing::Test {
             wsrv::Endpoint{},
             std::move(owned),
             wsrv::ConnectionContext{
-                host, config, negotiator, factory, wsrv::MutableByteView{scratch}});
+                host, config, negotiator, factory, wsrv::MutableByteView{scratch}, nullptr});
         ASSERT_TRUE(conn->start().has_value());
     }
     void readable() {

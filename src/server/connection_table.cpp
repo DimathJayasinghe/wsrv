@@ -29,6 +29,13 @@ void ConnectionTable::retire(ConnectionId id) {
     WSRV_ASSERT(queued.has_value());  // sized from max_connections: one retire per connection
 }
 
+void ConnectionTable::run(ConnectionId id, const SessionCommand& command) {
+    const auto found = connections_.find(id);
+    if (found != connections_.end()) {
+        found->second->apply(command);
+    }
+}
+
 void ConnectionTable::for_each(const std::function<void(Connection&)>& visit) {
     for (auto& entry : connections_) {
         visit(*entry.second);

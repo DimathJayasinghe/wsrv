@@ -368,6 +368,14 @@ Result<void> Connection::apply_send_policy(Result<void> result) {
 
 // ---- Session (what the handler calls) -----------------------------------------------------------
 
+void Connection::apply(const SessionCommand& command) {
+    if (phase_ != Phase::Established || !session_) {
+        return;
+    }
+    command(*this);
+    settle();
+}
+
 Result<void> Connection::send_text(std::string_view text) {
     if (phase_ != Phase::Established || !session_) {
         return fail(ErrorCode::Closing, "connection closed");
