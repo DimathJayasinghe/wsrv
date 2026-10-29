@@ -20,7 +20,7 @@ Trust boundaries: **network â†” transport** (fully untrusted bytes), **server â†
 |---|---|---|---|---|
 | T1 | Memory corruption (overflow, OOB, UAF) | Malformed frames/headers, length fields | Bounds-checked spans, checked arithmetic, no raw pointers, RAII, sanitizers, fuzzing | Fuzz targets, ASAN/UBSAN |
 | T2 | Slowloris (handshake) | Trickle header bytes | Handshake timeout, size limits, min-rate rule, per-IP caps | Integration test |
-| T3 | Slow read / write stall | Peer never reads | Bounded outbound queue, slow-consumer policy, write timeout | Integration test |
+| T3 | Slow read / write stall | Peer never reads | Bounded outbound queue, slow-consumer policy, write timeout | Integration test. **As built (M6):** `max_queued_bytes`, `SlowConsumerPolicy` (Close 1008 / DropMessage), `write_stall_timeout`; `ConnectionTest.ASlowConsumer*`, `APeerThatAcceptsNoBytes*`, `Integration.ASlowReader*` |
 | T4 | Connection flood / FD exhaustion | Many sockets | Global & per-IP caps, `EMFILE` reserve fd, accept backoff, `RLIMIT_NOFILE` check at start | Load test |
 | T5 | Memory exhaustion via large message | Huge length, many fragments | Frame/message/fragment limits, lazy buffer growth, never pre-allocate declared length | Edge-case tests |
 | T6 | Decompression bomb | permessage-deflate | Inflate output cap + ratio limit, streaming inflate, `no_context_takeover` option | Bomb test |
@@ -33,7 +33,7 @@ Trust boundaries: **network â†” transport** (fully untrusted bytes), **server â†
 | T13 | Information disclosure | Verbose errors, logs, stack traces | Generic client errors; detailed server logs only; secrets never logged; log sanitising | Review + tests |
 | T14 | Log injection | Peer strings in logs | Escape control chars / quote values, length-cap | Unit test |
 | T15 | Resource leak over time | Error paths forgetting cleanup | RAII, soak tests with fd/RSS monitoring | 24 h soak |
-| T16 | Malicious/buggy handler | Exceptions, blocking, retaining dangling refs | Exception barrier, loop-lag watchdog metric, API lifetimes documented, `SessionHandle` weak semantics | Tests |
+| T16 | Malicious/buggy handler | Exceptions, blocking, retaining dangling refs | Exception barrier, loop-lag watchdog metric, API lifetimes documented, `SessionHandle` weak semantics | Tests. **As built (M6):** exception barrier (`Connection::guarded`, close 1011, server continues) and documented `Session` lifetimes; `ConnectionTest.AThrowingHandler*`, `Integration.AThrowingHandler*`. The watchdog metric (M10) and `SessionHandle` (M7) are not built yet |
 | T17 | Timing side channels | Token comparison in auth hook | Provide `constant_time_equal` helper; docs | Unit test |
 | T18 | Supply chain | Compromised dependency | Minimal deps, pinned hashes, SBOM, signed tags/releases, dependabot-equivalent | CI |
 | T19 | Privilege abuse | Running as root | Documented drop-privileges, systemd hardening, seccomp profile (optional) | Ops doc |

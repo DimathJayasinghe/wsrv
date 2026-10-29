@@ -77,7 +77,7 @@ Each milestone is *done* only when its exit criteria and the global Definition o
 | M13 | More bindings & platforms | Python, Node, Go, Rust bindings (Tier 1/2 per GOVERNANCE); macOS (`KqueuePoller`), then Windows | Each binding passes Autobahn in CI; per-OS CI green |
 | M14 | Open-source launch | LICENSE/NOTICE, CoC, GOVERNANCE, templates, website/docs site, roadmap, good-first-issues, signed releases + SBOM | Public repo checklist complete; **1.0 tag** |
 
-> **Status (2026-10-24):** M0-M4 merged (PR #1-#5; M4 = protocol session, outbound scheduler, timers, rate limits, `fuzz_session`). M5 (net: Fd, ISyscalls + fault injection, timer wheel, epoll poller, event loop, acceptor with reserve-fd, plain transport; lesson 10) implemented and gated on `feat/m5-net`, awaiting independent review and PR. M6 (single-thread server) is next.
+> **Status (2026-10-29):** M0-M6 merged (PR #1-#10). M5 = net (lesson 10). M6 = single-thread server: loop `defer`, signal watcher, `ServerConfig`, handler API, `HandshakeDriver`, `Connection`, `ConnectionTable`, `Server`, `ServerBuilder`, echo example, browser demo, adversarial integration tests, Autobahn harness (lesson 11, ADR-0013 Proposed). **Open exit criterion for M6: the first full Autobahn run** (`tests/autobahn/run.sh`; the image could not be pulled on the development machine). The M6 demo UI shows what a browser can observe (a browser cannot send Ping, fragments or invalid UTF-8; the plan's "fragmented/ping" probes are covered by the integration tests and Autobahn instead). M7 (multi-loop, `SessionHandle`, `MessageWriter`) is next.
 >
 > Sequencing note: TLS (M8) is required built-in (owner decision). permessage-deflate (M9) may slip behind M11/M12 if needed for the PHP milestone. Decide at M7 exit.
 

@@ -203,9 +203,12 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | EC-N09 (outbound queue bound: `Backpressure` / `BufferFull`; the close-1008 slow-consumer policy is connection level) | queue bound done (M4), policy M6 | `OutboundScheduler.TheQueueBound*`, `SessionSend.AFullOutboundQueue*` |
 | EC-F23, N04 (peer EOF -> 1006) | done at session level (M4: `on_transport_closed`) | `Session.TheTransportClosing*` |
 | EC-N01..N08, N12, N14, N15, N16, N20 (syscall layer, poller, loop, acceptor, transport) | done (M5); N09..N11 are connection level (M6), N13 needs `SessionHandle` (M7), N17 signals (M6), N18/N19 (M6/ops) | `IoError.*`, `Fd.*`, `LinuxSyscalls.*`, `FakeSyscalls.*`, `Retrying.*`, `TimerWheel.*`, `EpollPollerTest.*`, `EventLoopTest.*`, `AcceptorTest.*`, `AcceptorBackoff.*`, `TcpListener.*`, `PlainTransport.*`, `LoopbackTest.*` |
-| EC-C18 (server shutdown) | M6 | - |
-| EC-F18, F33..F35 (`MessageWriter`) | M6 (needs connection-level backpressure) | - |
-| EC-H20, H21, H22 (logging), H24 | M6 (connection level: timers, disconnects) | - |
+| EC-C18 (server shutdown, signals: second request forces), EC-N17, EC-N20 (port in use is a clear startup error) | done (M6) | `Server.AGracefulShutdown*`, `Server.AClientThatIgnoresTheShutdown*`, `Server.ASignalStarts*`, `ConnectionTest.Shutdown*`, `SignalWatcherTest.*`, `ServerBuilder.APortAlreadyInUse*` |
+| EC-F18, F33..F35 (`MessageWriter`) | moved to M7 (FR-F12 streaming writer; M6 sends whole messages, auto-fragmented) | - |
+| EC-N02 (partial write), N03 (EPIPE), N04 (EOF mid-message), N07/N08 (read budget, flooder), N09 (stall timer, slow-consumer policy), N11 (heartbeat) at connection level | done (M6) | `ConnectionTest.APartiallyWritten101*`, `AWriteToAGonePeer*`, `AnEofInTheMiddle*`, `ABudgetedRead*`, `APeerThatAcceptsNoBytes*`, `ASlowConsumer*`, `TheDropPolicy*`, `Integration.ASlowReader*`, `Integration.AFloodingClient*`, `Integration.ASilentPeer*` |
+| EC-H17, H19, H20, H21, H22 (refusal; the rate-limited log line is M10), H24 at connection level | done (M6) | `ConnectionTest.TheRequestMayArriveOneByte*`, `AMessageInTheSameRead*`, `AHandshakeThatNever*`, `ThePeerLeavingMid*`, `GarbageOnThePlainPort*`, `HandshakeDriverTest.*`, `Integration.ASlowloris*`, `Integration.GarbageAndATlsHello*` |
+| EC-A01, A03, A06 (handler exceptions, send after close, deferred close), EC-C11..C15 at connection level, FR-S1 (connection cap) | done (M6) | `ConnectionTest.AThrowingHandler*`, `ANonStandardThrow*`, `CloseIsIdempotent*`, `OnCloseMayNotSend*`, `Server.TheConnectionCap*`, `Server.Churn*`, `Integration.AThrowingHandler*` |
+| Autobahn sections 1-7, 9, 10 | harness written (M6); first full run pending, see `tests/autobahn/EXCLUDED.md` | `tests/autobahn/run.sh` |
 | EC-H26 | M10 (MAY) | - |
 | EC-F*, EC-C*, EC-N*, EC-A*, EC-T*, EC-D* | later milestones | - |
 
