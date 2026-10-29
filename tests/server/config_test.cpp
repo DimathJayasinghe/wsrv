@@ -94,6 +94,18 @@ TEST(ServerConfig,
     EXPECT_EQ(result.error().code, ErrorCode::InvalidConfig);
 }
 
+TEST(ServerConfig, TheThreadCountMustBeBetweenOneAndTheCeiling) {  // ADR-0014
+    wsrv::ServerConfig config;
+    EXPECT_EQ(config.threads, 1U);
+    config.threads = 0;
+    ASSERT_FALSE(wsrv::validate(config).has_value());
+    EXPECT_EQ(wsrv::validate(config).error().context, "threads out of range");
+    config.threads = wsrv::kMaxConfiguredThreads + 1;
+    EXPECT_FALSE(wsrv::validate(config).has_value());
+    config.threads = wsrv::kMaxConfiguredThreads;
+    EXPECT_TRUE(wsrv::validate(config).has_value());
+}
+
 TEST(ServerConfig, TheReadBudgetCannotExceedItsCeiling) {
     ServerConfig config;
     config.read.max_bytes_per_event = wsrv::kMaxConfiguredReadBytes + 1;

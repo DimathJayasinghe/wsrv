@@ -3,7 +3,8 @@
 // (ServerBuilder + IWebSocketHandler), so it doubles as the Autobahn conformance target and as the
 // backend of the browser demo (examples/demo).
 //
-//   echo [--host IP] [--port N] [--allow-origin URL]... [--allow-missing-origin] [--autobahn]
+//   echo [--host IP] [--port N] [--threads N] [--allow-origin URL]... [--allow-missing-origin]
+//        [--autobahn]
 #include "server/server_builder.hpp"
 
 #include <charconv>
@@ -23,53 +24,78 @@ namespace {
 struct Options {
     std::string host = "127.0.0.1";  // loopback unless the operator opts into exposure
     std::uint16_t port = 9001;
+    std::size_t threads = 1;
     std::vector<std::string> allowed_origins;
     bool allow_missing_origin = false;  // non-browser clients (Autobahn, curl-like tools)
     bool autobahn = false;
 };
 
 constexpr std::string_view kUsage =
-    "usage: echo [--host IP] [--port N] [--allow-origin URL]... [--allow-missing-origin] "
-    "[--autobahn]\n"
+    "usage: echo [--host IP] [--port N] [--threads N] [--allow-origin URL]... "
+    "[--allow-missing-origin] [--autobahn]\n"
+    "  --threads N              event loops, one thread each (default 1)\n"
     "  --allow-origin URL       accept browsers on this Origin (repeatable), e.g. "
     "http://localhost:8000\n"
     "  --allow-missing-origin   accept clients that send no Origin header\n"
     "  --autobahn               raise size and rate limits for the conformance suite (test use "
     "only)\n";
 
-std::optional<std::uint16_t> parse_port(std::string_view text) {
-    std::uint16_t port = 0;
-    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), port);
+template <class Number>
+std::optional<Number> parse_number(std::string_view text) {
+    Number value{};
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
     if (error != std::errc{} || end != text.data() + text.size()) {
         return std::nullopt;
     }
-    return port;
+    return value;
+}
+
+void report_unknown(std::string_view arg) {
+    std::cerr << "echo: unknown or incomplete option '" << arg << "'\n" << kUsage;
+}
+
+/// An option that takes a value. @return false after printing the problem.
+bool apply_valued_option(Options& options, std::string_view name, std::string_view value) {
+    if (name == "--host") {
+        options.host = std::string{value};
+    } else if (name == "--allow-origin") {
+        options.allowed_origins.emplace_back(value);
+    } else if (name == "--port") {
+        const std::optional<std::uint16_t> port = parse_number<std::uint16_t>(value);
+        if (!port) {
+            std::cerr << "echo: --port needs a number from 0 to 65535\n";
+            return false;
+        }
+        options.port = *port;
+    } else if (name == "--threads") {
+        const std::optional<std::size_t> threads = parse_number<std::size_t>(value);
+        if (!threads) {
+            std::cerr << "echo: --threads needs a positive number\n";
+            return false;
+        }
+        options.threads = *threads;
+    } else {
+        report_unknown(name);
+        return false;
+    }
+    return true;
 }
 
 /// @return nullopt after printing the problem; the caller exits with an error status.
 std::optional<Options> parse_args(const std::vector<std::string_view>& args) {
     Options options;
     for (std::size_t i = 0; i < args.size(); ++i) {
-        const std::string_view arg = args[i];
-        const bool has_value = i + 1 < args.size();
-        if (arg == "--host" && has_value) {
-            options.host = std::string{args[++i]};
-        } else if (arg == "--port" && has_value) {
-            const std::optional<std::uint16_t> port = parse_port(args[++i]);
-            if (!port) {
-                std::cerr << "echo: --port needs a number from 0 to 65535\n";
-                return std::nullopt;
-            }
-            options.port = *port;
-        } else if (arg == "--allow-origin" && has_value) {
-            options.allowed_origins.emplace_back(args[++i]);
-        } else if (arg == "--allow-missing-origin") {
+        if (args[i] == "--allow-missing-origin") {
             options.allow_missing_origin = true;
-        } else if (arg == "--autobahn") {
+        } else if (args[i] == "--autobahn") {
             options.autobahn = true;
-        } else {
-            std::cerr << "echo: unknown or incomplete option '" << arg << "'\n" << kUsage;
+        } else if (i + 1 >= args.size()) {
+            report_unknown(args[i]);
             return std::nullopt;
+        } else if (!apply_valued_option(options, args[i], args[i + 1])) {
+            return std::nullopt;
+        } else {
+            ++i;  // the value
         }
     }
     return options;
@@ -112,6 +138,7 @@ wsrv::ServerBuilder make_builder(const Options& options, EchoFactory& factory) {
     wsrv::ServerBuilder builder;
     builder.listen(options.host, options.port).handler_factory(factory);
     wsrv::ServerConfig& config = builder.config();
+    config.threads = options.threads;
     config.handshake.allowed_origins = options.allowed_origins;
     config.handshake.allow_missing_origin = options.allow_missing_origin;
     // An echo must be able to send back every message it accepts (FR-F6): the outbound queue has

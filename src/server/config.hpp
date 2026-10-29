@@ -33,6 +33,7 @@ struct ReadBudget {
 struct ServerConfig {
     Endpoint listen;
     std::size_t max_connections = 10000;  ///< further connections are accepted and closed (FR-S1)
+    std::size_t threads = 1;  ///< loops: loop 0 on the caller's thread, the rest started by run()
 
     HttpLimits http;  ///< the request head (FR-H7)
     HandshakeConfig
@@ -49,6 +50,7 @@ struct ServerConfig {
 
 /// Hard ceilings (SECURITY_DESIGN section 3): a misconfiguration is rejected, never honoured.
 inline constexpr std::size_t kMaxConfiguredConnections = std::size_t{1} << 20;
+inline constexpr std::size_t kMaxConfiguredThreads = 256;
 inline constexpr std::size_t kMaxConfiguredReadBytes = std::size_t{16} << 20;
 
 /// Check a ServerConfig, including its SessionConfig and HttpLimits. Durations within

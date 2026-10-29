@@ -31,7 +31,9 @@ public:
 ///   server->install_signal_handlers();
 ///   server->run();
 ///
-/// Injected collaborators are borrowed and must outlive the Server.
+/// Injected collaborators are borrowed and must outlive the Server. With `config().threads > 1`
+/// the handler factory, the logger and the clock are used from several loop threads at once and
+/// must be thread-safe (ADR-0014).
 /// Thread-affinity: build on the thread that will run the server.
 class ServerBuilder {
 public:
