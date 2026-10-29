@@ -23,6 +23,7 @@ wsrv_add_test(NAME net_acceptor_test SOURCES net/acceptor_test.cpp LINK wsrv::ne
 wsrv_add_test(NAME net_loopback_test SOURCES net/loopback_test.cpp LINK wsrv::net)
 
 wsrv_add_test(NAME server_connection_test SOURCES server/connection_test.cpp LINK wsrv::server)
+wsrv_add_test(NAME server_server_test SOURCES server/server_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_config_test SOURCES server/config_test.cpp LINK wsrv::server)
 
 # Differential tests against OpenSSL are test-only and optional (ADR-0005: no runtime dependency).
