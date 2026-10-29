@@ -1,6 +1,6 @@
 # ADR-0003: Shared-nothing reactor-per-thread concurrency
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-24
 
 ## Context
@@ -18,3 +18,6 @@ Option 3. Handlers run on the loop thread; `SessionHandle` posts work to the own
 + No locks on connection state; predictable ordering per connection.
 − A blocking handler stalls its loop (mitigated: loop-lag metric, docs, binding layer moves user code off I/O threads — see ADR-0009).
 − Broadcast needs cross-loop fan-out via `post`.
+
+## Addendum (M5, 2026-10-25)
+The first cross-thread queue is a **bounded, mutex-protected deque** (`EventLoop::post`), not a hand-written lock-free MPSC queue. The lock is held only to push or pop; the eventfd write happens outside it. The wake-up flag lives under the same lock as the queue, because an atomic flag cleared outside it lost wake-ups (Lesson 10, section 5). Revisit a lock-free queue only if the M7 benchmarks show contention on `post`. Connection and protocol code still takes no locks.

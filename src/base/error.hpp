@@ -23,6 +23,11 @@ enum class ErrorCode : std::uint8_t {
     Closing,            ///< The session is closing or closed; the request was refused (Internal).
     Backpressure,       ///< An outbound queue is full; retry after it drains (Limit).
     InvalidConfig,      ///< A configuration value is out of range or missing (Config).
+    WouldBlock,         ///< Not ready yet (EAGAIN): wait for readiness and retry (Io).
+    ConnectionClosed,   ///< The peer is gone: EPIPE, ECONNRESET, ECONNABORTED, ETIMEDOUT... (Io).
+    FdLimit,            ///< Out of descriptors or kernel buffers: EMFILE, ENFILE, ENOBUFS (Limit).
+    AddressInUse,       ///< bind() failed because the address is taken (Io).
+    Io,                 ///< Any other operating-system failure (Io).
 };
 
 /// A failure. `context` MUST be a string literal (static storage): it is never built from peer
@@ -44,7 +49,13 @@ struct Error {
     case ErrorCode::BufferFull:
     case ErrorCode::ResourceExhausted:
     case ErrorCode::Backpressure:
+    case ErrorCode::FdLimit:
         return ErrorCategory::Limit;
+    case ErrorCode::WouldBlock:
+    case ErrorCode::ConnectionClosed:
+    case ErrorCode::AddressInUse:
+    case ErrorCode::Io:
+        return ErrorCategory::Io;
     case ErrorCode::InvalidArgument:
     case ErrorCode::OutOfRange:
     case ErrorCode::RandomUnavailable:
