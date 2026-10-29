@@ -12,7 +12,8 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
-        "WSRV_BUILD_TESTS": "ON"
+        "WSRV_BUILD_TESTS": "ON",
+        "WSRV_BUILD_EXAMPLES": "ON"
       }
     },
     {

@@ -1,0 +1,7 @@
+{
+  "outdir": "/reports",
+  "servers": [{ "agent": "wsrv", "url": "ws://dev:9001" }],
+  "cases": ["*"],
+  "exclude-cases": ["12.*", "13.*"],
+  "exclude-agent-cases": {}
+}
