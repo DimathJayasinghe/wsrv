@@ -135,6 +135,10 @@ Thread-safe surface of a loop: `post()` and `stop()` only. Everything else runs 
 | `Broker` | Topic → subscribers (per-loop shards; cross-loop fan-out via `post`) |
 | `LimitsEnforcer` | Per-IP and global caps, rate limiters |
 
+**As built in M6** (single loop; ADR-0013, lesson 11). Implemented: `Server`, `ServerBuilder`, `Connection`, `IConnectionHost` + `LoopHost` (Connection's only view of the loop), `ConnectionTable` (plays the registry's role; erases retired connections at `EventLoop::defer`), `ServerConfig`, `IWebSocketHandler`/`Session`/`IHandlerFactory`; `HandshakeDriver` lives in `protocol/` (pure bytes to outcome). Not yet built, by milestone: `EventLoopGroup` and `SessionHandle` (M7), `Broker` (M7+), `LimitsEnforcer` (M10).
+
+**API location:** until 1.0-rc the public API headers stay in `src/server/` (`handler.hpp`, `server_builder.hpp`, `config.hpp`); they move to `include/wsrv/` once the C ABI (M11) fixes what is public. See ADR-0013.
+
 ## 4. Public API (sketch, `include/wsrv/`)
 
 ```cpp
