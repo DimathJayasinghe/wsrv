@@ -9,16 +9,18 @@ Goal (PROJECT_PLAN): N loops, connection distribution, cross-thread `SessionHand
 
 **Status:** done. A bug the end-to-end test caught: a command posted from a foreign thread queued its message but nothing wrote it, because in-loop callbacks are followed by `settle()` and posted commands were not. `Connection::apply` now runs the command and then settles; `ISessionDirectory::run` replaced `find`. Also worth knowing: `close()` drops every unsent data message (documented in the outbound scheduler), so "send, then close" from one command loses the message unless it was already written; `SessionHandle` runs each call as its own command, so the text is written before the close.
 
-## Task 2: extract `LoopShard`
+## Task 2: extract `LoopShard` (done)
 **Files:** `src/server/loop_shard.hpp/.cpp`, `src/server/server.*`.
 - Move loop, host, table, scratch, context out of `Server` into a shard; `Server` owns shard 0. No behaviour change: all M6 tests pass untouched.
 - The member-order rule of `server.hpp` becomes the shard's.
 
-## Task 3: N loops
+## Task 3: N loops (done)
 **Files:** `src/server/config.*` (`threads`, ceiling), `src/server/server.*`, `server_builder.*`.
 - Tests first: threads = 4, many clients get echoed and are spread over the loops; the global cap holds across loops; ids are unique; a refused client costs one close.
 - Worker threads start inside `run()`, construct their shard on their own thread, report ready, then run. Round-robin hand-off by `post` (the descriptor is moved into the task; if the post is refused the descriptor is closed and counted).
 - Graceful and forced shutdown across loops; signals on loop 0; join all threads before `run()` returns.
+
+**Built:** `LoopShard` (per-loop state, `adopt`, `begin_shutdown`, `abort_all`), `WorkerThread` (builds its shard on its own thread, keeps it alive until released), `Server` (loop 0 + acceptor + hand-off by `post`, global `live_` cap, drain counting, `ServerConfig::threads`, echo `--threads`). `multi_loop_test`: spread over loops, unique ids, global cap and slot return, handles across loops, graceful and forced shutdown across loops, `stop()`, never-run server, churn. TSan: 0 reports over 30 repeats.
 
 ## Task 4: hammer it
 **Files:** `tests/integration/multithread_test.cpp`, `tests/bench/`, `tests/soak/`.

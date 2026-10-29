@@ -2,36 +2,16 @@
 #include "server/server.hpp"
 
 #include "base/assert.hpp"
-#include "net/plain_transport.hpp"
 
 #include <array>
 #include <csignal>
 #include <exception>
+#include <memory>
+#include <new>
 #include <stdexcept>
 #include <utility>
 
 namespace wsrv {
-
-namespace {
-
-/// One read buffer shared by all connections of the loop (see ConnectionContext::scratch).
-constexpr std::size_t kScratchSize = std::size_t{16} * 1024;
-
-/// Slack on top of max_connections for the server's own registrations (listener, signals).
-constexpr std::size_t kLoopSlack = 16;
-
-/// A connection holds at most a handshake or tick timer plus a write-stall timer.
-constexpr std::size_t kTimersPerConnection = 3;
-
-[[nodiscard]] EventLoopConfig loop_config_for(std::size_t max_connections) {
-    EventLoopConfig loop;
-    loop.max_watches = max_connections + kLoopSlack;
-    loop.max_deferred = max_connections + kLoopSlack;  // one retire per connection
-    loop.max_timers = kTimersPerConnection * max_connections + kLoopSlack;
-    return loop;
-}
-
-}  // namespace
 
 Server::Server(Key /*unused*/, ServerConfig config, const ServerDeps& deps)
     : config_{std::move(config)}, factory_{*deps.factory},
@@ -39,13 +19,7 @@ Server::Server(Key /*unused*/, ServerConfig config, const ServerDeps& deps)
       clock_{deps.clock != nullptr ? *deps.clock : static_cast<const IClock&>(own_clock_)},
       logger_{deps.logger != nullptr ? *deps.logger : static_cast<ILogger&>(own_logger_)} {}
 
-Server::~Server() {
-    // Cut handles off before the loop and the table go: a foreign thread still holding one then
-    // gets Closing instead of touching freed memory (ADR-0014 section 4).
-    if (link_) {
-        link_->close();
-    }
-}
+Server::~Server() = default;
 
 Result<std::unique_ptr<Server>> Server::create(ServerConfig config, const ServerDeps& deps) {
     if (deps.factory == nullptr) {
@@ -66,14 +40,23 @@ Result<std::unique_ptr<Server>> Server::create(ServerConfig config, const Server
     return server;
 }
 
-/// The fallible half of construction, in dependency order: loop, listener (bind errors surface
-/// here, EC-N20), table, host, negotiator, connection context, acceptor.
+/// The fallible half of construction, in dependency order: negotiator, loop 0's shard, listener
+/// (bind errors surface here, EC-N20), acceptor. The other loops start in run().
 Result<void> Server::init() {
-    auto loop = EventLoop::create(sys_, clock_, loop_config_for(config_.max_connections));
-    if (!loop) {
-        return std::unexpected{loop.error()};
+    try {
+        negotiator_ = std::make_unique<HandshakeNegotiator>(config_.handshake);
+        shared_ = std::make_unique<ShardShared>(
+            ShardShared{config_, *negotiator_, factory_, sys_, clock_, logger_, live_});
+    } catch (const std::invalid_argument&) {
+        return fail(ErrorCode::InvalidConfig, "server: invalid handshake configuration");
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "server: out of memory");
     }
-    loop_ = std::move(*loop);
+    auto shard = LoopShard::create(*shared_, [this] { on_shard_drained(); });
+    if (!shard) {
+        return std::unexpected{shard.error()};
+    }
+    main_ = std::move(*shard);
 
     auto listener = TcpListener::open(sys_, ListenerConfig{config_.listen});
     if (!listener) {
@@ -81,20 +64,8 @@ Result<void> Server::init() {
     }
     listener_ = std::make_unique<TcpListener>(std::move(*listener));
 
-    table_ = std::make_unique<ConnectionTable>(*loop_, [this] { on_connection_removed(); });
-    host_ = std::make_unique<LoopHost>(*loop_, clock_, logger_, *table_);
-    try {
-        negotiator_ = std::make_unique<HandshakeNegotiator>(config_.handshake);
-    } catch (const std::invalid_argument&) {
-        return fail(ErrorCode::InvalidConfig, "server: invalid handshake configuration");
-    }
-    scratch_.resize(kScratchSize);
-    link_ = std::make_shared<LoopLink>(*loop_, *table_);
-    context_ = std::make_unique<ConnectionContext>(ConnectionContext{
-        *host_, config_, *negotiator_, factory_, MutableByteView{scratch_}, link_});
-
     acceptor_ = std::make_unique<Acceptor>(
-        *loop_,
+        main_->loop(),
         *listener_,
         sys_,
         [this](Fd client, Endpoint peer) { on_accept(std::move(client), peer); },
@@ -102,14 +73,44 @@ Result<void> Server::init() {
     return acceptor_->start();
 }
 
+// ---- running ------------------------------------------------------------------------------------
+
 Result<void> Server::run() {
-    return loop_->run();
+    if (const Result<void> started = start_workers(); !started) {
+        stop_workers();
+        return started;
+    }
+    const Result<void> result = main_->loop().run();
+    stop_workers();  // loop 0 decides when the others end: they are stopped here, then joined
+    return result;
+}
+
+Result<void> Server::start_workers() {
+    for (std::size_t i = 1; i < config_.threads; ++i) {
+        auto worker = WorkerThread::start(*shared_, [this] { on_shard_drained(); });
+        if (!worker) {
+            return std::unexpected{worker.error()};
+        }
+        try {
+            workers_.push_back(std::move(*worker));
+        } catch (const std::bad_alloc&) {
+            return fail(ErrorCode::ResourceExhausted, "server: out of memory starting loops");
+        }
+    }
+    return {};
+}
+
+void Server::stop_workers() {
+    for (const std::unique_ptr<WorkerThread>& worker : workers_) {
+        worker->stop_loop();
+    }
+    workers_.clear();  // releases and joins each thread; its shard dies on its own thread
 }
 
 Result<void> Server::install_signal_handlers() {
     const std::array<int, 2> signals{SIGINT, SIGTERM};
-    auto watcher =
-        SignalWatcher::create(*loop_, sys_, signals, [this](int signo) { on_signal(signo); });
+    auto watcher = SignalWatcher::create(
+        main_->loop(), sys_, signals, [this](int signo) { on_signal(signo); });
     if (!watcher) {
         return std::unexpected{watcher.error()};
     }
@@ -118,11 +119,11 @@ Result<void> Server::install_signal_handlers() {
 }
 
 Result<void> Server::request_shutdown() {
-    return loop_->post([this] { begin_shutdown(); });
+    return main_->loop().post([this] { begin_shutdown(); });
 }
 
 void Server::stop() noexcept {
-    loop_->stop();
+    main_->loop().stop();
 }
 
 Endpoint Server::local_endpoint() const {
@@ -131,24 +132,46 @@ Endpoint Server::local_endpoint() const {
 
 // ---- accepting ----------------------------------------------------------------------------------
 
-/// New descriptor from the acceptor. Over the cap the client is closed at once (the Fd destructor)
-/// without reading a byte: refusing costs one close (FR-S1, T4). Runs inside the acceptor's
-/// callback, which must not throw, so allocation failures end here.
+/// New descriptor from the acceptor (loop 0). Over the cap the client is closed at once (the Fd
+/// destructor) without reading a byte: refusing costs one close (FR-S1, T4). Otherwise the
+/// connection is counted and given to the next loop in turn. Runs inside the acceptor's callback,
+/// which must not throw.
 void Server::on_accept(Fd client, const Endpoint& peer) {
-    if (table_->size() >= config_.max_connections) {
+    if (live_.load() >= config_.max_connections) {
         const std::uint64_t total = rejected_.fetch_add(1) + 1;
         if ((total & (total - 1)) == 0) {  // log the 1st, 2nd, 4th, 8th...: rate-limited
             logger_.log(LogLevel::Warn, "server: connection limit reached, refusing clients");
         }
         return;
     }
+    live_.fetch_add(1);  // only this thread adds, so the check above cannot be overtaken
+    const ConnectionId id = ++last_id_;
+    const std::size_t target = next_shard_++ % (1 + workers_.size());
+    if (target == 0) {
+        main_->adopt(std::move(client), peer, id);
+    } else {
+        hand_off(target - 1, std::move(client), peer, id);
+    }
+}
+
+/// Give the descriptor to another loop. The task must be copyable, so the move-only Fd travels in
+/// a shared_ptr; if the task is never run (the loop is gone) the Fd is closed with it.
+void Server::hand_off(std::size_t worker, Fd client, const Endpoint& peer, ConnectionId id) {
+    LoopShard& shard = workers_[worker]->shard();
+    bool handed_over = false;
     try {
-        auto transport = std::make_unique<PlainTransport>(std::move(client), sys_);
-        Connection& connection = table_->insert(
-            std::make_unique<Connection>(++last_id_, peer, std::move(transport), *context_));
-        static_cast<void>(connection.start().has_value());  // on failure it is already retired
-    } catch (const std::exception&) {
-        logger_.log(LogLevel::Error, "server: out of memory accepting a connection");
+        auto holder = std::make_shared<Fd>(std::move(client));
+        handed_over =
+            shard.loop()
+                .post([&shard, holder, peer, id] { shard.adopt(std::move(*holder), peer, id); })
+                .has_value();
+    } catch (const std::bad_alloc&) {
+        handed_over = false;  // refused like a full queue
+    }
+    if (!handed_over) {
+        live_.fetch_sub(1);
+        rejected_.fetch_add(1);
+        logger_.log(LogLevel::Warn, "server: a loop is overloaded, refusing a client");
     }
 }
 
@@ -159,7 +182,8 @@ void Server::on_signal(int /*signo*/) {
     begin_shutdown();  // the second signal lands in force_shutdown()
 }
 
-/// EC-C18: stop accepting, send 1001 to everyone, give them `shutdown_grace`, then drop the rest.
+/// EC-C18: stop accepting, send 1001 to everyone on every loop, give them `shutdown_grace`, then
+/// drop the rest. Runs on loop 0, which tells the others by posting.
 void Server::begin_shutdown() {
     if (shutting_down_) {
         force_shutdown();
@@ -167,13 +191,18 @@ void Server::begin_shutdown() {
     }
     shutting_down_ = true;
     acceptor_->stop();
-    table_->for_each([](Connection& connection) { connection.begin_shutdown(); });
-    if (table_->empty()) {
-        loop_->stop();
-        return;
+    shards_to_drain_ = 1 + workers_.size();
+    for (const std::unique_ptr<WorkerThread>& worker : workers_) {
+        LoopShard& shard = worker->shard();
+        if (!shard.loop().post([&shard] { shard.begin_shutdown(); })) {
+            logger_.log(LogLevel::Error, "server: cannot tell a loop to shut down, forcing");
+            force_shutdown();
+            return;
+        }
     }
+    main_->begin_shutdown();  // may already be drained: then this ends loop 0 below
     const Result<TimerHandle> grace =
-        loop_->run_after(config_.shutdown_grace, [this] { force_shutdown(); });
+        main_->loop().run_after(config_.shutdown_grace, [this] { force_shutdown(); });
     if (grace) {
         grace_timer_ = *grace;
     } else {
@@ -181,18 +210,18 @@ void Server::begin_shutdown() {
     }
 }
 
+/// Loop 0 drops its own connections and ends; run() then stops the other loops, whose shards
+/// close what is left when they are destroyed.
 void Server::force_shutdown() {
-    table_->for_each([](Connection& connection) { connection.abort(); });
-    loop_->stop();
+    main_->abort_all();
+    main_->loop().stop();
 }
 
-void Server::on_connection_removed() {
-    if (shutting_down_ && table_->empty()) {
-        if (grace_timer_) {
-            static_cast<void>(loop_->cancel(*grace_timer_));
-            grace_timer_.reset();
-        }
-        loop_->stop();
+/// A shard has no connection left (any loop thread). When all have none, the shutdown is done.
+/// Only loop 0 is touched from here: the other shards may already be on their way out.
+void Server::on_shard_drained() {
+    if (drained_.fetch_add(1) + 1 == shards_to_drain_) {
+        main_->loop().stop();
     }
 }
 
