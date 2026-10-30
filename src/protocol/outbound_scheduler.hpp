@@ -50,6 +50,27 @@ public:
     /// right now; Error{BufferFull} if the message could never fit. Nothing is queued on error.
     [[nodiscard]] Result<void> enqueue_message(Opcode text_or_binary, ByteView payload);
 
+    /// Streaming send (ADR-0015): open a message whose bytes arrive later. The message sits at the
+    /// end of the data queue and is framed as its bytes become available: a non-final frame per
+    /// chunk (the first with the opcode, then Continuations), and an empty final Continuation
+    /// frame once it is ended. While it is open no other data message may be queued.
+    /// @return Error{MessageInProgress}, Error{Closing}, Error{Backpressure} (not even the
+    /// per-message overhead fits), Error{ResourceExhausted}.
+    [[nodiscard]] Result<void> begin_stream(Opcode text_or_binary);
+    /// Add bytes to the open message. @return Error{InvalidArgument} if none is open,
+    /// Error{Closing}, Error{Backpressure} if the bytes do not fit the queue right now (nothing is
+    /// queued: write again after the queue drained), Error{BufferFull} if they could never fit.
+    [[nodiscard]] Result<void> append_stream(ByteView bytes);
+    /// Finish the open message. @return Error{InvalidArgument} if none is open, Error{Closing}.
+    [[nodiscard]] Result<void> end_stream();
+    [[nodiscard]] bool stream_open() const noexcept {
+        return stream_open_;
+    }
+    /// Bytes charged against max_queued_bytes right now (payload plus per-message overhead).
+    [[nodiscard]] std::size_t queued_bytes() const noexcept {
+        return queued_;
+    }
+
     /// Queue a Ping. One may wait at a time: Error{Backpressure} if one is unsent,
     /// Error{InvalidArgument} if payload > 125 bytes, Error{Closing} after queue_close().
     [[nodiscard]] Result<void> queue_ping(ByteView payload);
@@ -95,10 +116,13 @@ private:
     struct Queued {
         Opcode opcode;
         std::size_t length;
+        bool open = false;  // a streamed message that may still grow
     };
 
     void refill();
     [[nodiscard]] bool append_frame(Opcode opcode, bool fin, ByteView payload);
+    /// A data frame can be framed now: the front message has unframed bytes, or has ended.
+    [[nodiscard]] bool data_ready() const noexcept;
     void append_control(Opcode opcode, Control& slot);
     void append_next_fragment();
     static void fill(Control& slot, ByteView payload) noexcept;
@@ -108,6 +132,8 @@ private:
     ByteBuffer data_;  // payloads of queued messages, back to back
     std::deque<Queued> messages_;
     std::size_t front_offset_ = 0;  // bytes of messages_.front() already framed
+    bool front_started_ = false;    // its first frame (the one with the opcode) is out
+    bool stream_open_ = false;      // the last message is open: nothing else may be queued
     std::size_t queued_ = 0;        // charged against max_queued_bytes
     Control pong_;
     Control ping_;

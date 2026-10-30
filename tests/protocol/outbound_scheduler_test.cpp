@@ -278,4 +278,142 @@ TEST(OutboundScheduler, AnAllocationFailureWhileQueueingIsAnErrorAndLeavesTheQue
     EXPECT_EQ(parse_server_output(drain(s)).frames.size(), 1U);
 }
 
+// ---- streaming (ADR-0015): a message whose bytes arrive piece by piece
+// ----------------------------
+
+/// The frames the scheduler writes right now, parsed.
+std::vector<WireFrame> frames_now(OutboundScheduler& s) {
+    const auto parsed = parse_server_output(drain(s));
+    EXPECT_TRUE(parsed.ok);
+    return parsed.frames;
+}
+
+TEST(OutboundStream, PiecesBecomeFragmentsAndAnEmptyFinalContinuationEndsTheMessage) {
+    OutboundScheduler s{config()};
+    ASSERT_TRUE(s.begin_stream(Opcode::Text).has_value());
+    ASSERT_TRUE(s.append_stream(bytes_of("abc")).has_value());
+    auto first = frames_now(s);
+    ASSERT_EQ(first.size(), 1U);
+    EXPECT_EQ(first[0].opcode, Opcode::Text);
+    EXPECT_FALSE(first[0].fin);
+    EXPECT_EQ(first[0].payload, "abc");
+
+    ASSERT_TRUE(s.append_stream(bytes_of("de")).has_value());
+    auto second = frames_now(s);
+    ASSERT_EQ(second.size(), 1U);
+    EXPECT_EQ(second[0].opcode, Opcode::Continuation);
+    EXPECT_FALSE(second[0].fin);
+    EXPECT_EQ(second[0].payload, "de");
+
+    ASSERT_TRUE(s.end_stream().has_value());
+    auto last = frames_now(s);
+    ASSERT_EQ(last.size(), 1U);
+    EXPECT_EQ(last[0].opcode, Opcode::Continuation);  // EC-F37: an empty FIN frame is valid
+    EXPECT_TRUE(last[0].fin);
+    EXPECT_TRUE(last[0].payload.empty());
+    EXPECT_FALSE(s.has_pending());
+    EXPECT_FALSE(s.stream_open());
+}
+
+TEST(OutboundStream, NothingIsWrittenWhileAnOpenMessageHasNoBytes) {
+    OutboundScheduler s{config()};
+    ASSERT_TRUE(s.begin_stream(Opcode::Binary).has_value());
+    EXPECT_FALSE(s.has_pending());
+    EXPECT_TRUE(s.pending().empty());
+    EXPECT_TRUE(s.stream_open());
+}
+
+TEST(OutboundStream, AMessageThatEndsWithoutBytesIsOneEmptyFinFrame) {
+    OutboundScheduler s{config()};
+    ASSERT_TRUE(s.begin_stream(Opcode::Text).has_value());
+    ASSERT_TRUE(s.end_stream().has_value());
+    const auto frames = frames_now(s);
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].opcode, Opcode::Text);
+    EXPECT_TRUE(frames[0].fin);
+}
+
+TEST(OutboundStream, ALargePieceIsSplitAtTheFrameLimit) {
+    OutboundScheduler s{config(64)};
+    ASSERT_TRUE(s.begin_stream(Opcode::Binary).has_value());
+    ASSERT_TRUE(s.append_stream(bytes_of(std::string(150, 'x'))).has_value());
+    const auto frames = frames_now(s);
+    ASSERT_EQ(frames.size(), 3U);  // 64 + 64 + 22, none final: the message is still open
+    EXPECT_EQ(frames[0].opcode, Opcode::Binary);
+    EXPECT_EQ(frames[1].opcode, Opcode::Continuation);
+    EXPECT_EQ(frames[2].payload.size(), 22U);
+    for (const WireFrame& frame : frames) {
+        EXPECT_FALSE(frame.fin);
+    }
+}
+
+TEST(OutboundStream, ASecondMessageWhileOneIsOpenIsRefusedAndWritesNothing) {  // EC-F33
+    OutboundScheduler s{config()};
+    ASSERT_TRUE(s.begin_stream(Opcode::Text).has_value());
+    for (const auto& result :
+         {s.enqueue_message(Opcode::Text, bytes_of("x")), s.begin_stream(Opcode::Binary)}) {
+        ASSERT_FALSE(result.has_value());
+        EXPECT_EQ(result.error().code, ErrorCode::MessageInProgress);
+    }
+    EXPECT_FALSE(s.has_pending());
+    ASSERT_TRUE(s.end_stream().has_value());
+    EXPECT_TRUE(s.enqueue_message(Opcode::Text, bytes_of("after")).has_value());  // allowed again
+}
+
+TEST(OutboundStream, TheQueueBoundAppliesToStreamedBytes) {  // EC-F35
+    OutboundScheduler s{config(64, 100)};
+    ASSERT_TRUE(s.begin_stream(Opcode::Binary).has_value());  // costs the message overhead
+    ASSERT_TRUE(s.append_stream(bytes_of(std::string(60, 'a'))).has_value());
+    const auto refused = s.append_stream(bytes_of(std::string(60, 'b')));
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, ErrorCode::Backpressure);
+    static_cast<void>(drain(s));  // the first 60 bytes leave...
+    EXPECT_TRUE(s.append_stream(bytes_of(std::string(60, 'b'))).has_value());  // ...room again
+}
+
+TEST(OutboundStream, ControlFramesGoAheadOfAStreamedMessage) {  // FR-F10
+    OutboundScheduler s{config(8)};
+    ASSERT_TRUE(s.begin_stream(Opcode::Binary).has_value());
+    ASSERT_TRUE(s.append_stream(bytes_of(std::string(20, 'x'))).has_value());
+    s.queue_pong(bytes_of("p"));
+    const auto frames = frames_now(s);
+    ASSERT_GE(frames.size(), 2U);
+    EXPECT_EQ(frames[0].opcode, Opcode::Pong);
+    EXPECT_EQ(frames[1].opcode, Opcode::Binary);
+}
+
+TEST(OutboundStream, AStreamQueuedBehindWholeMessagesKeepsTheOrder) {
+    OutboundScheduler s{config()};
+    ASSERT_TRUE(s.enqueue_message(Opcode::Text, bytes_of("one")).has_value());
+    ASSERT_TRUE(s.begin_stream(Opcode::Text).has_value());
+    ASSERT_TRUE(s.append_stream(bytes_of("two")).has_value());
+    ASSERT_TRUE(s.end_stream().has_value());
+    const auto frames = frames_now(s);
+    ASSERT_EQ(frames.size(), 2U);  // ended before it was framed: one single FIN frame, no tail
+    EXPECT_EQ(frames[0].payload, "one");
+    EXPECT_TRUE(frames[0].fin);
+    EXPECT_EQ(frames[1].opcode, Opcode::Text);
+    EXPECT_EQ(frames[1].payload, "two");
+    EXPECT_TRUE(frames[1].fin);
+}
+
+TEST(OutboundStream, CloseDiscardsAnOpenMessageAndLaterCallsReportClosing) {  // EC-C14
+    OutboundScheduler s{config()};
+    ASSERT_TRUE(s.begin_stream(Opcode::Text).has_value());
+    ASSERT_TRUE(s.append_stream(bytes_of("unsent")).has_value());
+    s.queue_close(1000, "bye");
+    EXPECT_FALSE(s.stream_open());
+    EXPECT_EQ(s.append_stream(bytes_of("x")).error().code, ErrorCode::Closing);
+    EXPECT_EQ(s.end_stream().error().code, ErrorCode::Closing);
+    const auto frames = frames_now(s);
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].opcode, Opcode::Close);
+}
+
+TEST(OutboundStream, AppendOrEndWithoutAnOpenMessageIsAnArgumentError) {
+    OutboundScheduler s{config()};
+    EXPECT_EQ(s.append_stream(bytes_of("x")).error().code, ErrorCode::InvalidArgument);
+    EXPECT_EQ(s.end_stream().error().code, ErrorCode::InvalidArgument);
+}
+
 }  // namespace

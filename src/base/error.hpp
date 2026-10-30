@@ -28,6 +28,7 @@ enum class ErrorCode : std::uint8_t {
     FdLimit,            ///< Out of descriptors or kernel buffers: EMFILE, ENFILE, ENOBUFS (Limit).
     AddressInUse,       ///< bind() failed because the address is taken (Io).
     Io,                 ///< Any other operating-system failure (Io).
+    MessageInProgress,  ///< A streamed message is open; no other data message may start (Internal).
 };
 
 /// A failure. `context` MUST be a string literal (static storage): it is never built from peer
@@ -60,6 +61,7 @@ struct Error {
     case ErrorCode::OutOfRange:
     case ErrorCode::RandomUnavailable:
     case ErrorCode::Closing:
+    case ErrorCode::MessageInProgress:
         return ErrorCategory::Internal;
     case ErrorCode::InvalidConfig:
         return ErrorCategory::Config;

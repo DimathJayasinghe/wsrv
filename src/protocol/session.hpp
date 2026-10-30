@@ -11,6 +11,7 @@
 #include "protocol/frame_parser.hpp"
 #include "protocol/message_assembler.hpp"
 #include "protocol/outbound_scheduler.hpp"
+#include "protocol/utf8.hpp"
 
 #include <array>
 #include <chrono>
@@ -125,6 +126,27 @@ public:
     /// Nothing is queued on error.
     [[nodiscard]] Result<void> send_text(std::string_view text);
     [[nodiscard]] Result<void> send_binary(ByteView data);
+
+    /// Streaming send (ADR-0015): a message whose bytes are produced piece by piece, sent as
+    /// fragments (RFC 6455 section 5.4) without holding the whole message in memory.
+    /// begin_message(Text|Binary) opens it; write_part() adds bytes; end_message() finishes it.
+    /// While it is open send_text/send_binary/begin_message fail with Error{MessageInProgress};
+    /// control frames still go out between fragments. Closing the session discards it.
+    /// @return Error{Closing} unless Open; Error{MessageInProgress}; Error{Backpressure} /
+    /// Error{ResourceExhausted} as for send_text.
+    [[nodiscard]] Result<void> begin_message(Opcode text_or_binary);
+    /// Text parts are checked as UTF-8 across part boundaries (a character may be split between
+    /// parts). A refused part is queued not at all and the message stays open.
+    /// @return Error{InvalidUtf8}, Error{Backpressure} (retry after the queue drained),
+    /// Error{BufferFull} (the part can never fit), Error{InvalidArgument} (no open message),
+    /// Error{Closing}.
+    [[nodiscard]] Result<void> write_part(ByteView bytes);
+    /// @return Error{InvalidUtf8} if a text message would end inside a character (it stays open),
+    /// Error{InvalidArgument} (no open message), Error{Closing}.
+    [[nodiscard]] Result<void> end_message();
+    [[nodiscard]] bool message_open() const noexcept {
+        return out_.stream_open();
+    }
     /// Payload at most 125 bytes (Error{InvalidArgument}); one unsent Ping at a time
     /// (Error{Backpressure}).
     [[nodiscard]] Result<void> send_ping(ByteView payload);
@@ -180,6 +202,8 @@ private:
     FrameParser parser_;
     MessageAssembler assembler_;
     OutboundScheduler out_;
+    Utf8Validator stream_utf8_;  // the text message being streamed out; unused for binary
+    bool stream_is_text_ = false;
     EventQueue queue_;
     SessionState state_ = SessionState::Open;
     TimePoint now_;
