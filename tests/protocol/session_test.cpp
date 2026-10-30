@@ -554,6 +554,103 @@ TEST(SessionSend, CloseDropsMessagesThatHaveNotStartedAndNothingFollowsTheCloseF
 
 // ---- Configuration ----------------------------------------------------------------------------
 
+// ---- Streaming send (ADR-0015) ----------------------------------------------------------------
+
+TEST(SessionStream, PartsGoOutAsFragmentsOfOneMessage) {  // FR-F12, EC-F37
+    Rig rig;
+    ProtocolSession& s = rig.session();
+    ASSERT_TRUE(s.begin_message(Opcode::Text).has_value());
+    EXPECT_TRUE(s.message_open());
+    ASSERT_TRUE(s.write_part(wsrv::as_bytes(std::string_view{"hel"})).has_value());
+    EXPECT_EQ(rig.take_output().frames, (std::vector<WireFrame>{{Opcode::Text, false, "hel"}}));
+    ASSERT_TRUE(s.write_part(wsrv::as_bytes(std::string_view{"lo"})).has_value());
+    EXPECT_EQ(rig.take_output().frames,
+              (std::vector<WireFrame>{{Opcode::Continuation, false, "lo"}}));
+    ASSERT_TRUE(s.end_message().has_value());  // everything was framed already: an empty FIN tail
+    EXPECT_FALSE(s.message_open());
+    EXPECT_EQ(rig.take_output().frames, (std::vector<WireFrame>{{Opcode::Continuation, true, ""}}));
+}
+
+TEST(SessionStream, ACharacterMaySplitAcrossPartsButNotEndTheMessage) {  // EC-F36, RFC 6455 8.1
+    Rig rig;
+    ProtocolSession& s = rig.session();
+    ASSERT_TRUE(s.begin_message(Opcode::Text).has_value());
+    ASSERT_TRUE(s.write_part(wsrv::as_bytes(std::string_view{"\xE2\x82"})).has_value());  // euro
+    const auto early = s.end_message();
+    ASSERT_FALSE(early.has_value());  // half a character is not a message
+    EXPECT_EQ(early.error().code, ErrorCode::InvalidUtf8);
+    EXPECT_TRUE(s.message_open());  // the writer may still finish it
+    ASSERT_TRUE(s.write_part(wsrv::as_bytes(std::string_view{"\xAC"})).has_value());
+    ASSERT_TRUE(s.end_message().has_value());
+}
+
+TEST(SessionStream, AnInvalidPartIsRefusedWhollyAndTheMessageStaysUsable) {  // EC-F36
+    Rig rig;
+    ProtocolSession& s = rig.session();
+    ASSERT_TRUE(s.begin_message(Opcode::Text).has_value());
+    ASSERT_TRUE(s.write_part(wsrv::as_bytes(std::string_view{"ok "})).has_value());
+    const auto bad = s.write_part(wsrv::as_bytes(std::string_view{"fine then \xFF"}));
+    ASSERT_FALSE(bad.has_value());
+    EXPECT_EQ(bad.error().code, ErrorCode::InvalidUtf8);
+    ASSERT_TRUE(s.write_part(wsrv::as_bytes(std::string_view{"again"})).has_value());
+    ASSERT_TRUE(s.end_message().has_value());
+    std::string payload;
+    for (const WireFrame& frame : rig.take_output().frames) {
+        payload += frame.payload;
+    }
+    EXPECT_EQ(payload, "ok again");  // nothing of the refused part was queued
+}
+
+TEST(SessionStream, BinaryPartsAreNotChecked) {
+    Rig rig;
+    ProtocolSession& s = rig.session();
+    ASSERT_TRUE(s.begin_message(Opcode::Binary).has_value());
+    ASSERT_TRUE(s.write_part(wsrv::as_bytes(std::string_view{"\xFF\xFE"})).has_value());
+    ASSERT_TRUE(s.end_message().has_value());
+}
+
+TEST(SessionStream, OtherDataMessagesWaitUntilTheStreamEnds) {  // EC-F33
+    Rig rig;
+    ProtocolSession& s = rig.session();
+    ASSERT_TRUE(s.begin_message(Opcode::Text).has_value());
+    EXPECT_EQ(s.send_text("x").error().code, ErrorCode::MessageInProgress);
+    EXPECT_EQ(s.send_binary({}).error().code, ErrorCode::MessageInProgress);
+    EXPECT_EQ(s.begin_message(Opcode::Binary).error().code, ErrorCode::MessageInProgress);
+    ASSERT_TRUE(s.end_message().has_value());
+    EXPECT_TRUE(s.send_text("now fine").has_value());
+}
+
+TEST(SessionStream, ControlFramesStillJumpInBetweenParts) {  // EC-C01, EC-F32
+    Rig rig;
+    ProtocolSession& s = rig.session();
+    ASSERT_TRUE(s.begin_message(Opcode::Binary).has_value());
+    ASSERT_TRUE(s.write_part(wsrv::as_bytes(std::string_view{"ab"})).has_value());
+    ASSERT_TRUE(s.send_ping({}).has_value());
+    ASSERT_TRUE(s.write_part(wsrv::as_bytes(std::string_view{"cd"})).has_value());
+    ASSERT_TRUE(s.end_message().has_value());
+    const auto frames = rig.take_output().frames;
+    ASSERT_GE(frames.size(), 2U);
+    EXPECT_EQ(frames[0].opcode, Opcode::Ping);  // control first, the data follows
+}
+
+TEST(SessionStream, ClosingEndsTheOpenMessageAndLaterCallsAreRefused) {  // EC-C14
+    Rig rig;
+    ProtocolSession& s = rig.session();
+    ASSERT_TRUE(s.begin_message(Opcode::Text).has_value());
+    ASSERT_TRUE(s.close(CloseCode::GoingAway, "").has_value());
+    EXPECT_FALSE(s.message_open());
+    EXPECT_EQ(s.write_part(wsrv::as_bytes(std::string_view{"x"})).error().code, ErrorCode::Closing);
+    EXPECT_EQ(s.end_message().error().code, ErrorCode::Closing);
+    EXPECT_EQ(s.begin_message(Opcode::Text).error().code, ErrorCode::Closing);
+}
+
+TEST(SessionStream, WritingWithoutBeginningIsAnArgumentError) {
+    Rig rig;
+    EXPECT_EQ(rig.session().write_part(wsrv::as_bytes(std::string_view{"x"})).error().code,
+              ErrorCode::InvalidArgument);
+    EXPECT_EQ(rig.session().end_message().error().code, ErrorCode::InvalidArgument);
+}
+
 TEST(SessionConfigValidation, TheDefaultsAreValid) {
     EXPECT_TRUE(wsrv::validate(SessionConfig{}).has_value());
 }

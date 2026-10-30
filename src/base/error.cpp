@@ -37,6 +37,8 @@ std::string_view to_string(ErrorCode code) noexcept {
         return "AddressInUse";
     case ErrorCode::Io:
         return "Io";
+    case ErrorCode::MessageInProgress:
+        return "MessageInProgress";
     }
     return "Unknown";
 }

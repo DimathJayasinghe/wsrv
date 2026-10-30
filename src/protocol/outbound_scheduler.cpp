@@ -32,6 +32,9 @@ Result<void> OutboundScheduler::enqueue_message(Opcode text_or_binary, ByteView 
     if (close_queued_) {
         return fail(ErrorCode::Closing, "outbound: closing");
     }
+    if (stream_open_) {
+        return fail(ErrorCode::MessageInProgress, "outbound: a streamed message is open");
+    }
     const std::size_t limit = config_.max_queued_bytes;
     if (limit < kMessageOverhead || payload.size() > limit - kMessageOverhead) {
         return fail(ErrorCode::BufferFull, "outbound: message can never fit the queue");
@@ -50,6 +53,62 @@ Result<void> OutboundScheduler::enqueue_message(Opcode text_or_binary, ByteView 
         return stored;
     }
     queued_ += cost;
+    return {};
+}
+
+Result<void> OutboundScheduler::begin_stream(Opcode text_or_binary) {
+    const bool is_data_opcode = text_or_binary == Opcode::Text || text_or_binary == Opcode::Binary;
+    WSRV_ASSERT(is_data_opcode);
+    if (close_queued_) {
+        return fail(ErrorCode::Closing, "outbound: closing");
+    }
+    if (stream_open_) {
+        return fail(ErrorCode::MessageInProgress, "outbound: a streamed message is open");
+    }
+    if (kMessageOverhead > config_.max_queued_bytes - queued_) {  // queued_ never exceeds the limit
+        return fail(ErrorCode::Backpressure, "outbound: queue full");
+    }
+    try {
+        messages_.push_back(Queued{text_or_binary, 0, true});
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "outbound: out of memory");
+    }
+    queued_ += kMessageOverhead;
+    stream_open_ = true;
+    return {};
+}
+
+Result<void> OutboundScheduler::append_stream(ByteView bytes) {
+    if (close_queued_) {
+        return fail(ErrorCode::Closing, "outbound: closing");
+    }
+    if (!stream_open_) {
+        return fail(ErrorCode::InvalidArgument, "outbound: no streamed message is open");
+    }
+    const std::size_t limit = config_.max_queued_bytes;
+    if (bytes.size() > limit - kMessageOverhead) {
+        return fail(ErrorCode::BufferFull, "outbound: piece can never fit the queue");
+    }
+    if (bytes.size() > limit - queued_) {
+        return fail(ErrorCode::Backpressure, "outbound: queue full");
+    }
+    if (const Result<void> stored = data_.append(bytes); !stored) {
+        return stored;
+    }
+    messages_.back().length += bytes.size();
+    queued_ += bytes.size();
+    return {};
+}
+
+Result<void> OutboundScheduler::end_stream() {
+    if (close_queued_) {
+        return fail(ErrorCode::Closing, "outbound: closing");
+    }
+    if (!stream_open_) {
+        return fail(ErrorCode::InvalidArgument, "outbound: no streamed message is open");
+    }
+    messages_.back().open = false;
+    stream_open_ = false;
     return {};
 }
 
@@ -88,6 +147,8 @@ void OutboundScheduler::queue_close(std::optional<std::uint16_t> code, std::stri
     data_.clear();
     messages_.clear();
     front_offset_ = 0;
+    front_started_ = false;
+    stream_open_ = false;
     queued_ = 0;
     pong_.present = false;
     ping_.present = false;
@@ -124,22 +185,34 @@ void OutboundScheduler::append_control(Opcode opcode, Control& slot) {
     }
 }
 
+bool OutboundScheduler::data_ready() const noexcept {
+    if (messages_.empty()) {
+        return false;
+    }
+    const Queued& front = messages_.front();
+    return !front.open || front.length > front_offset_;  // an open message waits for its bytes
+}
+
+/// One frame of the front message: what is available, at most max_frame_payload. It is the last
+/// frame only if the message has ended and nothing remains. A message that ended right after a
+/// frame went out has nothing left but still needs its FIN: that is the empty final Continuation.
 void OutboundScheduler::append_next_fragment() {
     const Queued& front = messages_.front();
     const std::size_t remaining = front.length - front_offset_;
     const std::size_t take = std::min(remaining, config_.max_frame_payload);
-    const bool last = take == remaining;
-    if (!append_frame(front_offset_ == 0 ? front.opcode : Opcode::Continuation,
-                      last,
-                      data_.view().first(take))) {
+    const bool last = !front.open && take == remaining;
+    if (!append_frame(
+            front_started_ ? Opcode::Continuation : front.opcode, last, data_.view().first(take))) {
         return;
     }
+    front_started_ = true;
     data_.consume(take);
     queued_ -= take;
     front_offset_ += take;
     if (last) {
         queued_ -= kMessageOverhead;
         front_offset_ = 0;
+        front_started_ = false;
         messages_.pop_front();
     }
 }
@@ -154,7 +227,7 @@ void OutboundScheduler::refill() {
         append_control(Opcode::Pong, pong_);
     } else if (ping_.present) {
         append_control(Opcode::Ping, ping_);
-    } else if (!messages_.empty()) {
+    } else if (data_ready()) {
         append_next_fragment();
     }
 }
@@ -174,8 +247,8 @@ void OutboundScheduler::consume(std::size_t count) noexcept {
 }
 
 bool OutboundScheduler::has_pending() const noexcept {
-    return !failed_ && (wire_.size() > 0 || pong_.present || ping_.present || close_.present ||
-                        !messages_.empty());
+    return !failed_ &&
+           (wire_.size() > 0 || pong_.present || ping_.present || close_.present || data_ready());
 }
 
 }  // namespace wsrv

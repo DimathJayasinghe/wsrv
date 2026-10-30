@@ -301,6 +301,49 @@ Result<void> ProtocolSession::send_binary(ByteView data) {
     return out_.enqueue_message(Opcode::Binary, data);
 }
 
+Result<void> ProtocolSession::begin_message(Opcode text_or_binary) {
+    if (state_ != SessionState::Open) {
+        return fail(ErrorCode::Closing, "send after close");
+    }
+    if (const Result<void> opened = out_.begin_stream(text_or_binary); !opened) {
+        return opened;
+    }
+    stream_is_text_ = text_or_binary == Opcode::Text;
+    stream_utf8_.reset();
+    return {};
+}
+
+Result<void> ProtocolSession::write_part(ByteView bytes) {
+    if (state_ != SessionState::Open) {
+        return fail(ErrorCode::Closing, "send after close");
+    }
+    if (!stream_is_text_ || !out_.stream_open()) {
+        return out_.append_stream(bytes);
+    }
+    // Validate on a copy: the part may be refused by the queue after it passed the UTF-8 check,
+    // and a refused part must leave no trace (the writer retries it).
+    Utf8Validator trial = stream_utf8_;
+    if (const Result<void> valid = trial.feed(bytes); !valid) {
+        return fail(ErrorCode::InvalidUtf8, "text part is not valid UTF-8");
+    }
+    if (const Result<void> queued = out_.append_stream(bytes); !queued) {
+        return queued;
+    }
+    stream_utf8_ = trial;
+    return {};
+}
+
+Result<void> ProtocolSession::end_message() {
+    if (state_ != SessionState::Open) {
+        return fail(ErrorCode::Closing, "send after close");
+    }
+    if (stream_is_text_ && out_.stream_open() && !stream_utf8_.at_boundary()) {
+        return fail(ErrorCode::InvalidUtf8,
+                    "text message ends inside a character");  // RFC 6455 8.1
+    }
+    return out_.end_stream();
+}
+
 Result<void> ProtocolSession::send_ping(ByteView payload) {
     if (state_ != SessionState::Open) {
         return fail(ErrorCode::Closing, "send after close");
