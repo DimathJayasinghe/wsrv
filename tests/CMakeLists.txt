@@ -25,6 +25,7 @@ wsrv_add_test(NAME net_loopback_test SOURCES net/loopback_test.cpp LINK wsrv::ne
 wsrv_add_test(NAME server_connection_test SOURCES server/connection_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_server_test SOURCES server/server_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME integration_server_test SOURCES integration/server_integration_test.cpp LINK wsrv::server)
+wsrv_add_test(NAME integration_multithread_test SOURCES integration/multithread_stress_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_multi_loop_test SOURCES server/multi_loop_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_session_handle_test SOURCES server/session_handle_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_config_test SOURCES server/config_test.cpp LINK wsrv::server)
@@ -81,4 +82,9 @@ add_test(NAME module_graph_sees_private_links
 
 if(WSRV_BUILD_FUZZERS)
     add_subdirectory(fuzz)
+endif()
+
+if(WSRV_BUILD_BENCH)
+    find_package(Threads REQUIRED)
+    add_subdirectory(bench)
 endif()

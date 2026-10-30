@@ -22,11 +22,13 @@ Goal (PROJECT_PLAN): N loops, connection distribution, cross-thread `SessionHand
 
 **Built:** `LoopShard` (per-loop state, `adopt`, `begin_shutdown`, `abort_all`), `WorkerThread` (builds its shard on its own thread, keeps it alive until released), `Server` (loop 0 + acceptor + hand-off by `post`, global `live_` cap, drain counting, `ServerConfig::threads`, echo `--threads`). `multi_loop_test`: spread over loops, unique ids, global cap and slot return, handles across loops, graceful and forced shutdown across loops, `stop()`, never-run server, churn. TSan: 0 reports over 30 repeats.
 
-## Task 4: hammer it
+## Task 4: hammer it (in progress)
 **Files:** `tests/integration/multithread_test.cpp`, `tests/bench/`, `tests/soak/`.
 - TSan integration: 4 loops, 200 clients, handle sends from 4 foreign threads while connections churn and the server shuts down.
 - Scaling benchmark (1, 2, 4 loops, echo of small messages over loopback) with the result and the machine written to `docs/`.
 - Soak script (1 h, churn plus traffic, fd and RSS sampled). Run it, or state plainly that it has not run.
+
+**Built so far:** `integration/multithread_stress_test.cpp` (8 churning clients, 2 handle-pushing threads, shutdown in the middle of traffic; TSan 0 reports over 15 repeats), `tests/bench/load.cpp` (`wsrv_load`), `docs/PERFORMANCE.md` (scaling table with caveats). **Open:** the 1 h soak result (started 2026-10-30 07:21 UTC).
 
 ## Task 5: `MessageWriter` (FR-F12, EC-F18, F33..F35)
 Needs its own small ADR (streaming send while a connection is backpressured: what happens to a half-written message when the connection closes). Decide after Task 3.

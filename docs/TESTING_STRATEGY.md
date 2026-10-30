@@ -79,7 +79,7 @@ Leak and fd-leak checks: integration tests assert open-fd count and RSS stabilit
 ## 9. Performance testing
 
 - Micro: parser, masker (scalar vs SIMD), UTF-8, SHA-1, pool alloc. Stored baselines; CI compares on same runner class; > 5 % regression fails nightly.
-- Macro: `tests/bench/load_gen` (own tool, epoll-based) for: idle connections (memory/conn), echo throughput/latency histogram (HdrHistogram), broadcast fan-out, handshake rate, connection churn. Environment, kernel params, and commands documented so results reproduce.
+- Macro: `tests/bench/load.cpp` (`wsrv_load`: blocking client threads, echo throughput, latency percentiles, churn soak; results and caveats in [PERFORMANCE.md](PERFORMANCE.md)); an epoll-based generator is still wanted for: idle connections (memory/conn), echo throughput/latency histogram (HdrHistogram), broadcast fan-out, handshake rate, connection churn. Environment, kernel params, and commands documented so results reproduce.
 - Profile with `perf`, `heaptrack`, flamegraphs; findings recorded in `docs/perf/`.
 
 ## 10. CI gating matrix
