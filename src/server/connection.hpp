@@ -93,6 +93,8 @@ public:
     [[nodiscard]] Result<void> send_binary(ByteView data) override;
     [[nodiscard]] Result<MessageWriter> begin_text() override;
     [[nodiscard]] Result<MessageWriter> begin_binary() override;
+    void pause_reads() override;
+    void resume_reads() override;
     void close(CloseCode code, std::string_view reason) override;
     [[nodiscard]] SessionHandle handle() const override {
         return SessionHandle{ctx_.link, id_};
@@ -172,6 +174,7 @@ private:
     bool watching_ = false;
     PollEvents interest_ = PollEvents::Read;
     bool write_blocked_ = false;
+    bool reads_paused_ = false;   ///< pause_reads() is in effect: Read interest is dropped
     bool writable_owed_ = false;  ///< a write was refused with Backpressure: on_writable is due
     std::shared_ptr<StreamLink>
         stream_link_;              ///< created by the first writer; cleared by release()

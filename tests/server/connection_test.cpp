@@ -839,4 +839,103 @@ TEST_F(ConnectionTest, ShutdownDropsAConnectionStillInTheHandshake) {
     EXPECT_TRUE(transport->written.empty());
 }
 
+// ---- read pause (ADR-0016 section 4)
+// --------------------------------------------------------------
+
+TEST_F(ConnectionTest, PausingReadsDropsReadInterestAtOnce) {
+    establish();
+    script.on_text = [&](Session& s, std::string_view) { s.pause_reads(); };
+    send_frame(Opcode::Text, "a");
+    EXPECT_FALSE(wsrv::has(host.interest_now, PollEvents::Read));
+}
+
+TEST_F(ConnectionTest, NothingIsReadWhilePausedEvenIfAStaleReadEventArrives) {
+    establish();
+    script.on_text = [&](Session& s, std::string_view) { s.pause_reads(); };
+    send_frame(Opcode::Text, "a");
+    send_frame(Opcode::Text, "b");
+    send_frame(Opcode::Text, "c");
+    EXPECT_EQ(script.texts, std::vector<std::string>{"a"});
+    EXPECT_GT(transport->unread(), 0U);  // the bytes wait in the kernel, not in our memory
+}
+
+/// A connection whose reads are 7 bytes long: exactly one masked one-byte text frame per read.
+void ConnectionTest_establish_with_tiny_reads(ConnectionTest& t) {
+    t.open(7);
+    t.transport->feed(kRequest);
+    for (int i = 0; i < 40 && t.transport->written_text().find("\r\n\r\n") == std::string::npos;
+         ++i) {
+        t.readable();
+    }
+    ASSERT_EQ(t.transport->written_text().rfind(kResponseStart, 0), 0U);
+    t.transport->written.clear();
+}
+
+TEST_F(ConnectionTest, APauseInTheMiddleOfAReadBatchStopsTheBatch) {
+    ConnectionTest_establish_with_tiny_reads(*this);
+    script.on_text = [&](Session& s, std::string_view) { s.pause_reads(); };
+    for (const char* text : {"a", "b", "c"}) {
+        transport->feed(wsrv::ByteView{client_frame(Opcode::Text, true, text)});
+    }
+    readable();
+    EXPECT_EQ(script.texts, std::vector<std::string>{"a"});
+}
+
+TEST_F(ConnectionTest, ResumingRestoresReadInterestAndRearmsTheEdge) {
+    ConnectionTest_establish_with_tiny_reads(*this);
+    script.on_text = [&](Session& s, std::string_view text) {
+        if (text == "a") {
+            s.pause_reads();
+        }
+    };
+    for (const char* text : {"a", "b", "c"}) {
+        transport->feed(wsrv::ByteView{client_frame(Opcode::Text, true, text)});
+    }
+    readable();
+    ASSERT_EQ(script.texts.size(), 1U);
+    const std::size_t before = host.rewatch_calls;
+
+    script.on_text = nullptr;
+    static_cast<Session&>(*conn).resume_reads();
+    EXPECT_GT(host.rewatch_calls, before);  // a fresh registration: the kernel reports waiting data
+    EXPECT_TRUE(wsrv::has(host.interest_now, PollEvents::Read));
+    readable();  // what the loop delivers after the re-arm
+    EXPECT_EQ(script.texts, (std::vector<std::string>{"a", "b", "c"}));
+}
+
+TEST_F(ConnectionTest, PausingTwiceAndResumingWithoutAPauseAreHarmless) {
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        s.pause_reads();
+        s.pause_reads();
+    };
+    send_frame(Opcode::Text, "a");
+    const std::size_t paused_calls = host.rewatch_calls;
+    static_cast<Session&>(*conn).resume_reads();
+    static_cast<Session&>(*conn).resume_reads();
+    EXPECT_EQ(host.rewatch_calls, paused_calls + 1);  // only the first resume changed anything
+}
+
+TEST_F(ConnectionTest, APausedConnectionStillWatchesWritabilityWhileOutputIsBlocked) {
+    establish();
+    transport->set_write_capacity(0);
+    script.on_text = [&](Session& s, std::string_view text) {
+        s.pause_reads();
+        static_cast<void>(s.send_text(text).has_value());
+    };
+    send_frame(Opcode::Text, "a");
+    EXPECT_FALSE(wsrv::has(host.interest_now, PollEvents::Read));
+    EXPECT_TRUE(wsrv::has(host.interest_now, PollEvents::Write));
+}
+
+TEST_F(ConnectionTest, APeerThatHangsUpWhilePausedIsStillSeenAndTheConnectionEnds) {
+    establish();
+    script.on_text = [&](Session& s, std::string_view) { s.pause_reads(); };
+    send_frame(Opcode::Text, "a");
+    transport->feed_eof();
+    conn->on_event(PollEvents::Hangup);  // epoll reports a hang-up whatever the interest mask
+    EXPECT_TRUE(conn->finished());
+    EXPECT_EQ(script.closed, 1);
+}
+
 }  // namespace

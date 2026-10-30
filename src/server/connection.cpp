@@ -68,8 +68,11 @@ void Connection::on_event(PollEvents events) noexcept {
         return;
     }
     try {
-        if (has(events, PollEvents::Read) || has(events, PollEvents::Hangup) ||
-            has(events, PollEvents::Error)) {
+        const bool dead_peer = has(events, PollEvents::Hangup) || has(events, PollEvents::Error);
+        if (dead_peer) {
+            reads_paused_ = false;  // a dead peer cannot be slowed down: drain it and see the end
+        }
+        if ((has(events, PollEvents::Read) && !reads_paused_) || dead_peer) {
             on_readable();
         }
         if (phase_ != Phase::Finished && has(events, PollEvents::Write)) {
@@ -107,7 +110,7 @@ void Connection::on_readable() {
     const ReadBudget& budget = ctx_.config.read;
     std::size_t reads = 0;
     std::size_t bytes = 0;
-    while (phase_ != Phase::Finished && !transport_dead_) {
+    while (phase_ != Phase::Finished && !transport_dead_ && !reads_paused_) {
         if (reads >= budget.max_reads_per_event || bytes >= budget.max_bytes_per_event) {
             if (const Result<void> again = ctx_.host.rewatch(watch_, interest_); !again) {
                 transport_failed(again.error());
@@ -354,8 +357,8 @@ void Connection::set_write_blocked(bool blocked) {
 /// kernel report a writable socket again.
 void Connection::apply_interest() {
     const bool want_write = write_blocked_ || writable_owed_;
-    const PollEvents wanted =
-        want_write ? (PollEvents::Read | PollEvents::Write) : PollEvents::Read;
+    const PollEvents reading = reads_paused_ ? PollEvents::None : PollEvents::Read;
+    const PollEvents wanted = want_write ? (reading | PollEvents::Write) : reading;
     if (wanted == interest_) {
         return;
     }
@@ -364,6 +367,26 @@ void Connection::apply_interest() {
         if (const Result<void> changed = ctx_.host.rewatch(watch_, interest_); !changed) {
             transport_failed(changed.error());
         }
+    }
+}
+
+void Connection::pause_reads() {
+    if (reads_paused_ || phase_ == Phase::Finished || transport_dead_) {
+        return;
+    }
+    reads_paused_ = true;
+    apply_interest();  // at once: the next epoll_wait must not wake us for input we will not read
+}
+
+/// The pause removed Read from the registration, so putting it back is a change of mask and the
+/// kernel re-evaluates readiness: data that arrived meanwhile is reported (edge-triggered re-arm).
+void Connection::resume_reads() {
+    if (!reads_paused_) {
+        return;
+    }
+    reads_paused_ = false;
+    if (phase_ != Phase::Finished && !transport_dead_) {
+        apply_interest();
     }
 }
 

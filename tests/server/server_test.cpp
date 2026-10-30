@@ -9,9 +9,11 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <csignal>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -486,6 +488,78 @@ TEST(ServerHandle, AHandleIsHarmlessAfterTheConnectionAndThenTheServerAreGone) {
     const auto after = handle.send_text("to nothing");
     ASSERT_FALSE(after.has_value());
     EXPECT_EQ(after.error().code, wsrv::ErrorCode::Closing);
+}
+
+// ---- read pause (ADR-0016 section 4)
+// --------------------------------------------------------------
+
+/// Pauses reads after the first message and counts what it receives, so a test can see that a
+/// paused connection delivers nothing and that a resume brings back what was waiting in the kernel.
+class PausingHandler final : public wsrv::IWebSocketHandler {
+public:
+    struct Shared {
+        std::atomic<int> received{0};
+        std::mutex mutex;
+        wsrv::SessionHandle handle;
+    };
+    explicit PausingHandler(Shared& shared) : shared_{shared} {}
+    void on_open(Session& session) override {
+        const std::lock_guard lock{shared_.mutex};
+        shared_.handle = session.handle();
+    }
+    void on_text(Session& session, std::string_view) override {
+        if (shared_.received.fetch_add(1) == 0) {
+            session.pause_reads();
+        }
+    }
+
+private:
+    Shared& shared_;
+};
+
+class PausingFactory final : public wsrv::IHandlerFactory {
+public:
+    std::unique_ptr<wsrv::IWebSocketHandler> create(const wsrv::ConnectionInfo&) override {
+        return std::make_unique<PausingHandler>(shared);
+    }
+    PausingHandler::Shared shared;
+};
+
+bool wait_until(const std::function<bool()>& condition) {
+    for (int i = 0; i < 300; ++i) {
+        if (condition()) {
+            return true;
+        }
+        std::this_thread::sleep_for(10ms);
+    }
+    return condition();
+}
+
+TEST(ServerReadPause, ABurstSentWhilePausedWaitsInTheKernelAndAResumeBringsItBack) {
+    PausingFactory factory;
+    wsrv::ServerBuilder builder;
+    builder.listen("127.0.0.1", 0).handler_factory(factory);
+    builder.config().handshake.allowed_origins = {"https://app.example.com"};
+    RunningServer running{builder};
+    TcpClient client{running.port()};
+    ASSERT_TRUE(client.upgrade());
+    ASSERT_TRUE(client.send_frame(Opcode::Text, "first"));
+    ASSERT_TRUE(wait_until([&] { return factory.shared.received.load() == 1; }));
+
+    for (int i = 0; i < 20; ++i) {  // sent while paused: the kernel buffers them
+        ASSERT_TRUE(client.send_frame(Opcode::Text, "queued"));
+    }
+    std::this_thread::sleep_for(300ms);
+    EXPECT_EQ(factory.shared.received.load(), 1);  // nothing was read
+
+    wsrv::SessionHandle handle;
+    {
+        const std::lock_guard lock{factory.shared.mutex};
+        handle = factory.shared.handle;
+    }
+    ASSERT_TRUE(handle.resume_reads().has_value());  // from this thread, not the loop's
+    // The data was already waiting: only a fresh registration makes epoll report it (lesson 12).
+    EXPECT_TRUE(wait_until([&] { return factory.shared.received.load() == 21; }));
 }
 
 }  // namespace

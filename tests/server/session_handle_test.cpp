@@ -50,6 +50,10 @@ public:
     [[nodiscard]] wsrv::Result<wsrv::MessageWriter> begin_binary() override {
         return wsrv::fail(wsrv::ErrorCode::Closing, "stub");
     }
+    void pause_reads() override {}
+    void resume_reads() override {
+        ++resumes;
+    }
     void close(CloseCode code, std::string_view reason) override {
         closes.emplace_back(code, std::string{reason});
     }
@@ -58,6 +62,7 @@ public:
     }
 
     std::vector<std::string> texts;
+    int resumes = 0;
     std::vector<std::size_t> binary_sizes;
     std::vector<std::pair<CloseCode, std::string>> closes;
     std::vector<std::thread::id> threads;
@@ -149,6 +154,12 @@ TEST_F(SessionHandleTest, BinaryAndCloseReachTheSession) {
     EXPECT_EQ(session_.binary_sizes, std::vector<std::size_t>{10});
     EXPECT_EQ(session_.closes.front().first, CloseCode::GoingAway);
     EXPECT_EQ(session_.closes.front().second, "bye");
+}
+
+TEST_F(SessionHandleTest, AResumeReachesTheSessionOnTheLoopThread) {
+    const SessionHandle handle{link_, kId};
+    ASSERT_TRUE(handle.resume_reads().has_value());
+    ASSERT_TRUE(pump_until([&] { return session_.resumes == 1; }));
 }
 
 TEST_F(SessionHandleTest, TextThatIsNotUtf8IsRefusedToTheCallerAndNothingIsQueued) {  // FR-F7
