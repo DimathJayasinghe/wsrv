@@ -17,7 +17,7 @@ We teach as we build. Each lesson answers three questions: **What** are we build
 | 10 | [Sockets, epoll, and the event loop](10-sockets-epoll-and-the-event-loop.md) | M5 | written |
 | 11 | [Connections and the server](11-connections-and-the-server.md) | M6 | written |
 | 12 | [Streaming a message](12-streaming-a-message.md) | M7 | written |
-| 13 | Threads without locks | M7 | planned |
+| 13 | [Threads without locks](13-threads-without-locks.md) | M7 | written |
 | 14 | TLS as a decorator | M8 | planned |
 | 15 | The C ABI and talking to PHP | M11–M12 | planned |
 

@@ -198,6 +198,7 @@ Rules: callbacks never block; handlers must not retain `Session&` past the callb
 
 - Loop thread owns: its connections, timers, buffer pool, registry shard.
 - Cross-thread communication = MPSC queue + eventfd. No shared mutable connection state.
+- **As built (M7, ADR-0014, lesson 13):** `threads` loops, each a `LoopShard`; loop 0 runs on the `Server::run()` caller and owns the acceptor, which hands descriptors to the next loop by `post`. The only mutexes are the task queue inside `EventLoop` and the `LoopLink` behind `SessionHandle`, each held for one bounded queue operation; `Connection` and `ProtocolSession` contain none. The task queue is bounded (`BufferFull`, EC-N14). Shutdown is posted to every shard and ends when all report drained or the grace timer forces it.
 - Global state is limited to atomics (counters) and immutable config (`shared_ptr<const ServerConfig>`).
 - Hot reload (certs, limits) = swap a new immutable snapshot via `atomic<shared_ptr>`; connections pick it up on next use.
 
