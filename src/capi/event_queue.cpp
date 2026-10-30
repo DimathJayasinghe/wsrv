@@ -114,6 +114,16 @@ Result<PushOutcome> EventQueue::push(HostEvent event) {
     return PushOutcome{pressured_};
 }
 
+bool EventQueue::pressured() const {
+    const std::lock_guard lock{mutex_};
+    return pressured_;
+}
+
+std::size_t EventQueue::pending() const {
+    const std::lock_guard lock{mutex_};
+    return events_.size();
+}
+
 std::optional<Popped> EventQueue::try_pop() {
     const std::lock_guard lock{mutex_};
     if (events_.empty()) {

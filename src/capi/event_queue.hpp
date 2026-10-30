@@ -87,6 +87,14 @@ public:
         return wake_.get();
     }
 
+    /// True between reaching high water and the pop that reports the resume. A producer that has
+    /// just paused its connection asks this to close the race with a consumer that drained the
+    /// queue in between (see HostBridge).
+    [[nodiscard]] bool pressured() const;
+
+    /// Events waiting right now. A snapshot: it may be stale when the caller looks at it.
+    [[nodiscard]] std::size_t pending() const;
+
     /// Events refused because a limit was reached, since the queue was created.
     [[nodiscard]] std::uint64_t dropped() const noexcept {
         return dropped_.load();
@@ -110,7 +118,7 @@ private:
     Fd wake_;
     std::atomic<std::uint64_t> dropped_{0};
 
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::deque<HostEvent> events_;     // guarded by mutex_
     std::size_t bytes_ = 0;            // guarded: payload bytes of events_
     std::size_t reserved_closes_ = 0;  // guarded: accepted Opens whose Close is still to come

@@ -87,11 +87,26 @@ private:
     bool push(Session& session, HostEvent event) {
         const Result<PushOutcome> pushed = bridge_.events().push(std::move(event));
         if (pushed) {
-            return true;  // pushed->pause_reads is acted on once Session can pause reads
+            if (pushed->pause_reads) {
+                pause_until_drained(session);
+            }
+            return true;
         }
         overloaded_ = true;
         session.close(CloseCode::TryAgainLater, "host is not keeping up");
         return false;
+    }
+
+    /// Stop reading until the host has drained the queue. The order matters: the connection is
+    /// registered as parked first, and only then is the queue asked whether it is still full. A
+    /// host that drained it in between has already looked at an empty parked set and will not
+    /// resume us, so we resume ourselves (otherwise this connection would stay paused forever).
+    void pause_until_drained(Session& session) {
+        session.pause_reads();
+        bridge_.park(session.id());
+        if (!bridge_.events().pressured() && bridge_.unpark(session.id())) {
+            session.resume_reads();
+        }
     }
 
     HostBridge& bridge_;
@@ -127,6 +142,47 @@ void HostBridge::add(ConnectionId id, SessionHandle handle) {
 void HostBridge::remove(ConnectionId id) {
     const std::lock_guard lock{mutex_};
     handles_.erase(id);
+    parked_.erase(id);
+}
+
+void HostBridge::park(ConnectionId id) {
+    const std::lock_guard lock{mutex_};
+    parked_.insert(id);
+}
+
+/// @return true if `id` was parked (so the caller, not resume_parked(), must resume it).
+bool HostBridge::unpark(ConnectionId id) {
+    const std::lock_guard lock{mutex_};
+    return parked_.erase(id) > 0;
+}
+
+/// Resume every parked connection. Their handles are copied out first so that no call into a
+/// loop happens under the mutex; a connection that ended meanwhile is simply not found.
+void HostBridge::resume_parked() {
+    std::vector<SessionHandle> to_resume;
+    {
+        const std::lock_guard lock{mutex_};
+        for (const ConnectionId id : parked_) {
+            if (const auto it = handles_.find(id); it != handles_.end()) {
+                to_resume.push_back(it->second);
+            }
+        }
+        parked_.clear();
+    }
+    for (const SessionHandle& handle : to_resume) {
+        static_cast<void>(handle.resume_reads().has_value());  // Closing: it ended, nothing to do
+    }
+}
+
+std::optional<HostEvent> HostBridge::poll() {
+    std::optional<Popped> popped = events_->try_pop();
+    if (!popped) {
+        return std::nullopt;
+    }
+    if (popped->resume_reads) {
+        resume_parked();
+    }
+    return std::move(popped->event);
 }
 
 std::optional<SessionHandle> HostBridge::find(ConnectionId id) {
