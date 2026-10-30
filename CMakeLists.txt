@@ -54,6 +54,7 @@ add_subdirectory(src/protocol)
 add_subdirectory(src/extensions)
 add_subdirectory(src/net)
 add_subdirectory(src/server)
+add_subdirectory(src/capi)
 
 if(PROJECT_IS_TOP_LEVEL)
     include(WsrvChecks)         # format-check, check-banned, check-includes, header-check

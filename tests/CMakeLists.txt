@@ -29,6 +29,8 @@ wsrv_add_test(NAME integration_multithread_test SOURCES integration/multithread_
 wsrv_add_test(NAME server_multi_loop_test SOURCES server/multi_loop_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_session_handle_test SOURCES server/session_handle_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_config_test SOURCES server/config_test.cpp LINK wsrv::server)
+wsrv_add_test(NAME capi_event_queue_test SOURCES capi/event_queue_test.cpp LINK wsrv::capi)
+wsrv_add_test(NAME capi_host_bridge_test SOURCES capi/host_bridge_test.cpp LINK wsrv::capi)
 
 # Differential tests against OpenSSL are test-only and optional (ADR-0005: no runtime dependency).
 find_package(OpenSSL QUIET)
@@ -61,7 +63,7 @@ endif()
 # Architecture guard: the real link graph must equal the allowed graph (docs/ARCHITECTURE.md 2.1).
 include(WsrvModuleGraph)
 wsrv_write_module_graph("${CMAKE_BINARY_DIR}/module_graph.actual"
-    MODULES base crypto http protocol extensions net server)
+    MODULES base crypto http protocol extensions net server capi)
 add_test(NAME module_graph
     COMMAND ${CMAKE_COMMAND} -E compare_files
             "${CMAKE_CURRENT_SOURCE_DIR}/module_graph.expected"

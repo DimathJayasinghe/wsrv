@@ -27,6 +27,7 @@ ALLOWED = {
     "extensions": {"base", "protocol"},
     "net": {"base"},
     "server": {"base", "http", "protocol", "net", "extensions"},
+    "capi": {"base", "net", "server"},
 }
 SANS_IO = {"base", "crypto", "http", "protocol"}
 OS_HEADER = re.compile(
