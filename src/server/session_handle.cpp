@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "server/session_handle.hpp"
 
+#include "protocol/utf8.hpp"
+
 #include <new>
 #include <string>
 #include <utility>
@@ -41,6 +43,12 @@ submit_to(const std::shared_ptr<LoopLink>& link, ConnectionId id, SessionCommand
 }  // namespace
 
 Result<void> SessionHandle::send_text(std::string_view text) const {
+    // Checked here, on the caller's thread: a bad string found later, on the loop, could only be
+    // dropped, and the caller would never learn why (FR-F7).
+    Utf8Validator utf8;
+    if (!utf8.feed(as_bytes(text)) || !utf8.at_boundary()) {
+        return fail(ErrorCode::InvalidUtf8, "session handle: text is not valid UTF-8");
+    }
     try {
         return submit_to(link_, id_, [copy = std::string{text}](Session& session) {
             static_cast<void>(session.send_text(copy).has_value());  // policy applies inside

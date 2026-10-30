@@ -1,6 +1,6 @@
 # ADR-0016: C ABI v0 (embedded, pull model) and read pause
 
-- Status: Proposed
+- Status: Accepted (project owner, in chat, 2026-10-30)
 - Date: 2026-10-30
 - Deciders: project owner (to accept)
 
@@ -9,8 +9,8 @@ ADR-0009 chose a hand-designed C ABI with a pull-based event queue as the single
 
 ## Decisions
 
-### 1. A new module `capi/`, depending only on `server`
-`src/capi/` builds `libwsrv.so` (and a static twin for tests). It includes `server/` headers and nothing else; nothing includes it. `tools/check_includes.py`, the `module_graph` test and ARCHITECTURE section 2.1 gain the `capi -> server` edge. The only public header is `include/wsrv/wsrv.h`: pure C99, opaque handles, fixed-width integers, no C++ types. The C++ headers stay in `src/server/`. Build flags: `-fvisibility=hidden`; exported functions are marked `WSRV_API`. At the boundary every function catches `std::bad_alloc` and `std::exception` and returns a status; no exception crosses it and no `catch(...)` is used.
+### 1. A new module `capi/`, depending on `server` (plus `base` and `net`)
+`src/capi/` builds `libwsrv.so` (and a static twin for tests). It may include `server/` headers, and `base/` and `net/` ones for `Result`, `Fd` and the syscall seam; it must not reach `protocol/` or `http/` directly, and nothing includes it. `tools/check_includes.py`, the `module_graph` test and ARCHITECTURE section 2.1 gain the `capi -> base, net, server` edge. The only public header is `include/wsrv/wsrv.h`: pure C99, opaque handles, fixed-width integers, no C++ types. The C++ headers stay in `src/server/`. Build flags: `-fvisibility=hidden`; exported functions are marked `WSRV_API`. At the boundary every function catches `std::bad_alloc` and `std::exception` and returns a status; no exception crosses it and no `catch(...)` is used.
 
 ### 2. Runtime shape
 - `wsrv_server_create` builds the C++ `Server` on the caller's thread, so configuration problems are reported synchronously. The `ConfigError` text is copied into a **caller-supplied fixed buffer** (`wsrv_error { int code; char message[128]; }`); the library never returns memory the caller must free for an error.
@@ -44,6 +44,13 @@ The C API only has a `wsrv_conn_id`. The library keeps `unordered_map<Connection
 
 ### 8. ABI checking without a new tool dependency
 `abi-compliance-checker` would be a new tool and needs its own ADR. v0 uses: (a) `include/wsrv/wsrv.h` compiled as C99 with `-Wpedantic -Werror`; (b) a checked-in `include/wsrv/wsrv.symbols` compared against `nm -D libwsrv.so` in CI (an unexpected or removed export fails the build); (c) a **C-only consumer** (`tests/capi/consumer.c`) that links the shared library, starts a server, completes a WebSocket handshake with a raw socket, echoes a message, and shuts down. The ABI checker is revisited for 1.0-rc.
+
+### 9. The binding rule: bindings translate, the core decides
+The owner's requirement (2026-10-30): PHP cannot be expected to manage sockets and connection state well, and the same core must serve other platforms (C#, Java/Spring, Node, Python, Go...). So every behaviour that could be got wrong is implemented **once, below the language line**, and a binding only converts types and calls:
+- **In the core / `capi` (C++, tested once):** protocol rules, UTF-8 validation of both directions, message and queue limits, backpressure and overload policy, connection ids and their lifetime, "exactly one Close for every Open", ordering, send-to-a-dead-connection safety, fork and shutdown behaviour, error codes and their mapping.
+- **In a binding (thin, per language):** calling the C functions, turning `wsrv_event` into the language's object, integrating the `event_fd` with that language's event loop, memory release at the FFI boundary. A binding contains no protocol, buffering or state-machine code. If a binding needs a new behaviour, it is added to `capi` first and benefits every language.
+- **Review test:** a bug in connection handling must be fixable by changing C++ only; a binding that needs a workaround for a socket or state edge case is a bug in `capi`.
+`HostBridge` (slice 1) is this rule in code: one class owning the event queue and the id-to-handle map, with no C types.
 
 ## Slices
 1. Adapter and `EventQueue` in C++ (module `capi/`, no C header yet), unit tests, TSan.

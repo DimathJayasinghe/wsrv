@@ -151,6 +151,18 @@ TEST_F(SessionHandleTest, BinaryAndCloseReachTheSession) {
     EXPECT_EQ(session_.closes.front().second, "bye");
 }
 
+TEST_F(SessionHandleTest, TextThatIsNotUtf8IsRefusedToTheCallerAndNothingIsQueued) {  // FR-F7
+    const SessionHandle handle{link_, kId};
+    for (const std::string& bad : {std::string{"ok\xFF"}, std::string{"cut\xE2\x82"}}) {
+        const wsrv::Result<void> sent = handle.send_text(bad);
+        ASSERT_FALSE(sent.has_value());
+        EXPECT_EQ(sent.error().code, ErrorCode::InvalidUtf8);
+    }
+    ASSERT_TRUE(handle.send_text("caf\xC3\xA9").has_value());
+    ASSERT_TRUE(pump_until([&] { return !session_.texts.empty(); }));
+    EXPECT_EQ(session_.texts, std::vector<std::string>{"caf\xC3\xA9"});  // only the valid one
+}
+
 TEST_F(SessionHandleTest, ACommandForASessionThatIsGoneIsDroppedWithoutHarm) {  // EC-N13
     const SessionHandle handle{link_, kId};
     ASSERT_TRUE(handle.send_text("late").has_value());  // accepted for delivery...
