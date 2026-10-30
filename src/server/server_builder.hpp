@@ -17,7 +17,17 @@ namespace wsrv {
 /// ServerBuilder::build() (ADR-0006, CODING_STANDARDS section 4).
 class ConfigError : public std::runtime_error {
 public:
-    using std::runtime_error::runtime_error;
+    /// @param code what kind of problem it is, for callers that must react to it (a host
+    /// embedding the server maps AddressInUse differently from a bad setting).
+    explicit ConfigError(const std::string& message, ErrorCode code = ErrorCode::InvalidConfig)
+        : std::runtime_error{message}, code_{code} {}
+
+    [[nodiscard]] ErrorCode code() const noexcept {
+        return code_;
+    }
+
+private:
+    ErrorCode code_;
 };
 
 /// The composition root (Builder): collects configuration and collaborators, validates once, and

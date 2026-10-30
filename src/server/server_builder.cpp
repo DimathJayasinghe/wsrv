@@ -13,7 +13,7 @@ namespace {
     std::string message{to_string(error.code)};
     message += ": ";
     message += error.context;
-    throw ConfigError{message};
+    throw ConfigError{message, error.code};
 }
 
 }  // namespace

@@ -31,6 +31,8 @@ wsrv_add_test(NAME server_session_handle_test SOURCES server/session_handle_test
 wsrv_add_test(NAME server_config_test SOURCES server/config_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME capi_event_queue_test SOURCES capi/event_queue_test.cpp LINK wsrv::capi)
 wsrv_add_test(NAME capi_host_bridge_test SOURCES capi/host_bridge_test.cpp LINK wsrv::capi)
+wsrv_add_test(NAME capi_embedded_config_test SOURCES capi/embedded_config_test.cpp LINK wsrv::capi)
+wsrv_add_test(NAME capi_embedded_server_test SOURCES capi/embedded_server_test.cpp LINK wsrv::capi)
 
 # Differential tests against OpenSSL are test-only and optional (ADR-0005: no runtime dependency).
 find_package(OpenSSL QUIET)

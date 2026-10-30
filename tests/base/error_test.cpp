@@ -30,7 +30,8 @@ constexpr std::array kAllCodes{ErrorCode::InvalidArgument,
                                ErrorCode::FdLimit,
                                ErrorCode::AddressInUse,
                                ErrorCode::Io,
-                               ErrorCode::MessageInProgress};
+                               ErrorCode::MessageInProgress,
+                               ErrorCode::WrongProcess};
 
 TEST(Error, EveryCodeHasANonEmptyDistinctName) {
     std::set<std::string_view> names;
