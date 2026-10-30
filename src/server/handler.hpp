@@ -66,6 +66,17 @@ public:
     [[nodiscard]] virtual Result<MessageWriter> begin_text() = 0;
     [[nodiscard]] virtual Result<MessageWriter> begin_binary() = 0;
 
+    /// Stop reading from this connection until resume_reads(): the bytes wait in the kernel, so TCP
+    /// flow control slows the peer instead of our memory growing (ADR-0016 section 4). Messages
+    /// already read may still be delivered. While paused the peer's Ping, Close and EOF go unseen,
+    /// so the idle and heartbeat timeouts still apply; a hang-up or error is seen at once and
+    /// lifts the pause. Idempotent.
+    virtual void pause_reads() = 0;
+    /// Undo pause_reads(). Re-registers with the poller, which makes it report data that arrived
+    /// while paused (edge-triggered: lesson 12). Idempotent. From another thread use
+    /// SessionHandle::resume_reads().
+    virtual void resume_reads() = 0;
+
     /// Start the closing handshake with `code` (must be sendable, RFC 6455 section 7.4) and an
     /// optional reason (cut to 123 bytes).
     virtual void close(CloseCode code, std::string_view reason) = 0;

@@ -71,6 +71,10 @@ Result<void> SessionHandle::send_binary(ByteView data) const {
     }
 }
 
+Result<void> SessionHandle::resume_reads() const {
+    return submit_to(link_, id_, [](Session& session) { session.resume_reads(); });
+}
+
 Result<void> SessionHandle::close(CloseCode code, std::string_view reason) const {
     try {
         return submit_to(link_, id_, [code, copy = std::string{reason}](Session& session) {

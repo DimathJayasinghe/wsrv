@@ -90,6 +90,8 @@ public:
     [[nodiscard]] Result<void> send_text(std::string_view text) const;
     [[nodiscard]] Result<void> send_binary(ByteView data) const;
     [[nodiscard]] Result<void> close(CloseCode code, std::string_view reason) const;
+    /// Lift a pause_reads() on the connection (Session::resume_reads), from any thread.
+    [[nodiscard]] Result<void> resume_reads() const;
 
 private:
     std::shared_ptr<LoopLink> link_;

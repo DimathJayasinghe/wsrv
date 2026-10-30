@@ -135,6 +135,8 @@ public:
     [[nodiscard]] wsrv::Result<wsrv::MessageWriter> begin_binary() override {
         return wsrv::fail(wsrv::ErrorCode::Closing, "stub");
     }
+    void pause_reads() override {}
+    void resume_reads() override {}
     void close(wsrv::CloseCode /*code*/, std::string_view /*reason*/) override {
         ++closes;
     }
