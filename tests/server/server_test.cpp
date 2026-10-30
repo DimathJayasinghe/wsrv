@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // The whole server on a real loopback port: accept, handshake, echo, caps, churn, shutdown.
+#include "server/message_writer.hpp"
 #include "server/server_builder.hpp"
 #include "server/session_handle.hpp"
 #include "support/running_server.hpp"
@@ -7,11 +8,13 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -204,6 +207,199 @@ TEST(ServerBuilder, APortAlreadyInUseIsAClearStartupError) {  // EC-N20
     } catch (const wsrv::ConfigError& error) {
         EXPECT_NE(std::string{error.what()}.find("AddressInUse"), std::string::npos);
     }
+}
+
+// ---- Streaming writer (ADR-0015) ----------------------------------------------------------------
+
+/// Streams a generated message on request, resuming from on_writable whenever the queue is full:
+/// the whole point of FR-F12. "binary N" / "text N" stream N pieces of kPiece bytes; "whole N"
+/// tries to send the same amount in one send_binary and reports what that returned.
+class StreamingHandler final : public wsrv::IWebSocketHandler {
+public:
+    static constexpr std::size_t kPiece = 16 * 1024;
+    static constexpr std::string_view kUnit =
+        "a\xE2\x82\xAC\xC3\xA9\xF0\x9F\x98\x80";  // 1+3+2+4 bytes
+
+    void on_text(Session& session, std::string_view command) override {
+        const std::size_t space = command.find(' ');
+        const std::string_view verb = command.substr(0, space);
+        total_ = std::stoul(std::string{command.substr(space + 1)});
+        sent_ = 0;
+        if (verb == "whole") {
+            const auto refused = session.send_binary(std::vector<std::byte>(total_));
+            static_cast<void>(
+                session.send_text(refused ? "accepted" : wsrv::to_string(refused.error().code)));
+            return;
+        }
+        text_ = verb == "text";
+        auto begun = text_ ? session.begin_text() : session.begin_binary();
+        if (!begun) {
+            return;
+        }
+        writer_.emplace(std::move(*begun));
+        pump();
+    }
+    void on_writable(Session& /*session*/) override {
+        if (writer_) {
+            pump();
+        }
+    }
+
+private:
+    /// Byte `i` of the message being streamed.
+    std::byte byte_at(std::size_t i) const {
+        return text_ ? static_cast<std::byte>(kUnit[i % kUnit.size()])
+                     : static_cast<std::byte>(i % 251);
+    }
+    void pump() {
+        while (sent_ < total_) {
+            // Text pieces are 7 bytes so characters are split between writes on purpose.
+            const std::size_t piece = std::min(text_ ? std::size_t{7} : kPiece, total_ - sent_);
+            std::vector<std::byte> bytes(piece);
+            for (std::size_t i = 0; i < piece; ++i) {
+                bytes[i] = byte_at(sent_ + i);
+            }
+            if (!writer_->write(bytes).has_value()) {
+                return;  // Backpressure: wait for on_writable
+            }
+            sent_ += piece;
+        }
+        static_cast<void>(writer_->finish().has_value());
+        writer_.reset();
+    }
+
+    std::optional<wsrv::MessageWriter> writer_;
+    std::size_t total_ = 0;
+    std::size_t sent_ = 0;
+    bool text_ = false;
+};
+
+class StreamingFactory final : public wsrv::IHandlerFactory {
+public:
+    std::unique_ptr<wsrv::IWebSocketHandler> create(const wsrv::ConnectionInfo&) override {
+        return std::make_unique<StreamingHandler>();
+    }
+};
+
+/// Read frames until the message ends; returns its opcode and payload, and checks the framing.
+struct StreamedMessage {
+    Opcode opcode = Opcode::Continuation;
+    std::string payload;
+    std::size_t frames = 0;
+    bool well_formed = true;
+};
+
+StreamedMessage read_message(TcpClient& client) {
+    StreamedMessage message;
+    for (;;) {
+        const auto frame = client.read_frame();
+        if (!frame) {
+            message.well_formed = false;
+            return message;
+        }
+        if (message.frames == 0) {
+            message.opcode = frame->opcode;
+            message.well_formed = frame->opcode == Opcode::Text || frame->opcode == Opcode::Binary;
+        } else {
+            message.well_formed = message.well_formed && frame->opcode == Opcode::Continuation;
+        }
+        ++message.frames;
+        message.payload += frame->payload;
+        if (frame->fin) {
+            return message;
+        }
+    }
+}
+
+wsrv::ServerBuilder streaming_builder(StreamingFactory& factory) {
+    wsrv::ServerBuilder builder;
+    builder.listen("127.0.0.1", 0).handler_factory(factory);
+    builder.config().handshake.allowed_origins = {"https://app.example.com"};
+    builder.config().session.outbound.max_queued_bytes = 64 * 1024;  // far below the message
+    builder.config().session.outbound.max_frame_payload = 16 * 1024;
+    return builder;
+}
+
+TEST(ServerStream, AMessageFarLargerThanTheQueueIsStreamedInBoundedMemory) {  // FR-F12, EC-F35
+    constexpr std::size_t kTotal = 8 * 1024 * 1024;
+    StreamingFactory factory;
+    RunningServer running{streaming_builder(factory)};
+    TcpClient client{running.port()};
+    ASSERT_TRUE(client.upgrade());
+    ASSERT_TRUE(client.send_frame(Opcode::Text, "whole " + std::to_string(kTotal)));
+    const StreamedMessage whole = read_message(client);  // a single send cannot hold 8 MiB...
+    EXPECT_EQ(whole.payload, "BufferFull");
+    ASSERT_TRUE(
+        client.send_frame(Opcode::Text, "binary " + std::to_string(kTotal)));  // ...a stream can
+    const StreamedMessage message = read_message(client);
+    ASSERT_TRUE(message.well_formed);
+    EXPECT_EQ(message.opcode, Opcode::Binary);
+    ASSERT_EQ(message.payload.size(), kTotal);
+    EXPECT_GE(message.frames, kTotal / (16 * 1024));  // fragments of at most 16 KiB
+    bool intact = true;
+    for (std::size_t i = 0; i < kTotal && intact; i += 4099) {
+        intact = static_cast<unsigned char>(message.payload[i]) == i % 251;
+    }
+    EXPECT_TRUE(intact);
+}
+
+TEST(ServerStream,
+     ATextStreamMayCutCharactersBetweenWritesAndArrivesIntact) {  // EC-F36, RFC 6455 8.1
+    constexpr std::size_t kTotal = 10 * StreamingHandler::kUnit.size() * 1000;
+    StreamingFactory factory;
+    RunningServer running{streaming_builder(factory)};
+    TcpClient client{running.port()};
+    ASSERT_TRUE(client.upgrade());
+    ASSERT_TRUE(client.send_frame(Opcode::Text, "text " + std::to_string(kTotal)));
+    const StreamedMessage message = read_message(client);
+    ASSERT_TRUE(message.well_formed);
+    EXPECT_EQ(message.opcode, Opcode::Text);
+    std::string expected;
+    for (std::size_t i = 0; i < kTotal; ++i) {
+        expected += StreamingHandler::kUnit[i % StreamingHandler::kUnit.size()];
+    }
+    EXPECT_EQ(message.payload, expected);
+}
+
+TEST(ServerStream, APongIsAnsweredInTheMiddleOfAStream) {  // EC-C01, EC-F32
+    constexpr std::size_t kTotal = 4 * 1024 * 1024;
+    StreamingFactory factory;
+    RunningServer running{streaming_builder(factory)};
+    TcpClient client{running.port()};
+    ASSERT_TRUE(client.upgrade());
+    ASSERT_TRUE(client.send_frame(Opcode::Binary, ""));  // warm-up, ignored by the handler
+    ASSERT_TRUE(client.send_frame(Opcode::Text, "binary " + std::to_string(kTotal)));
+    ASSERT_TRUE(client.send_frame(Opcode::Ping, "mid"));
+    bool pong = false;
+    std::size_t received = 0;
+    for (bool done = false; !done;) {
+        const auto frame = client.read_frame();
+        ASSERT_TRUE(frame.has_value());
+        pong |= frame->opcode == Opcode::Pong && frame->payload == "mid";
+        if (frame->opcode != Opcode::Pong) {
+            received += frame->payload.size();
+            done = frame->fin;
+        }
+    }
+    EXPECT_TRUE(pong);
+    EXPECT_EQ(received, kTotal);
+}
+
+TEST(ServerStream,
+     ADisconnectInTheMiddleOfAStreamEndsCleanlyAndTheServerCarriesOn) {  // EC-N04, EC-N13
+    StreamingFactory factory;
+    RunningServer running{streaming_builder(factory)};
+    {
+        TcpClient quitter{running.port()};
+        ASSERT_TRUE(quitter.upgrade());
+        ASSERT_TRUE(quitter.send_frame(Opcode::Text, "binary " + std::to_string(64 * 1024 * 1024)));
+        ASSERT_TRUE(quitter.read_frame().has_value());  // the stream has started...
+    }  // ...and the client vanishes
+    TcpClient other{running.port()};
+    ASSERT_TRUE(other.upgrade());
+    ASSERT_TRUE(other.send_frame(Opcode::Text, "binary 1000"));
+    const StreamedMessage message = read_message(other);
+    EXPECT_EQ(message.payload.size(), 1000U);
 }
 
 // ---- SessionHandle (ADR-0014) -------------------------------------------------------------------

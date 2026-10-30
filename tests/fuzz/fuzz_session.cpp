@@ -2,13 +2,17 @@
 // libFuzzer target: ProtocolSession driven by an arbitrary script of operations. The input is a
 // sequence of ops (low 3 bits of a byte select the op, the following bytes are its arguments):
 //   0-2 feed the next 1..32 input bytes as client bytes   3   feed one VALID masked frame
-//   4   tick(+arg*250 ms)                                 5   send_text / send_binary / send_ping
+//   4   tick(+arg*250 ms)                                 5   send_text / send_binary / send_ping,
+//                                                             begin_message / write_part /
+//                                                             end_message
 //   6   close(code)                                       7   write part of the pending output,
 //                                                             or (odd arg) the transport ends
 // Properties: never crashes; events: at most one Closed and nothing after it, at most one
 // ProtocolError, no message/Ping/Pong once the session is no longer Open; Closed is reported after
 // the transport ends; the state only moves forward; the output parses as unmasked frames, holds at
-// most one Close frame and nothing after it; pending output stays bounded; delivered text is valid
+// most one Close frame and nothing after it, data frames follow the fragmentation grammar
+// (RFC 6455 section 5.4: a message starts with Text/Binary, continues with Continuation until FIN,
+// never interleaves another data message); pending output stays bounded; delivered text is valid
 // UTF-8; after Closed nothing is written.
 #include "base/assert.hpp"
 #include "base/bytes.hpp"
@@ -149,6 +153,7 @@ void check_output(wsrv::ByteView output) {
     std::vector<std::byte> copy{output.begin(), output.end()};
     wsrv::MutableByteView input{copy};
     bool close_seen = false;
+    bool in_message = false;  // a data message without FIN is on the wire
     for (;;) {
         const auto event = parser.next(input);
         WSRV_ASSERT(event.has_value());  // the output is always valid
@@ -157,7 +162,12 @@ void check_output(wsrv::ByteView output) {
         }
         if ((*event)->kind == wsrv::FrameEvent::Kind::Header) {
             WSRV_ASSERT(!close_seen);  // nothing after the Close frame
-            close_seen = (*event)->header.opcode == wsrv::Opcode::Close;
+            const wsrv::FrameHeader& header = (*event)->header;
+            close_seen = header.opcode == wsrv::Opcode::Close;
+            if (!wsrv::is_control(header.opcode)) {
+                WSRV_ASSERT((header.opcode == wsrv::Opcode::Continuation) == in_message);
+                in_message = !header.fin;
+            }
         }
     }
 }
@@ -224,12 +234,26 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         case 5: {
             const std::uint8_t kind = script.next();
             const wsrv::ByteView view = std::as_bytes(script.take(script.next() % 40U));
-            if (kind % 3 == 0) {
+            switch (kind % 6U) {
+            case 0:
                 (void)session.send_text(wsrv::as_chars(view));
-            } else if (kind % 3 == 1) {
+                break;
+            case 1:
                 (void)session.send_binary(view);
-            } else {
+                break;
+            case 2:
                 (void)session.send_ping(view);
+                break;
+            case 3:
+                (void)session.begin_message(kind % 2U == 0 ? wsrv::Opcode::Text
+                                                           : wsrv::Opcode::Binary);
+                break;
+            case 4:
+                (void)session.write_part(view);
+                break;
+            default:
+                (void)session.end_message();
+                break;
             }
             break;
         }

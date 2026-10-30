@@ -33,5 +33,7 @@ Goal (PROJECT_PLAN): N loops, connection distribution, cross-thread `SessionHand
 ## Task 5: `MessageWriter` (FR-F12, EC-F33..F35)
 Design: ADR-0015 (Proposed). Slices: **5a** protocol layer (ErrorCode::MessageInProgress, scheduler `begin/append/end_stream`, session `begin_message/write_part/end_message`, UTF-8 for text; tests first, fuzz_session ops); **5b** server layer (`MessageWriter`, `StreamLink`, `Session::begin_text/begin_binary`, `on_writable`, write interest while a notification is owed; tests for EC-F33..F35 and an end-to-end large stream).
 
-## Task 6: lesson 12, docs, gates, PR
-Lesson 12 "Threads without locks"; ARCHITECTURE sections 3.6 and 5; EDGE_CASES status (N13, N14); SECURITY_DESIGN T16; PROJECT_PLAN status. Gates: dev, dev-clang, tsan, tidy, release.
+**Status:** done. 5a merged (PR #17). 5b: `MessageWriter`/`StreamLink`/`IMessageSink`, `Session::begin_text/begin_binary`, `IWebSocketHandler::on_writable`, write interest while a notification is owed, 18 connection tests and 4 real-socket tests, fuzz_session ops; lesson 12. A real-kernel bug (edge-triggered re-arm) was found by the end-to-end test.
+
+## Task 6: lesson 13, docs, gates, PR
+Lesson 13 "Threads without locks"; ARCHITECTURE sections 3.6 and 5; EDGE_CASES status (N13, N14); SECURITY_DESIGN T16; PROJECT_PLAN status. Gates: dev, dev-clang, tsan, tidy, release.

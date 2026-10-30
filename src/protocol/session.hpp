@@ -147,6 +147,10 @@ public:
     [[nodiscard]] bool message_open() const noexcept {
         return out_.stream_open();
     }
+    /// Data bytes waiting in the outbound queue (not yet framed), including per-message overhead.
+    [[nodiscard]] std::size_t queued_output_bytes() const noexcept {
+        return out_.queued_bytes();
+    }
     /// Payload at most 125 bytes (Error{InvalidArgument}); one unsent Ping at a time
     /// (Error{Backpressure}).
     [[nodiscard]] Result<void> send_ping(ByteView payload);
