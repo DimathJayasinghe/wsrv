@@ -63,8 +63,8 @@ The M7 exit criterion is a one-hour run. Command and result:
 wsrv_load --threads 4 --clients 4 --connections 8 --seconds 3600 --churn --sample 60
 ```
 
-Status: started 2026-10-30 07:21 UTC; the result is recorded below when it finishes.
+Status: finished 2026-10-30 (exit 0).
 
 | Run | Result |
 |-----|--------|
-| 2026-10-30, 1 h, 4 loops, 32 churning connections | pending |
+| 2026-10-30, 1 h, 4 loops, 32 churning connections (64-byte echoes, 60 samples, dev container, ASan/UBSan-free `bench` build) | 0 failures; 119,107 messages/s over the hour; latency p50 39 us, p99 104 us; open descriptors stayed between 78 and 86 (no growth); RSS peaked at 6.1 MiB early on, settled at 2.4 MiB and stayed flat for the rest of the hour (no leak trend). The soak ran while other builds were using the same machine, so the throughput is a floor, not a benchmark. |
