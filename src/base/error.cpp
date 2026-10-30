@@ -39,6 +39,8 @@ std::string_view to_string(ErrorCode code) noexcept {
         return "Io";
     case ErrorCode::MessageInProgress:
         return "MessageInProgress";
+    case ErrorCode::WrongProcess:
+        return "WrongProcess";
     }
     return "Unknown";
 }

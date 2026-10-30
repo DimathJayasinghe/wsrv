@@ -29,6 +29,7 @@ enum class ErrorCode : std::uint8_t {
     AddressInUse,       ///< bind() failed because the address is taken (Io).
     Io,                 ///< Any other operating-system failure (Io).
     MessageInProgress,  ///< A streamed message is open; no other data message may start (Internal).
+    WrongProcess,       ///< Called from a forked child of the process that created it (Internal).
 };
 
 /// A failure. `context` MUST be a string literal (static storage): it is never built from peer
@@ -62,6 +63,7 @@ struct Error {
     case ErrorCode::RandomUnavailable:
     case ErrorCode::Closing:
     case ErrorCode::MessageInProgress:
+    case ErrorCode::WrongProcess:
         return ErrorCategory::Internal;
     case ErrorCode::InvalidConfig:
         return ErrorCategory::Config;
