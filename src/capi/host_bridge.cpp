@@ -177,6 +177,11 @@ void HostBridge::resume_parked() {
 std::optional<HostEvent> HostBridge::poll() {
     std::optional<Popped> popped = events_->try_pop();
     if (!popped) {
+        // Nothing to hand out. If the queue is no longer under pressure, nobody may stay parked:
+        // a safety net for any path on which the resume signal was not delivered.
+        if (!events_->pressured()) {
+            resume_parked();
+        }
         return std::nullopt;
     }
     if (popped->resume_reads) {

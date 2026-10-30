@@ -183,6 +183,39 @@ TEST_F(EventQueueTest, PressureIsReportedAtHighWaterAndResumeOnceAtLowWater) {
     EXPECT_FALSE(resumes[1]);
 }
 
+TEST_F(EventQueueTest, ManyIdleConnectionsDoNotMakeTheQueuePressuredForEveryoneElse) {
+    // Each accepted Open keeps a slot reserved for its Close. 25 idle connections whose Open the
+    // host already consumed hold 25 of 32 slots without anything being queued.
+    const auto queue = make({.max_events = 32, .max_bytes = 1 << 20});
+    for (ConnectionId id = 1; id <= 25; ++id) {
+        const auto pushed = queue->push(control(HostEventType::Open, id));
+        ASSERT_TRUE(pushed.has_value());
+        EXPECT_FALSE(pushed->pause_reads);
+        ASSERT_TRUE(queue->try_pop().has_value());
+    }
+    EXPECT_FALSE(queue->pressured());
+    const auto data = queue->push(text(1));  // fits in the 7 slots that are left
+    ASSERT_TRUE(data.has_value());
+    EXPECT_FALSE(data->pause_reads);
+}
+
+TEST_F(EventQueueTest, PressureFromReservationsAloneAlwaysEndsWhenTheQueueIsDrained) {
+    const auto queue = make({.max_events = 32, .max_bytes = 1 << 20});
+    bool paused = false;
+    for (ConnectionId id = 1; id <= 15; ++id) {  // Opens the host has not consumed yet
+        const auto pushed = queue->push(control(HostEventType::Open, id));
+        ASSERT_TRUE(pushed.has_value());
+        paused = paused || pushed->pause_reads;
+    }
+    EXPECT_TRUE(paused);  // 15 pending Opens are a real backlog
+    int resumes = 0;
+    while (auto popped = queue->try_pop()) {
+        resumes += popped->resume_reads ? 1 : 0;
+    }
+    EXPECT_EQ(resumes, 1);
+    EXPECT_FALSE(queue->pressured());  // and it is not stuck, with 15 slots still reserved
+}
+
 TEST_F(EventQueueTest, NoResumeIsReportedWhenPressureNeverArose) {
     const auto queue = make({.max_events = 100, .max_bytes = 1 << 20});
     ASSERT_TRUE(queue->push(text(1)).has_value());

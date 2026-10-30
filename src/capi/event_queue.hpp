@@ -26,16 +26,17 @@ struct EventQueueConfig {
 
 /// What a producer learns from a successful push.
 struct PushOutcome {
-    /// The queue is at or above high water (3/4 full): the producing connection should stop
-    /// reading until it is told to resume.
+    /// The queue is at or above high water (3/4 of the room left after the Close slots): the
+    /// producing connection should stop reading until it is told to resume.
     bool pause_reads = false;
 };
 
 /// What the consumer learns from a successful pop.
 struct Popped {
     HostEvent event;
-    /// The queue just fell to low water (1/2) after having been at high water: paused
-    /// connections may resume. True for exactly one pop per pressure episode.
+    /// The queue just fell to low water (1/2 of the room left) after having been at high water:
+    /// paused connections may resume. True for exactly one pop per pressure episode; the pop that
+    /// empties the queue always qualifies.
     bool resume_reads = false;
 };
 
@@ -111,10 +112,6 @@ private:
 
     ISyscalls& sys_;
     const EventQueueConfig config_;
-    const std::size_t high_events_;
-    const std::size_t high_bytes_;
-    const std::size_t low_events_;
-    const std::size_t low_bytes_;
     Fd wake_;
     std::atomic<std::uint64_t> dropped_{0};
 
