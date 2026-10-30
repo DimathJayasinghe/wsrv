@@ -19,5 +19,6 @@ One decision per file, immutable once *Accepted* (supersede with a new ADR). Use
 | [0013](0013-server-connection-model.md) | Server connection model, handler contract, teardown | Proposed |
 | [0014](0014-multi-loop-server-and-session-handle.md) | Multi-loop server and the cross-thread SessionHandle | Proposed |
 | [0015](0015-streaming-message-writer.md) | Streaming message writer and on_writable | Proposed |
+| [0016](0016-c-abi-v0-embedded-pull-model.md) | C ABI v0 (embedded, pull model) and read pause | Proposed |
 
 Statuses: Proposed → Accepted → (Deprecated | Superseded by ADR-NNNN). The project owner moves Proposed → Accepted.
