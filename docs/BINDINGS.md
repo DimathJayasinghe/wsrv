@@ -69,7 +69,7 @@ wsrv_status  wsrv_end_message(wsrv_server*, wsrv_conn_id);
 wsrv_status  wsrv_close(wsrv_server*, wsrv_conn_id, uint16_t code, const char *reason);
 wsrv_status  wsrv_publish(wsrv_server*, const char *topic, const uint8_t*, size_t, int is_text);
 wsrv_status  wsrv_subscribe(wsrv_server*, wsrv_conn_id, const char *topic);
-wsrv_status  wsrv_server_stop(wsrv_server*, uint32_t grace_ms);
+wsrv_status  wsrv_server_stop(wsrv_server*);   /* grace = config key shutdown_grace_ms (ADR-0016) */
 void         wsrv_server_destroy(wsrv_server*);
 ```
 
