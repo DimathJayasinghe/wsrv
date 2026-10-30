@@ -48,8 +48,8 @@ protected:
     std::optional<HostEvent> next(std::chrono::milliseconds timeout = 3000ms) {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         for (;;) {
-            if (auto popped = bridge_->events().try_pop()) {
-                return std::move(popped->event);
+            if (auto event = bridge_->poll()) {
+                return event;
             }
             const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
                 deadline - std::chrono::steady_clock::now());
@@ -196,6 +196,58 @@ TEST_F(HostBridgeTest, AHostThatDoesNotPollGetsTheConnectionClosedWith1013AtTheL
     ASSERT_TRUE(last.has_value());
     EXPECT_EQ(last->type, HostEventType::Close);
     EXPECT_GT(bridge_->events().dropped(), 0U);
+}
+
+/// Send `count` one-byte texts, one write each.
+void send_texts(TcpClient& client, int count) {
+    for (int i = 0; i < count; ++i) {
+        ASSERT_TRUE(client.send_frame(Opcode::Text, "m"));
+    }
+}
+
+TEST_F(HostBridgeTest, ASlowHostPausesTheConnectionAndDrainingItResumesWithoutLoss) {
+    start({.max_events = 16, .max_bytes = 4096});  // high water 12, low water 8, hard cap 16
+    TcpClient client{server_->port()};
+    ASSERT_TRUE(client.upgrade());
+    send_texts(client, 11);  // Open + reserved Close + 11 = 13: past high water, under the cap
+    for (int i = 0; i < 300 && !bridge_->events().pressured(); ++i) {
+        std::this_thread::sleep_for(10ms);
+    }
+    ASSERT_TRUE(bridge_->events().pressured());
+    std::this_thread::sleep_for(100ms);  // let the pause take effect on the loop
+
+    send_texts(client, 3);  // sent while paused: they wait in the kernel, not in the queue
+    std::this_thread::sleep_for(300ms);
+    EXPECT_EQ(bridge_->events().pending(), 12U);  // the Open and the first 11 texts, no more
+
+    std::size_t texts = 0;
+    for (int total = 0; total < 15; ++total) {  // draining through poll() resumes the connection
+        const auto event = next();
+        ASSERT_TRUE(event.has_value()) << "stuck after " << total << " events";
+        texts += event->type == HostEventType::Text ? 1U : 0U;
+    }
+    EXPECT_EQ(texts, 14U);  // nothing lost
+    EXPECT_EQ(bridge_->events().dropped(), 0U);
+    EXPECT_FALSE(next(200ms).has_value());  // and nothing closed the connection
+}
+
+TEST_F(HostBridgeTest, ThePauseAndResumeCycleRepeats) {
+    start({.max_events = 16, .max_bytes = 4096});
+    TcpClient client{server_->port()};
+    ASSERT_TRUE(client.upgrade());
+    std::size_t received = 0;
+    for (int round = 0; round < 5; ++round) {
+        send_texts(client, 11);
+        for (int i = 0; i < 300 && !bridge_->events().pressured(); ++i) {
+            std::this_thread::sleep_for(10ms);
+        }
+        std::this_thread::sleep_for(50ms);
+        while (auto event = next(400ms)) {  // poll() resumes the connection as it drains
+            received += event->type == HostEventType::Text ? 1U : 0U;
+        }
+    }
+    EXPECT_EQ(received, 55U);
+    EXPECT_EQ(bridge_->events().dropped(), 0U);
 }
 
 TEST_F(HostBridgeTest, EveryOpenIsFollowedByExactlyOneCloseAcrossChurn) {

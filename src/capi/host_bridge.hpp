@@ -11,6 +11,8 @@
 #include <optional>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include "capi/event_queue.hpp"
 
@@ -29,8 +31,11 @@ namespace wsrv {
 ///   - A send to a connection that is gone, or never existed, fails with Closing; it never
 ///     touches freed memory, whatever the timing (EC-N13).
 /// Plug it in as the server's IHandlerFactory; poll events() from the host.
+///   - A host that falls behind slows its clients instead of losing their messages: past high
+///     water the producing connection stops reading (TCP flow control does the rest) and resumes
+///     when poll() has drained the queue to low water.
 /// Thread-affinity: the factory part on loop threads; send_*, close, events() any thread, with a
-/// single consumer thread for events().try_pop().
+/// single consumer thread for poll().
 class HostBridge final : public IHandlerFactory {
 public:
     /// @return Error from EventQueue::create.
@@ -47,7 +52,13 @@ public:
 
     [[nodiscard]] std::unique_ptr<IWebSocketHandler> create(const ConnectionInfo& info) override;
 
-    /// The events for the host. Valid for the bridge's lifetime.
+    /// The next event for the host, or nothing when none is waiting. Never blocks: wait on
+    /// events().event_fd() and call again. Draining the queue is what lets connections that were
+    /// paused for being too fast resume reading, so the host must consume events through this
+    /// and not through events().try_pop(). One consumer thread at a time.
+    [[nodiscard]] std::optional<HostEvent> poll();
+
+    /// The queue behind poll(): its descriptor and counters. Valid for the bridge's lifetime.
     [[nodiscard]] EventQueue& events() noexcept {
         return *events_;
     }
@@ -66,11 +77,15 @@ private:
 
     void add(ConnectionId id, SessionHandle handle);
     void remove(ConnectionId id);
+    void park(ConnectionId id);
+    bool unpark(ConnectionId id);
+    void resume_parked();
     [[nodiscard]] std::optional<SessionHandle> find(ConnectionId id);
 
     const std::unique_ptr<EventQueue> events_;
     std::mutex mutex_;  // guards handles_; held for one map operation, never across a call out
     std::unordered_map<ConnectionId, SessionHandle> handles_;
+    std::unordered_set<ConnectionId> parked_;  // paused for a full queue; guarded by mutex_
 };
 
 }  // namespace wsrv

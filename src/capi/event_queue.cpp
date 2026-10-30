@@ -20,9 +20,7 @@ constexpr std::size_t high_water(std::size_t limit) noexcept {
 }  // namespace
 
 EventQueue::EventQueue(Key /*unused*/, ISyscalls& sys, EventQueueConfig config, Fd wake) noexcept
-    : sys_{sys}, config_{config}, high_events_{high_water(config.max_events)},
-      high_bytes_{high_water(config.max_bytes)}, low_events_{config.max_events / 2},
-      low_bytes_{config.max_bytes / 2}, wake_{std::move(wake)} {}
+    : sys_{sys}, config_{config}, wake_{std::move(wake)} {}
 
 Result<std::unique_ptr<EventQueue>> EventQueue::create(ISyscalls& sys, EventQueueConfig config) {
     if (config.max_events < 2 || config.max_bytes < 2 * kReservedCloseBytes) {
@@ -50,14 +48,18 @@ bool EventQueue::fits(std::size_t events, std::size_t bytes) const noexcept {
     return events <= config_.max_events - events_level && bytes <= config_.max_bytes - bytes_level;
 }
 
+// Pressure is judged on what is actually queued, against the room that is left once the Close
+// slots are set aside. Counting the reservations as load would let idle connections alone keep
+// the queue "pressured" for ever, pausing every active connection with nothing for the host to
+// drain. Judged this way a drained queue is always at low water, whatever is reserved.
 bool EventQueue::at_high_water() const noexcept {
-    return events_.size() + reserved_closes_ >= high_events_ ||
-           bytes_ + reserved_bytes_ >= high_bytes_;
+    return events_.size() >= high_water(config_.max_events - reserved_closes_) ||
+           bytes_ >= high_water(config_.max_bytes - reserved_bytes_);
 }
 
 bool EventQueue::at_low_water() const noexcept {
-    return events_.size() + reserved_closes_ <= low_events_ &&
-           bytes_ + reserved_bytes_ <= low_bytes_;
+    return events_.size() <= (config_.max_events - reserved_closes_) / 2 &&
+           bytes_ <= (config_.max_bytes - reserved_bytes_) / 2;
 }
 
 /// Decide whether `event` may enter. Open needs room for itself and its Close; Close needs the
@@ -112,6 +114,16 @@ Result<PushOutcome> EventQueue::push(HostEvent event) {
         pressured_ = true;
     }
     return PushOutcome{pressured_};
+}
+
+bool EventQueue::pressured() const {
+    const std::lock_guard lock{mutex_};
+    return pressured_;
+}
+
+std::size_t EventQueue::pending() const {
+    const std::lock_guard lock{mutex_};
+    return events_.size();
 }
 
 std::optional<Popped> EventQueue::try_pop() {

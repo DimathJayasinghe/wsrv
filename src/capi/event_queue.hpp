@@ -26,16 +26,17 @@ struct EventQueueConfig {
 
 /// What a producer learns from a successful push.
 struct PushOutcome {
-    /// The queue is at or above high water (3/4 full): the producing connection should stop
-    /// reading until it is told to resume.
+    /// The queue is at or above high water (3/4 of the room left after the Close slots): the
+    /// producing connection should stop reading until it is told to resume.
     bool pause_reads = false;
 };
 
 /// What the consumer learns from a successful pop.
 struct Popped {
     HostEvent event;
-    /// The queue just fell to low water (1/2) after having been at high water: paused
-    /// connections may resume. True for exactly one pop per pressure episode.
+    /// The queue just fell to low water (1/2 of the room left) after having been at high water:
+    /// paused connections may resume. True for exactly one pop per pressure episode; the pop that
+    /// empties the queue always qualifies.
     bool resume_reads = false;
 };
 
@@ -87,6 +88,14 @@ public:
         return wake_.get();
     }
 
+    /// True between reaching high water and the pop that reports the resume. A producer that has
+    /// just paused its connection asks this to close the race with a consumer that drained the
+    /// queue in between (see HostBridge).
+    [[nodiscard]] bool pressured() const;
+
+    /// Events waiting right now. A snapshot: it may be stale when the caller looks at it.
+    [[nodiscard]] std::size_t pending() const;
+
     /// Events refused because a limit was reached, since the queue was created.
     [[nodiscard]] std::uint64_t dropped() const noexcept {
         return dropped_.load();
@@ -103,14 +112,10 @@ private:
 
     ISyscalls& sys_;
     const EventQueueConfig config_;
-    const std::size_t high_events_;
-    const std::size_t high_bytes_;
-    const std::size_t low_events_;
-    const std::size_t low_bytes_;
     Fd wake_;
     std::atomic<std::uint64_t> dropped_{0};
 
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::deque<HostEvent> events_;     // guarded by mutex_
     std::size_t bytes_ = 0;            // guarded: payload bytes of events_
     std::size_t reserved_closes_ = 0;  // guarded: accepted Opens whose Close is still to come
