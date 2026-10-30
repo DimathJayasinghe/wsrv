@@ -30,8 +30,8 @@ Goal (PROJECT_PLAN): N loops, connection distribution, cross-thread `SessionHand
 
 **Built so far:** `integration/multithread_stress_test.cpp` (8 churning clients, 2 handle-pushing threads, shutdown in the middle of traffic; TSan 0 reports over 15 repeats), `tests/bench/load.cpp` (`wsrv_load`), `docs/PERFORMANCE.md` (scaling table with caveats). **Open:** the 1 h soak result (started 2026-10-30 07:21 UTC).
 
-## Task 5: `MessageWriter` (FR-F12, EC-F18, F33..F35)
-Needs its own small ADR (streaming send while a connection is backpressured: what happens to a half-written message when the connection closes). Decide after Task 3.
+## Task 5: `MessageWriter` (FR-F12, EC-F33..F35)
+Design: ADR-0015 (Proposed). Slices: **5a** protocol layer (ErrorCode::MessageInProgress, scheduler `begin/append/end_stream`, session `begin_message/write_part/end_message`, UTF-8 for text; tests first, fuzz_session ops); **5b** server layer (`MessageWriter`, `StreamLink`, `Session::begin_text/begin_binary`, `on_writable`, write interest while a notification is owed; tests for EC-F33..F35 and an end-to-end large stream).
 
 ## Task 6: lesson 12, docs, gates, PR
 Lesson 12 "Threads without locks"; ARCHITECTURE sections 3.6 and 5; EDGE_CASES status (N13, N14); SECURITY_DESIGN T16; PROJECT_PLAN status. Gates: dev, dev-clang, tsan, tidy, release.
