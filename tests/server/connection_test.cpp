@@ -2,6 +2,7 @@
 // Connection behaviour with a fake transport and a fake host: no kernel, no real time.
 #include "server/connection.hpp"
 
+#include "server/message_writer.hpp"
 #include "support/fake_connection_env.hpp"
 #include "support/wire.hpp"
 
@@ -10,6 +11,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -21,6 +23,7 @@ using wsrv::CloseCode;
 using wsrv::CloseInfo;
 using wsrv::Connection;
 using wsrv::ErrorCode;
+using wsrv::MessageWriter;
 using wsrv::Opcode;
 using wsrv::PollEvents;
 using wsrv::Session;
@@ -44,6 +47,9 @@ struct Script {
     std::function<void(Session&)> on_open;
     std::function<void(Session&, std::string_view)> on_text;
     std::function<void(Session&, const CloseInfo&)> on_close;
+    std::function<void(Session&)> on_writable;
+    std::optional<wsrv::MessageWriter> writer;  // outlives the connection on purpose in some tests
+    int writable = 0;
     bool echo = false;
     int opened = 0;
     int closed = 0;
@@ -69,6 +75,12 @@ public:
         }
         if (script_.on_text) {
             script_.on_text(session, text);
+        }
+    }
+    void on_writable(Session& session) override {
+        ++script_.writable;
+        if (script_.on_writable) {
+            script_.on_writable(session);
         }
     }
     void on_close(Session& session, const CloseInfo& info) override {
@@ -405,6 +417,347 @@ TEST_F(ConnectionTest, TheDropPolicyKeepsTheConnectionOpen) {
     send_frame(Opcode::Text, "go");
     EXPECT_EQ(script.last_send.error().code, ErrorCode::Backpressure);
     EXPECT_FALSE(conn->finished());
+}
+
+// ---- streaming writer (ADR-0015) ----------------------------------------------------------------
+
+constexpr std::size_t kTinyQueue = 200;  // a queue that two 150-byte writes overflow
+
+TEST_F(ConnectionTest, AWriterSendsOneMessageAsFragments) {  // FR-F12, EC-F37
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        auto begun = s.begin_text();
+        ASSERT_TRUE(begun.has_value());
+        script.writer.emplace(std::move(*begun));
+        ASSERT_TRUE(script.writer->write_text("hel").has_value());
+        ASSERT_TRUE(script.writer->write_text("lo").has_value());
+        ASSERT_TRUE(script.writer->finish().has_value());
+    };
+    send_frame(Opcode::Text, "go");
+    std::string text;
+    const auto frames = output().frames;
+    ASSERT_FALSE(frames.empty());
+    for (const auto& frame : frames) {
+        text += frame.payload;
+    }
+    EXPECT_EQ(text, "hello");
+    EXPECT_TRUE(frames.back().fin);
+    EXPECT_EQ(frames.front().opcode, Opcode::Text);
+    EXPECT_FALSE(script.writer->open());
+}
+
+TEST_F(ConnectionTest, AWriterKeptBetweenEventsContinuesInALaterCallback) {
+    script.on_open = [&](Session& s) {
+        script.writer.emplace(std::move(*s.begin_binary()));
+        ASSERT_TRUE(script.writer->write(wsrv::as_bytes(std::string_view{"ab"})).has_value());
+    };
+    script.on_text = [&](Session&, std::string_view) {
+        ASSERT_TRUE(script.writer->write(wsrv::as_bytes(std::string_view{"cd"})).has_value());
+        ASSERT_TRUE(script.writer->finish().has_value());
+    };
+    open();
+    send_bytes(kRequest);  // on_open begins the stream and writes "ab" behind the 101
+    transport->written.clear();
+    ASSERT_TRUE(script.writer->open());
+    send_frame(Opcode::Text, "go");
+    std::string rest;
+    for (const auto& frame : output().frames) {
+        rest += frame.payload;
+    }
+    EXPECT_EQ(rest, "cd");
+    EXPECT_TRUE(output().frames.back().fin);
+    EXPECT_FALSE(script.writer->open());
+}
+
+TEST_F(ConnectionTest, AWriterDestroyedWithoutFinishClosesWith1011) {  // EC-F34, T16
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        auto begun = s.begin_text();
+        ASSERT_TRUE(begun.has_value());
+        script.writer.emplace(std::move(*begun));
+        ASSERT_TRUE(script.writer->write_text("half").has_value());
+        script.writer.reset();  // the handler forgot to finish
+    };
+    send_frame(Opcode::Text, "go");
+    bool internal_error = false;
+    for (const auto& frame : output().frames) {
+        internal_error |=
+            frame.opcode == Opcode::Close && code_of(frame) == std::string("\x03\xf3", 2);
+    }
+    EXPECT_TRUE(internal_error);
+    EXPECT_TRUE(host.logged("unfinished"));
+}
+
+TEST_F(ConnectionTest, AHandlerThatThrowsMidStreamGetsExactlyOne1011) {  // EC-A01, EC-F34
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        auto begun = s.begin_binary();
+        ASSERT_TRUE(begun.has_value());
+        MessageWriter local{std::move(*begun)};
+        ASSERT_TRUE(local.write(wsrv::as_bytes(std::string_view{"x"})).has_value());
+        throw std::runtime_error{"boom"};  // the writer is destroyed while unwinding
+    };
+    send_frame(Opcode::Text, "go");
+    int closes = 0;
+    for (const auto& frame : output().frames) {
+        closes += frame.opcode == Opcode::Close ? 1 : 0;
+    }
+    EXPECT_EQ(closes, 1);
+}
+
+TEST_F(ConnectionTest,
+       ABackpressuredWriteQueuesNothingAndDoesNotApplyTheSlowConsumerPolicy) {  // ADR-0015 5
+    config.session.outbound.max_queued_bytes = kTinyQueue;
+    establish();
+    wsrv::Result<void> second;
+    script.on_text = [&](Session& s, std::string_view) {
+        script.writer.emplace(std::move(*s.begin_binary()));
+        ASSERT_TRUE(script.writer->write(wsrv::as_bytes(std::string(150, 'a'))).has_value());
+        second = script.writer->write(wsrv::as_bytes(std::string(150, 'b')));
+    };
+    send_frame(Opcode::Text, "go");
+    ASSERT_FALSE(second.has_value());
+    EXPECT_EQ(second.error().code, ErrorCode::Backpressure);
+    for (const auto& frame : output().frames) {
+        EXPECT_NE(frame.opcode, Opcode::Close);  // cooperative: Backpressure is only a signal
+    }
+    EXPECT_FALSE(conn->finished());
+    EXPECT_TRUE(script.writer->open());  // and the writer can still be used
+}
+
+TEST_F(ConnectionTest,
+       OnWritableComesOnceOnTheNextWriteEventNotInTheSameCallback) {  // EC-F35, EC-N08
+    config.session.outbound.max_queued_bytes = kTinyQueue;
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        script.writer.emplace(std::move(*s.begin_binary()));
+        static_cast<void>(script.writer->write(wsrv::as_bytes(std::string(150, 'a'))));
+        static_cast<void>(script.writer->write(wsrv::as_bytes(std::string(150, 'b'))));
+    };
+    send_frame(Opcode::Text, "go");
+    EXPECT_EQ(script.writable, 0);                                 // not inside the same event
+    EXPECT_TRUE(wsrv::has(host.interest_now, PollEvents::Write));  // armed to get a next turn
+    conn->on_event(PollEvents::Write);
+    EXPECT_EQ(script.writable, 1);
+    EXPECT_FALSE(wsrv::has(host.interest_now, PollEvents::Write));  // disarmed again
+    conn->on_event(PollEvents::Write);
+    EXPECT_EQ(script.writable, 1);  // owed once, delivered once
+}
+
+TEST_F(ConnectionTest, OnWritableIsNotCalledWhenNothingWasRefused) {
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        script.writer.emplace(std::move(*s.begin_binary()));
+        ASSERT_TRUE(script.writer->write(wsrv::as_bytes(std::string_view{"fine"})).has_value());
+        ASSERT_TRUE(script.writer->finish().has_value());
+    };
+    send_frame(Opcode::Text, "go");
+    conn->on_event(PollEvents::Write);
+    EXPECT_EQ(script.writable, 0);
+}
+
+TEST_F(ConnectionTest, TheStreamResumesFromOnWritableUntilItIsFinished) {  // FR-F12
+    config.session.outbound.max_queued_bytes = kTinyQueue;
+    establish();
+    std::size_t sent = 0;
+    constexpr std::size_t kTotal = 1000;
+    const std::string piece(100, 'z');
+    const auto pump = [&](Session&) {
+        while (sent < kTotal) {
+            if (!script.writer->write(wsrv::as_bytes(piece)).has_value()) {
+                return;  // wait for on_writable
+            }
+            sent += piece.size();
+        }
+        ASSERT_TRUE(script.writer->finish().has_value());
+    };
+    script.on_text = [&](Session& s, std::string_view) {
+        script.writer.emplace(std::move(*s.begin_binary()));
+        pump(s);
+    };
+    script.on_writable = pump;
+    send_frame(Opcode::Text, "go");
+    for (int turn = 0; turn < 50 && script.writer->open(); ++turn) {
+        conn->on_event(PollEvents::Write);
+    }
+    EXPECT_EQ(sent, kTotal);
+    EXPECT_FALSE(script.writer->open());
+    std::size_t received = 0;
+    const auto frames = output().frames;
+    for (const auto& frame : frames) {
+        received += frame.payload.size();
+    }
+    EXPECT_EQ(received, kTotal);
+    EXPECT_TRUE(frames.back().fin);
+}
+
+TEST_F(ConnectionTest, OnWritableAlsoFollowsARefusedSendUnderTheDropPolicy) {  // ADR-0015 4
+    config.session.outbound.max_queued_bytes = kTinyQueue;
+    config.slow_consumer = wsrv::SlowConsumerPolicy::DropMessage;
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        static_cast<void>(s.send_text(std::string(150, 'a')));
+        script.last_send = s.send_text(std::string(150, 'b'));
+    };
+    send_frame(Opcode::Text, "go");
+    ASSERT_FALSE(script.last_send.has_value());
+    conn->on_event(PollEvents::Write);
+    EXPECT_EQ(script.writable, 1);
+}
+
+TEST_F(ConnectionTest, AThrowingOnWritableClosesWith1011) {  // EC-A01
+    config.session.outbound.max_queued_bytes = kTinyQueue;
+    config.slow_consumer = wsrv::SlowConsumerPolicy::DropMessage;
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        static_cast<void>(s.send_text(std::string(150, 'a')));
+        static_cast<void>(s.send_text(std::string(150, 'b')));
+    };
+    script.on_writable = [](Session&) { throw std::runtime_error{"boom"}; };
+    send_frame(Opcode::Text, "go");
+    conn->on_event(PollEvents::Write);
+    bool internal_error = false;
+    for (const auto& frame : output().frames) {
+        internal_error |=
+            frame.opcode == Opcode::Close && code_of(frame) == std::string("\x03\xf3", 2);
+    }
+    EXPECT_TRUE(internal_error);
+}
+
+TEST_F(ConnectionTest, AStreamToAPeerThatReadsNothingIsDroppedByTheStallTimer) {  // T3, EC-N09
+    config.session.outbound.max_queued_bytes = kTinyQueue;
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        script.writer.emplace(std::move(*s.begin_binary()));
+        static_cast<void>(script.writer->write(wsrv::as_bytes(std::string(150, 'a'))));
+        static_cast<void>(script.writer->write(wsrv::as_bytes(std::string(150, 'b'))));
+    };
+    transport->set_write_capacity(0);
+    send_frame(Opcode::Text, "go");
+    host.advance(config.write_stall_timeout + 1s, 100ms);
+    EXPECT_TRUE(conn->finished());
+    EXPECT_EQ(script.closed, 1);
+    EXPECT_EQ(script.writable, 0);  // a dead connection never calls back
+}
+
+TEST_F(ConnectionTest, AWriterOutlivingItsConnectionReportsClosingAndIsHarmless) {  // EC-N13
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        script.writer.emplace(std::move(*s.begin_text()));
+        ASSERT_TRUE(script.writer->write_text("a").has_value());
+    };
+    send_frame(Opcode::Text, "go");
+    transport->feed_eof();
+    readable();
+    ASSERT_TRUE(conn->finished());
+    const auto after = script.writer->write_text("b");
+    ASSERT_FALSE(after.has_value());
+    EXPECT_EQ(after.error().code, ErrorCode::Closing);
+    EXPECT_EQ(script.writer->finish().error().code, ErrorCode::Closing);
+    script.writer.reset();  // no 1011 attempt, no crash
+    conn.reset();           // and the connection can go while a writer still exists
+}
+
+TEST_F(ConnectionTest, TheConnectionMayBeDestroyedBeforeItsWriter) {
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        script.writer.emplace(std::move(*s.begin_text()));
+    };
+    send_frame(Opcode::Text, "go");
+    conn.reset();  // the writer is still open, but its connection is gone
+    EXPECT_EQ(script.writer->write_text("x").error().code, ErrorCode::Closing);
+    script.writer.reset();
+}
+
+TEST_F(ConnectionTest, AMovedFromWriterDoesNotCloseTheConnection) {
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        script.writer.emplace(std::move(*s.begin_binary()));
+        {
+            MessageWriter moved_from = std::move(*script.writer);
+            script.writer.reset();
+            script.writer.emplace(std::move(moved_from));
+        }  // moved_from dies here, empty: nothing is closed
+        ASSERT_TRUE(script.writer->open());
+        ASSERT_TRUE(script.writer->finish().has_value());
+    };
+    send_frame(Opcode::Text, "go");
+    for (const auto& frame : output().frames) {
+        EXPECT_NE(frame.opcode, Opcode::Close);
+    }
+}
+
+TEST_F(ConnectionTest, OtherSendsAndWritersWaitForTheOpenStream) {  // EC-F33
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        script.writer.emplace(std::move(*s.begin_text()));
+        EXPECT_EQ(s.send_text("x").error().code, ErrorCode::MessageInProgress);
+        EXPECT_EQ(s.send_binary({}).error().code, ErrorCode::MessageInProgress);
+        EXPECT_EQ(s.begin_binary().error().code, ErrorCode::MessageInProgress);
+        ASSERT_TRUE(script.writer->finish().has_value());
+        EXPECT_TRUE(s.send_text("now").has_value());
+    };
+    send_frame(Opcode::Text, "go");
+    EXPECT_FALSE(conn->finished());
+    for (const auto& frame : output().frames) {
+        EXPECT_NE(frame.opcode, Opcode::Close);  // a refused send is not a slow consumer
+    }
+}
+
+TEST_F(ConnectionTest, ATextStreamMayNotEndInsideACharacter) {  // EC-F36, RFC 6455 section 8.1
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        script.writer.emplace(std::move(*s.begin_text()));
+        ASSERT_TRUE(script.writer->write(wsrv::as_bytes(std::string_view{"\xE2\x82"})).has_value());
+        EXPECT_EQ(script.writer->finish().error().code, ErrorCode::InvalidUtf8);
+        EXPECT_TRUE(script.writer->open());
+        EXPECT_EQ(script.writer->write(wsrv::as_bytes(std::string_view{"\xFF"})).error().code,
+                  ErrorCode::InvalidUtf8);
+        ASSERT_TRUE(script.writer->write(wsrv::as_bytes(std::string_view{"\xAC"})).has_value());
+        ASSERT_TRUE(script.writer->finish().has_value());
+    };
+    send_frame(Opcode::Text, "go");
+    std::string text;
+    for (const auto& frame : output().frames) {
+        text += frame.payload;
+    }
+    EXPECT_EQ(text, "\xE2\x82\xAC");
+}
+
+TEST_F(ConnectionTest, FinishingTwiceIsAnArgumentError) {
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        script.writer.emplace(std::move(*s.begin_binary()));
+        ASSERT_TRUE(script.writer->finish().has_value());
+        EXPECT_EQ(script.writer->finish().error().code, ErrorCode::InvalidArgument);
+        EXPECT_EQ(script.writer->write(wsrv::as_bytes(std::string_view{"x"})).error().code,
+                  ErrorCode::InvalidArgument);
+    };
+    send_frame(Opcode::Text, "go");
+}
+
+TEST_F(ConnectionTest, ThePeersCloseEndsAnOpenStreamWithoutBlamingTheHandler) {  // EC-C14, EC-F30
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        script.writer.emplace(std::move(*s.begin_binary()));
+        ASSERT_TRUE(script.writer->write(wsrv::as_bytes(std::string_view{"x"})).has_value());
+    };
+    send_frame(Opcode::Text, "go");
+    send_frame(Opcode::Close, wsrv::test::close_payload(1000));
+    EXPECT_EQ(script.writer->write(wsrv::as_bytes(std::string_view{"y"})).error().code,
+              ErrorCode::Closing);
+    script.writer.reset();
+    EXPECT_FALSE(host.logged("unfinished"));
+}
+
+TEST_F(ConnectionTest, NoWriterCanBeBegunOnceClosingStarted) {  // EC-C14
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        s.close(CloseCode::Normal, "");
+        EXPECT_EQ(s.begin_text().error().code, ErrorCode::Closing);
+        EXPECT_EQ(s.begin_binary().error().code, ErrorCode::Closing);
+    };
+    send_frame(Opcode::Text, "go");
 }
 
 // ---- handler contract ---------------------------------------------------------------------------

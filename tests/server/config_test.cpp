@@ -129,6 +129,12 @@ public:
         ++sends;
         return {};
     }
+    [[nodiscard]] wsrv::Result<wsrv::MessageWriter> begin_text() override {
+        return wsrv::fail(wsrv::ErrorCode::Closing, "stub");
+    }
+    [[nodiscard]] wsrv::Result<wsrv::MessageWriter> begin_binary() override {
+        return wsrv::fail(wsrv::ErrorCode::Closing, "stub");
+    }
     void close(wsrv::CloseCode /*code*/, std::string_view /*reason*/) override {
         ++closes;
     }

@@ -51,7 +51,7 @@ struct ConnectionContext {
 ///    IConnectionHost::retire(); the owner deletes it at a safe point.
 ///
 /// Thread-affinity: loop-thread-only.
-class Connection final : public IEventHandler, public Session {
+class Connection final : public IEventHandler, public Session, private IMessageSink {
 public:
     Connection(ConnectionId id,
                const Endpoint& peer,
@@ -91,6 +91,8 @@ public:
     }
     [[nodiscard]] Result<void> send_text(std::string_view text) override;
     [[nodiscard]] Result<void> send_binary(ByteView data) override;
+    [[nodiscard]] Result<MessageWriter> begin_text() override;
+    [[nodiscard]] Result<MessageWriter> begin_binary() override;
     void close(CloseCode code, std::string_view reason) override;
     [[nodiscard]] SessionHandle handle() const override {
         return SessionHandle{ctx_.link, id_};
@@ -121,6 +123,15 @@ private:
     void set_write_blocked(bool blocked);
     void note_write_progress();
     [[nodiscard]] Result<void> apply_send_policy(Result<void> result);
+
+    void apply_interest();
+    void notify_writable();
+
+    // streaming writer (IMessageSink): what a MessageWriter calls
+    [[nodiscard]] Result<MessageWriter> begin_message(Opcode type);
+    [[nodiscard]] Result<void> stream_write(ByteView bytes) override;
+    [[nodiscard]] Result<void> stream_finish() override;
+    void stream_abandon() noexcept override;
 
     // ending
     void transport_failed(const Error& error);
@@ -161,6 +172,9 @@ private:
     bool watching_ = false;
     PollEvents interest_ = PollEvents::Read;
     bool write_blocked_ = false;
+    bool writable_owed_ = false;  ///< a write was refused with Backpressure: on_writable is due
+    std::shared_ptr<StreamLink>
+        stream_link_;              ///< created by the first writer; cleared by release()
     bool transport_dead_ = false;  ///< a read/write failed: never touch the transport again
     bool released_ = false;        ///< release() ran: timers, watch and transport are gone
     TimerHandle handshake_timer_{};

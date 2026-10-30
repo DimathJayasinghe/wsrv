@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <new>
 #include <utility>
 
 namespace wsrv {
@@ -73,6 +74,7 @@ void Connection::on_event(PollEvents events) noexcept {
         }
         if (phase_ != Phase::Finished && has(events, PollEvents::Write)) {
             flush();
+            notify_writable();  // after the flush: the queue is as low as it will get this turn
         }
         settle();
     } catch (const std::exception&) {
@@ -256,6 +258,9 @@ void Connection::settle() {
     do {
         flush();
     } while (phase_ != Phase::Finished && drain_events());
+    if (phase_ != Phase::Finished) {
+        apply_interest();  // Write interest follows blocked output and a pending on_writable
+    }
 }
 
 /// Collect events that do not need input (Closed after the last byte was written, a timer's
@@ -324,19 +329,15 @@ void Connection::consume_output(std::size_t count) {
     }
 }
 
-/// Write interest costs wakeups, so it is armed only while output is waiting (EC-N02). The stall
-/// timer runs exactly as long as the kernel keeps refusing our bytes (EC-N09, T3).
+/// The stall timer runs exactly as long as the kernel keeps refusing our bytes (EC-N09, T3).
 void Connection::set_write_blocked(bool blocked) {
     if (blocked == write_blocked_) {
         return;
     }
     write_blocked_ = blocked;
-    interest_ = blocked ? (PollEvents::Read | PollEvents::Write) : PollEvents::Read;
-    if (watching_) {
-        if (const Result<void> changed = ctx_.host.rewatch(watch_, interest_); !changed) {
-            transport_failed(changed.error());
-            return;
-        }
+    apply_interest();
+    if (transport_dead_) {
+        return;  // re-arming the watch failed and the connection is already being dropped
     }
     if (blocked) {
         if (!arm(stall_timer_, ctx_.config.write_stall_timeout, &Connection::on_write_stall)) {
@@ -344,6 +345,48 @@ void Connection::set_write_blocked(bool blocked) {
         }
     } else {
         disarm(stall_timer_);
+    }
+}
+
+/// Write interest costs wakeups, so it is armed only while output is waiting (EC-N02) or an
+/// on_writable notification is due: the Write event is what gives that notification its own loop
+/// iteration (EC-N08, ADR-0015 section 4). Re-arming an edge-triggered registration makes the
+/// kernel report a writable socket again.
+void Connection::apply_interest() {
+    const bool want_write = write_blocked_ || writable_owed_;
+    const PollEvents wanted =
+        want_write ? (PollEvents::Read | PollEvents::Write) : PollEvents::Read;
+    if (wanted == interest_) {
+        return;
+    }
+    interest_ = wanted;
+    if (watching_) {
+        if (const Result<void> changed = ctx_.host.rewatch(watch_, interest_); !changed) {
+            transport_failed(changed.error());
+        }
+    }
+}
+
+/// Deliver the notification owed after a refusal, once the queue is at or below the low-water mark
+/// (half the limit). The exception barrier and the "not while closing" rule are the usual ones.
+void Connection::notify_writable() {
+    if (!writable_owed_ || phase_ != Phase::Established || !session_ || handler_ == nullptr) {
+        return;
+    }
+    if (session_->state() != SessionState::Open) {
+        writable_owed_ = false;  // nothing more will be sent: do not wake the handler for it
+        return;
+    }
+    const std::size_t low_water = ctx_.config.session.outbound.max_queued_bytes / 2;
+    if (session_->queued_output_bytes() > low_water) {
+        return;
+    }
+    writable_owed_ = false;
+    // Disarm first: if the handler is refused again, settle() re-arms, and only a fresh arming
+    // makes an edge-triggered registration report a writable socket once more.
+    apply_interest();
+    if (phase_ == Phase::Established) {
+        guarded([&] { handler_->on_writable(*this); });
     }
 }
 
@@ -358,10 +401,14 @@ void Connection::note_write_progress() {
 }
 
 Result<void> Connection::apply_send_policy(Result<void> result) {
-    if (!result && result.error().code == ErrorCode::Backpressure &&
-        ctx_.config.slow_consumer == SlowConsumerPolicy::Close) {
+    if (result || result.error().code != ErrorCode::Backpressure) {
+        return result;
+    }
+    if (ctx_.config.slow_consumer == SlowConsumerPolicy::Close) {
         log(LogLevel::Warn, "slow consumer, closing");
         close(CloseCode::PolicyViolation, "slow consumer");  // the Close has its own queue slot
+    } else {
+        writable_owed_ = true;  // the handler may retry once the queue has drained
     }
     return result;
 }
@@ -388,6 +435,65 @@ Result<void> Connection::send_binary(ByteView data) {
         return fail(ErrorCode::Closing, "connection closed");
     }
     return apply_send_policy(session_->send_binary(data));
+}
+
+// ---- streaming writer ---------------------------------------------------------------------------
+
+Result<MessageWriter> Connection::begin_text() {
+    return begin_message(Opcode::Text);
+}
+
+Result<MessageWriter> Connection::begin_binary() {
+    return begin_message(Opcode::Binary);
+}
+
+Result<MessageWriter> Connection::begin_message(Opcode type) {
+    if (phase_ != Phase::Established || !session_) {
+        return fail(ErrorCode::Closing, "connection closed");
+    }
+    if (stream_link_ == nullptr) {
+        try {
+            stream_link_ = std::make_shared<StreamLink>();
+        } catch (const std::bad_alloc&) {
+            return fail(ErrorCode::ResourceExhausted, "connection: out of memory");
+        }
+        stream_link_->sink = this;
+    }
+    if (const Result<void> opened = session_->begin_message(type); !opened) {
+        return std::unexpected{opened.error()};
+    }
+    return MessageWriter{stream_link_};
+}
+
+/// Backpressure here is a signal, not a fault: the writer is cooperative, so the slow-consumer
+/// policy does not fire (ADR-0015 section 5); the stall timer still bounds a peer that reads
+/// nothing.
+Result<void> Connection::stream_write(ByteView bytes) {
+    if (phase_ != Phase::Established || !session_) {
+        return fail(ErrorCode::Closing, "connection closed");
+    }
+    Result<void> written = session_->write_part(bytes);
+    if (!written && written.error().code == ErrorCode::Backpressure) {
+        writable_owed_ = true;
+    }
+    return written;
+}
+
+Result<void> Connection::stream_finish() {
+    if (phase_ != Phase::Established || !session_) {
+        return fail(ErrorCode::Closing, "connection closed");
+    }
+    return session_->end_message();
+}
+
+/// A writer was destroyed with its message open (EC-F34). If the message is already gone because
+/// the session is closing, there is nothing to blame on the handler.
+void Connection::stream_abandon() noexcept {
+    if (phase_ != Phase::Established || !session_ || !session_->message_open()) {
+        return;
+    }
+    log(LogLevel::Warn, "handler dropped an unfinished message, closing");
+    close(CloseCode::InternalError, "unfinished message");
 }
 
 /// Only records the request: the Close frame is queued and written when the current callback has
@@ -446,6 +552,9 @@ void Connection::release() noexcept {
         return;
     }
     released_ = true;
+    if (stream_link_ != nullptr) {
+        stream_link_->sink = nullptr;  // writers that outlive us now fail with Closing
+    }
     disarm(handshake_timer_);
     disarm(tick_timer_);
     disarm(stall_timer_);

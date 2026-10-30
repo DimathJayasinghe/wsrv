@@ -6,6 +6,7 @@
 #include "net/endpoint.hpp"
 #include "protocol/close_code.hpp"
 #include "protocol/message_assembler.hpp"
+#include "server/message_writer.hpp"
 
 #include <cstdint>
 #include <map>
@@ -58,6 +59,13 @@ public:
     [[nodiscard]] virtual Result<void> send_text(std::string_view text) = 0;
     [[nodiscard]] virtual Result<void> send_binary(ByteView data) = 0;
 
+    /// Start a message that is produced piece by piece (FR-F12, ADR-0015). The writer may be kept
+    /// between callbacks; see MessageWriter for the write / on_writable / finish protocol.
+    /// @return Error{MessageInProgress} while another message is open, Error{Closing},
+    /// Error{Backpressure} / Error{ResourceExhausted} when not even the message header fits.
+    [[nodiscard]] virtual Result<MessageWriter> begin_text() = 0;
+    [[nodiscard]] virtual Result<MessageWriter> begin_binary() = 0;
+
     /// Start the closing handshake with `code` (must be sendable, RFC 6455 section 7.4) and an
     /// optional reason (cut to 123 bytes).
     virtual void close(CloseCode code, std::string_view reason) = 0;
@@ -94,6 +102,10 @@ public:
     virtual void
     on_message_part(Session& /*session*/, MessageType /*type*/, ByteView /*part*/, bool /*final*/) {
     }
+    /// The outbound queue has drained to its low-water mark after a write or send was refused with
+    /// Backpressure (ADR-0015 section 4): continue a stream or retry. Called once per refusal, on
+    /// a later loop iteration than the refusal, never after the connection started closing.
+    virtual void on_writable(Session& /*session*/) {}
     /// A fault that does not by itself end the connection (the server logs it too).
     virtual void on_error(Session& /*session*/, const Error& /*error*/) {}
     virtual void on_close(Session& /*session*/, const CloseInfo& /*info*/) {}

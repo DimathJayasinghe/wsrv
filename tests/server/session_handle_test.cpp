@@ -44,6 +44,12 @@ public:
         binary_sizes.push_back(data.size());
         return {};
     }
+    [[nodiscard]] wsrv::Result<wsrv::MessageWriter> begin_text() override {
+        return wsrv::fail(wsrv::ErrorCode::Closing, "stub");
+    }
+    [[nodiscard]] wsrv::Result<wsrv::MessageWriter> begin_binary() override {
+        return wsrv::fail(wsrv::ErrorCode::Closing, "stub");
+    }
     void close(CloseCode code, std::string_view reason) override {
         closes.emplace_back(code, std::string{reason});
     }
