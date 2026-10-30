@@ -18,5 +18,6 @@ One decision per file, immutable once *Accepted* (supersede with a new ADR). Use
 | [0012](0012-randomness-behind-irandom.md) | Randomness behind `IRandom`; `crypto` stays OS-free | Accepted |
 | [0013](0013-server-connection-model.md) | Server connection model, handler contract, teardown | Proposed |
 | [0014](0014-multi-loop-server-and-session-handle.md) | Multi-loop server and the cross-thread SessionHandle | Proposed |
+| [0015](0015-streaming-message-writer.md) | Streaming message writer and on_writable | Proposed |
 
 Statuses: Proposed → Accepted → (Deprecated | Superseded by ADR-NNNN). The project owner moves Proposed → Accepted.
