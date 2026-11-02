@@ -35,6 +35,21 @@ is accepted; `allow_any_origin` stays off).
 
 ## Status
 
-The harness is written and the echo example builds and serves. The first full run is still to be
-done: the Autobahn image could not be pulled from the machine where this was written (the Docker
-Hub CDN host did not resolve). Record the first report here when it exists.
+First full run: 2026-11-02, `tests/autobahn/run.sh` (optimized build, 301 cases, Autobahn|Testsuite 25.10.1).
+Verdicts: **588 OK, 7 NON-STRICT, 6 INFORMATIONAL, 1 FAILED** (the report counts each case's behaviour and its
+closing behaviour). Cases 12.* and 13.* are the excluded permessage-deflate ones.
+
+**FAILED: 2.10** (10 Pings sent back to back; the suite expects 10 Pongs and gets only the last one).
+This is the documented design, not an accident: the outbound scheduler has one Pong slot and a newer Pong
+replaces an unsent one, which RFC 6455 section 5.5.3 allows ("MAY elect to send a Pong frame for only the
+most recent Ping frame") and EC-C02 records. Autobahn checks for a Pong per Ping anyway ("not required by the
+Spec .. but we check for this behaviour anyway"). The gate says a failing case is a bug to fix at its root,
+so this needs an owner decision: (a) keep one slot and record 2.10 as an accepted deviation here, or (b) queue
+a small bounded number of Pongs (say 16; beyond that, coalesce to the latest), which makes 2.10 pass at the cost
+of a slightly larger per-connection control queue. Not changed yet.
+
+**NON-STRICT (7): 3.2, 3.3, 4.1.3, 4.1.4, 4.2.3, 4.2.4, 5.15.** All have the same shape: a valid message is
+sent, then a violation (RSV bit set, reserved opcode, or a continuation with nothing to continue). The suite
+accepts both "the echo of the first message arrives, then the connection fails with 1002" and "the connection
+fails with 1002 at once". We fail the connection immediately and drop the unsent echo, which is the second,
+also accepted, outcome (RFC 6455 section 7.1.7: fail the connection). The close code is 1002 in all seven.
