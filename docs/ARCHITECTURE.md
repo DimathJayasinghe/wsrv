@@ -46,7 +46,8 @@
 | net | base |
 | server | base, http, protocol, net, extensions |
 | capi (`include/wsrv/wsrv.h`, `src/capi/`) | base, net, server (wraps it; catches all exceptions; exports C symbols only; ADR-0016) |
-| wsrvd (sidecar daemon) | capi/server, IPC codec |
+| ipc (`src/ipc/`) | base only (sans-I/O sidecar frame codec; ADR-0017) |
+| wsrvd (sidecar daemon, `apps/wsrvd/`) | capi, ipc, net |
 | bindings/* | capi only (never C++ internals) |
 | include/wsrv (public C++) | forward-declares; implemented by server |
 
