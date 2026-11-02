@@ -38,39 +38,46 @@ Recommendation: ship **A + B**, with B implemented first for broadest reach (PHP
 Sketch:
 
 ```c
+The v0 surface as built (ADR-0016 slice 3; the header `include/wsrv/wsrv.h` is the authority and this
+sketch is kept in step with it). Not yet built, and still planned for later ADRs, are the lines marked `(planned)`.
+
+```c
 typedef struct wsrv_server wsrv_server;
 typedef struct wsrv_config wsrv_config;
-typedef uint64_t wsrv_conn_id;            /* never reused within a process lifetime */
+typedef uint64_t wsrv_conn_id;            /* process-unique, never reused; 0 is never a connection */
 
-typedef enum { WSRV_EV_OPEN, WSRV_EV_TEXT, WSRV_EV_BINARY, WSRV_EV_CLOSE, WSRV_EV_ERROR } wsrv_event_type;
+typedef struct wsrv_error { wsrv_status status; char message[128]; } wsrv_error;  /* caller-owned */
 
-typedef struct {
-  wsrv_event_type type;
+typedef struct wsrv_event {
+  uint32_t        struct_size;            /* caller sets sizeof(wsrv_event) before wsrv_poll */
+  wsrv_event_type type;                   /* OPEN, TEXT, BINARY, CLOSE, ERROR */
   wsrv_conn_id    conn;
-  const uint8_t  *data;  size_t len;      /* valid until wsrv_event_release() */
-  uint16_t        close_code;
-  /* peer address, subprotocol, headers snapshot via accessor functions */
+  const uint8_t  *data;  size_t len;      /* valid until wsrv_event_release(); never NULL */
+  uint16_t        close_code;  int clean;
+  void           *reserved;
 } wsrv_event;
 
 wsrv_config *wsrv_config_new(void);
-wsrv_status  wsrv_config_set_str(wsrv_config*, const char *key, const char *val);  /* validated */
+wsrv_status  wsrv_config_set(wsrv_config*, const char *key, const char *val, wsrv_error*);  /* validated */
 wsrv_status  wsrv_server_create(const wsrv_config*, wsrv_server **out, wsrv_error *err);
-wsrv_status  wsrv_server_start(wsrv_server*);                 /* spawns I/O threads */
-int          wsrv_server_event_fd(wsrv_server*);              /* readable when events pending (eventfd) */
+wsrv_status  wsrv_server_start(wsrv_server*, wsrv_error*);    /* spawns the I/O thread, waits until listening */
+uint16_t     wsrv_server_port(const wsrv_server*);
+int          wsrv_server_event_fd(const wsrv_server*);        /* readable when events pending (eventfd) */
 wsrv_status  wsrv_poll(wsrv_server*, wsrv_event *out, uint32_t timeout_ms); /* host thread drains */
-void         wsrv_event_release(wsrv_server*, wsrv_event*);
+void         wsrv_event_release(wsrv_event*);
 wsrv_status  wsrv_send_text(wsrv_server*, wsrv_conn_id, const char*, size_t);   /* any-thread, non-blocking */
 wsrv_status  wsrv_send_binary(wsrv_server*, wsrv_conn_id, const uint8_t*, size_t);
+/* (planned) the rest of this block is the design sketch for later ADRs: */
 /* streaming send / receive of fragmented messages (see FRAGMENTATION.md):
    events WSRV_EV_TEXT_PART / WSRV_EV_BINARY_PART carry an is_final flag */
 wsrv_status  wsrv_begin_message(wsrv_server*, wsrv_conn_id, int is_text);     /* WSRV_ERR_MESSAGE_IN_PROGRESS if open */
 wsrv_status  wsrv_write_part(wsrv_server*, wsrv_conn_id, const uint8_t*, size_t); /* WSRV_ERR_BACKPRESSURE → wait */
 wsrv_status  wsrv_end_message(wsrv_server*, wsrv_conn_id);
-wsrv_status  wsrv_close(wsrv_server*, wsrv_conn_id, uint16_t code, const char *reason);
-wsrv_status  wsrv_publish(wsrv_server*, const char *topic, const uint8_t*, size_t, int is_text);
-wsrv_status  wsrv_subscribe(wsrv_server*, wsrv_conn_id, const char *topic);
-wsrv_status  wsrv_server_stop(wsrv_server*);   /* grace = config key shutdown_grace_ms (ADR-0016) */
-void         wsrv_server_destroy(wsrv_server*);
+wsrv_status  wsrv_close(wsrv_server*, wsrv_conn_id, uint16_t code, const char *reason, size_t reason_len);  /* built */
+wsrv_status  wsrv_publish(wsrv_server*, const char *topic, const uint8_t*, size_t, int is_text);  /* (planned, M10) */
+wsrv_status  wsrv_subscribe(wsrv_server*, wsrv_conn_id, const char *topic);                       /* (planned, M10) */
+wsrv_status  wsrv_server_stop(wsrv_server*);   /* built; grace = config key shutdown_grace_ms (ADR-0016) */
+void         wsrv_server_destroy(wsrv_server*);  /* built */
 ```
 
 Key design points:

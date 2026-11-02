@@ -19,6 +19,6 @@ We teach as we build. Each lesson answers three questions: **What** are we build
 | 12 | [Streaming a message](12-streaming-a-message.md) | M7 | written |
 | 13 | [Threads without locks](13-threads-without-locks.md) | M7 | written |
 | 14 | TLS as a decorator | M8 | planned |
-| 15 | The C ABI and talking to PHP | M11–M12 | planned |
+| 15 | [The C ABI: a thin door for every language](15-the-c-abi.md) | M11 | written (the PHP half arrives with M12) |
 
 Lesson template: *Goal → Background (the problem) → Design (why this way) → Walkthrough (code, small steps) → Tests (what proves it works) → Pitfalls → Exercises.*

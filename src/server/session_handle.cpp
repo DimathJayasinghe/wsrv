@@ -76,6 +76,16 @@ Result<void> SessionHandle::resume_reads() const {
 }
 
 Result<void> SessionHandle::close(CloseCode code, std::string_view reason) const {
+    // Checked here for the same reason as the text of send_text: on the loop an unsendable code or
+    // a reason that is not UTF-8 would only be turned into a 1011 close, and the caller would never
+    // learn what it did wrong (RFC 6455 sections 5.5.1 and 7.4).
+    if (!is_valid_on_wire(static_cast<std::uint16_t>(code))) {
+        return fail(ErrorCode::InvalidArgument, "session handle: close code cannot be sent");
+    }
+    Utf8Validator utf8;
+    if (!utf8.feed(as_bytes(reason)) || !utf8.at_boundary()) {
+        return fail(ErrorCode::InvalidUtf8, "session handle: close reason is not valid UTF-8");
+    }
     try {
         return submit_to(link_, id_, [code, copy = std::string{reason}](Session& session) {
             session.close(code, copy);

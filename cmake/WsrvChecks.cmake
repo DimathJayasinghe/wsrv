@@ -41,7 +41,7 @@ endforeach()
 if(_wsrv_header_tus)
     add_library(wsrv_header_check OBJECT EXCLUDE_FROM_ALL ${_wsrv_header_tus})
     target_link_libraries(wsrv_header_check PRIVATE
-        wsrv::base wsrv::crypto wsrv::http wsrv::protocol wsrv::extensions wsrv::net wsrv::server)
+        wsrv::base wsrv::crypto wsrv::http wsrv::protocol wsrv::extensions wsrv::net wsrv::server wsrv::capi)
     wsrv_apply_warnings(wsrv_header_check)
     add_custom_target(header-check DEPENDS wsrv_header_check)
 endif()

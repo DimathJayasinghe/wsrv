@@ -57,7 +57,12 @@ The owner's requirement (2026-10-30): PHP cannot be expected to manage sockets a
 ## Slices
 1. Adapter and `EventQueue` in C++ (module `capi/`, no C header yet), unit tests, TSan.
 2. `Session::pause_reads` / `resume_reads` in `Connection`, with the real-socket resume test (a server-layer change, so it gets its own PR).
-3. `wsrv.h`, the `extern "C"` shim, `libwsrv.so`, symbol list, C consumer test. Lesson 15 follows.
+3. `wsrv.h`, the `extern "C"` shim, `libwsrv.so`, symbol list, C consumer test. Lesson 15 follows. *(3a: `EmbeddedServer` and configuration. 3b: the header, shim, shared library, symbol list and consumer.)*
+
+Implementation notes for slice 3b (no decision above changed):
+- The export list is enforced by the linker with an **anonymous** version script generated from `wsrv.symbols` (`{ global: ...; local: *; };`). `-fvisibility=hidden` plus `--exclude-libs` alone still leaked libstdc++ template typeinfo, because those symbols carry default visibility from the standard headers. No symbol versioning (`name@@VERSION`) is introduced: that would be an ABI decision, so it needs its own ADR if wanted.
+- `wsrv_status_name` and the C-only code live in the shared library only; the status table (`to_c_status`) lives in `wsrv_capi` so the C++ tests can walk it.
+- `wsrv_server_destroy` returns `void`, so the C API cannot report `WRONG_PROCESS` there (section 2 says every function does).
 
 ## Consequences
 + Any language with FFI can serve WebSockets without the runtime ever running on an I/O thread.

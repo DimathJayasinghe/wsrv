@@ -28,13 +28,21 @@ EmbeddedServer::EmbeddedServer(Key /*unused*/, EmbeddedConfig config)
     : owner_pid_{::getpid()}, config_{std::move(config)} {}
 
 EmbeddedServer::~EmbeddedServer() {
-    if (thread_.joinable()) {
-        static_cast<void>(stop().has_value());  // graceful; the I/O thread ends when drained
-        thread_.join();
+    if (!thread_) {
+        return;
     }
+    if (!check_process().has_value()) {
+        // Forked child: the I/O thread exists only in the parent. Joining it is undefined, so
+        // abandon the handle (a deliberate, tiny leak in a process that should exec or _exit).
+        // NOLINTNEXTLINE(bugprone-unused-return-value): abandoning the handle is the point.
+        thread_.release();
+        return;
+    }
+    static_cast<void>(stop().has_value());  // graceful; the I/O thread ends when drained
+    thread_->join();
 }
 
-Result<void> EmbeddedServer::in_creating_process() const {
+Result<void> EmbeddedServer::check_process() const {
     if (::getpid() != owner_pid_) {
         return fail(ErrorCode::WrongProcess, "embedded server: used after fork(); create it after");
     }
@@ -44,7 +52,7 @@ Result<void> EmbeddedServer::in_creating_process() const {
 // ---- lifecycle ---------------------------------------------------------------------------------
 
 Result<void> EmbeddedServer::start() {
-    if (const Result<void> same = in_creating_process(); !same) {
+    if (const Result<void> same = check_process(); !same) {
         return same;
     }
     if (started_.exchange(true)) {
@@ -53,15 +61,19 @@ Result<void> EmbeddedServer::start() {
     std::promise<Started> ready;
     std::future<Started> outcome = ready.get_future();
     try {
-        thread_ = std::thread{[this, &ready] { io_thread_main(ready); }};
+        thread_ = std::make_unique<std::thread>([this, &ready] { io_thread_main(ready); });
     } catch (const std::system_error&) {
+        started_.store(false);
+        return fail(ErrorCode::ResourceExhausted, "embedded server: cannot start a thread");
+    } catch (const std::bad_alloc&) {
         started_.store(false);
         return fail(ErrorCode::ResourceExhausted, "embedded server: cannot start a thread");
     }
     Started result = outcome.get();  // the I/O thread answers once, before it runs the loops
     if (!result.port) {
         start_error_ = std::move(result.detail);
-        thread_.join();  // it has already ended
+        thread_->join();  // it has already ended
+        thread_.reset();
         return std::unexpected{result.port.error()};
     }
     port_.store(*result.port);
@@ -102,7 +114,7 @@ void EmbeddedServer::io_thread_main(std::promise<Started>& ready) {
 }
 
 Result<void> EmbeddedServer::stop() {
-    if (const Result<void> same = in_creating_process(); !same) {
+    if (const Result<void> same = check_process(); !same) {
         return same;
     }
     const std::lock_guard lock{server_mutex_};
@@ -119,7 +131,7 @@ Result<void> EmbeddedServer::stop() {
 // ---- events and commands -----------------------------------------------------------------------
 
 std::optional<HostEvent> EmbeddedServer::poll(std::chrono::milliseconds timeout) {
-    if (!in_creating_process() || !bridge_) {
+    if (!check_process() || !bridge_) {
         return std::nullopt;
     }
     const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -138,21 +150,21 @@ std::optional<HostEvent> EmbeddedServer::poll(std::chrono::milliseconds timeout)
 }
 
 Result<void> EmbeddedServer::send_text(ConnectionId id, std::string_view text) {
-    if (const Result<void> same = in_creating_process(); !same) {
+    if (const Result<void> same = check_process(); !same) {
         return same;
     }
     return bridge_->send_text(id, text);
 }
 
 Result<void> EmbeddedServer::send_binary(ConnectionId id, ByteView data) {
-    if (const Result<void> same = in_creating_process(); !same) {
+    if (const Result<void> same = check_process(); !same) {
         return same;
     }
     return bridge_->send_binary(id, data);
 }
 
 Result<void> EmbeddedServer::close(ConnectionId id, CloseCode code, std::string_view reason) {
-    if (const Result<void> same = in_creating_process(); !same) {
+    if (const Result<void> same = check_process(); !same) {
         return same;
     }
     return bridge_->close(id, code, reason);

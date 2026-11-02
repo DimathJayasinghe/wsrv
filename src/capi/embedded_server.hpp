@@ -81,9 +81,12 @@ public:
     /// start, after nothing is left, or from a forked child, it returns nothing.
     [[nodiscard]] std::optional<HostEvent> poll(std::chrono::milliseconds timeout);
     /// A descriptor that is readable while events wait, for the host's own event loop.
-    [[nodiscard]] int event_fd() noexcept {
+    [[nodiscard]] int event_fd() const noexcept {
         return bridge_->events().event_fd();
     }
+
+    /// Error{WrongProcess} when called from a forked child of the creating process.
+    [[nodiscard]] Result<void> check_process() const;
 
     /// Commands by connection id; see HostBridge. Error{Closing} also covers "not started".
     [[nodiscard]] Result<void> send_text(ConnectionId id, std::string_view text);
@@ -97,7 +100,6 @@ private:
     };
 
     void io_thread_main(std::promise<Started>& ready);
-    [[nodiscard]] Result<void> in_creating_process() const;
 
     const pid_t owner_pid_;
     const EmbeddedConfig config_;
@@ -108,7 +110,9 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<std::uint16_t> port_{0};
     std::string start_error_;
-    std::thread thread_;
+    // A pointer so that a forked child can abandon it: it names a thread that exists only in the
+    // parent, so the child must neither join nor destroy it (destroying a joinable thread aborts).
+    std::unique_ptr<std::thread> thread_;
 
     std::mutex server_mutex_;  // guards server_ between the I/O thread and stop(); one call long
     Server* server_ = nullptr;

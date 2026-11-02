@@ -13,6 +13,9 @@
 #include <thread>
 #include <vector>
 
+#include <sys/wait.h>
+#include <unistd.h>
+
 namespace {
 
 using namespace wsrv;
@@ -166,6 +169,33 @@ TEST(EmbeddedServer, ASecondServerCanBeStartedAfterTheFirstIsGone) {
     auto second = EmbeddedServer::create(config);
     ASSERT_TRUE(second.has_value());
     EXPECT_TRUE((*second)->start().has_value());  // the port was released
+}
+
+// ADR-0016 section 2 (fork safety): threads do not survive fork(), so a child that inherited a
+// running server must get WrongProcess from every call and must be able to destroy it without
+// joining a thread that does not exist there (a join would hang or crash the child).
+TEST(EmbeddedServer, AForkedChildGetsWrongProcessAndCanDestroyTheServerWithoutHanging) {
+    auto server = started();
+    const pid_t child = ::fork();
+    ASSERT_GE(child, 0);
+    if (child == 0) {
+        ::alarm(10);  // a hang in the child ends it by SIGALRM, so the parent sees a failure
+        int code = 0;
+        if (server->check_process().has_value() || server->start().has_value() ||
+            server->stop().has_value() || server->poll(0ms).has_value() ||
+            server->send_text(ConnectionId{1}, "x").has_value()) {
+            code = 1;
+        }
+        server.reset();  // destructor in the child
+        ::_exit(code);
+    }
+    int status = 0;
+    ASSERT_EQ(::waitpid(child, &status, 0), child);
+    EXPECT_TRUE(WIFEXITED(status)) << "child was killed (hang or crash), status " << status;
+    EXPECT_EQ(WEXITSTATUS(status), 0);
+    // The parent's server is untouched by the child.
+    TcpClient client{server->port()};
+    EXPECT_TRUE(client.upgrade());
 }
 
 }  // namespace
