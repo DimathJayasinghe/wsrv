@@ -20,7 +20,7 @@ TEST(CStatus, TheCasesAHostActsOnKeepTheirOwnCode) {
 }
 
 TEST(CStatus, EveryErrorCodeMapsToAnErrorAndNeverToOkOrTimeout) {
-    for (unsigned raw = 0; raw <= static_cast<unsigned>(ErrorCode::WrongProcess); ++raw) {
+    for (unsigned raw = 0; raw <= static_cast<unsigned>(ErrorCode::InvalidFrame); ++raw) {
         const wsrv_status status = to_c_status(static_cast<ErrorCode>(raw));
         EXPECT_GE(status, WSRV_ERR_INVALID_ARGUMENT) << "code " << raw;
         EXPECT_LE(status, WSRV_ERR_INTERNAL) << "code " << raw;

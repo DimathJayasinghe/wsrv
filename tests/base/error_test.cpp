@@ -31,7 +31,8 @@ constexpr std::array kAllCodes{ErrorCode::InvalidArgument,
                                ErrorCode::AddressInUse,
                                ErrorCode::Io,
                                ErrorCode::MessageInProgress,
-                               ErrorCode::WrongProcess};
+                               ErrorCode::WrongProcess,
+                               ErrorCode::InvalidFrame};
 
 TEST(Error, EveryCodeHasANonEmptyDistinctName) {
     std::set<std::string_view> names;
@@ -54,6 +55,7 @@ TEST(Error, CategoriesMatchTheErrorModel) {
     EXPECT_EQ(wsrv::category(ErrorCode::Closing), ErrorCategory::Internal);
     EXPECT_EQ(wsrv::category(ErrorCode::Backpressure), ErrorCategory::Limit);
     EXPECT_EQ(wsrv::category(ErrorCode::InvalidConfig), ErrorCategory::Config);
+    EXPECT_EQ(wsrv::category(ErrorCode::InvalidFrame), ErrorCategory::Protocol);
 }
 
 TEST(Error, FailBuildsAnErrorResultCarryingCodeAndContext) {

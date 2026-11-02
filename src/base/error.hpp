@@ -30,6 +30,7 @@ enum class ErrorCode : std::uint8_t {
     Io,                 ///< Any other operating-system failure (Io).
     MessageInProgress,  ///< A streamed message is open; no other data message may start (Internal).
     WrongProcess,       ///< Called from a forked child of the process that created it (Internal).
+    InvalidFrame,       ///< A peer's IPC frame is malformed (Protocol).
 };
 
 /// A failure. `context` MUST be a string literal (static storage): it is never built from peer
@@ -46,6 +47,7 @@ struct Error {
     switch (code) {
     case ErrorCode::InvalidBase64:
     case ErrorCode::InvalidUtf8:
+    case ErrorCode::InvalidFrame:
         return ErrorCategory::Protocol;
     case ErrorCode::Overflow:
     case ErrorCode::BufferFull:

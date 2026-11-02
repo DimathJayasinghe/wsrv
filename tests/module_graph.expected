@@ -6,3 +6,4 @@ extensions: base protocol
 net: base
 server: base extensions http net protocol
 capi: base net server
+ipc: base

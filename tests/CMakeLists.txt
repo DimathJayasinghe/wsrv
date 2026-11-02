@@ -33,6 +33,8 @@ wsrv_add_test(NAME capi_event_queue_test SOURCES capi/event_queue_test.cpp LINK 
 wsrv_add_test(NAME capi_host_bridge_test SOURCES capi/host_bridge_test.cpp LINK wsrv::capi)
 wsrv_add_test(NAME capi_embedded_config_test SOURCES capi/embedded_config_test.cpp LINK wsrv::capi)
 wsrv_add_test(NAME capi_embedded_server_test SOURCES capi/embedded_server_test.cpp LINK wsrv::capi)
+wsrv_add_test(NAME ipc_message_test SOURCES ipc/message_test.cpp LINK wsrv::ipc)
+wsrv_add_test(NAME ipc_frame_decoder_test SOURCES ipc/frame_decoder_test.cpp LINK wsrv::ipc)
 wsrv_add_test(NAME capi_c_status_test SOURCES capi/c_status_test.cpp LINK wsrv::capi)
 
 # The C ABI (ADR-0016 section 8): exports equal the checked-in list, and a C-only program can use
@@ -88,7 +90,7 @@ endif()
 # Architecture guard: the real link graph must equal the allowed graph (docs/ARCHITECTURE.md 2.1).
 include(WsrvModuleGraph)
 wsrv_write_module_graph("${CMAKE_BINARY_DIR}/module_graph.actual"
-    MODULES base crypto http protocol extensions net server capi)
+    MODULES base crypto http protocol extensions net server capi ipc)
 add_test(NAME module_graph
     COMMAND ${CMAKE_COMMAND} -E compare_files
             "${CMAKE_CURRENT_SOURCE_DIR}/module_graph.expected"
