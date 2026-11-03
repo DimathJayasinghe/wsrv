@@ -23,5 +23,6 @@ We teach as we build. Each lesson answers three questions: **What** are we build
 | 16 | [The sidecar: moving events without losing any](16-the-sidecar-pump-and-backpressure.md) | M11 | written |
 | 17 | [The PHP sidecar client: a binding that only translates](17-the-php-sidecar-client.md) | M12 | written |
 | 18 | [Asking the application who may connect](18-asking-the-application-who-may-connect.md) | M11 | written |
+| 19 | [The question crosses the C boundary](19-the-question-crosses-the-c-boundary.md) | M11 | written |
 
 Lesson template: *Goal → Background (the problem) → Design (why this way) → Walkthrough (code, small steps) → Tests (what proves it works) → Pitfalls → Exercises.*

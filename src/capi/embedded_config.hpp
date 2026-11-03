@@ -22,7 +22,9 @@ namespace wsrv {
 /// EventQueue::create() validate once, so the rules live in one place each.
 ///
 /// Keys: listen_host, listen_port, threads, allow_origin (repeatable), allow_missing_origin,
-/// max_message_size, max_connections, shutdown_grace_ms, event_queue_events, event_queue_bytes.
+/// max_message_size, max_connections, shutdown_grace_ms, event_queue_events, event_queue_bytes,
+/// and for the handshake hook (ADR-0018): handshake_hook (bool, off), handshake_forward_header
+/// (repeatable header name), handshake_decision_timeout_ms (> 0), max_pending_handshakes (> 0).
 /// max_message_size also sizes the outbound queue at twice that, so a message that can be received
 /// can be sent back (as in the echo example).
 /// Thread-affinity: not thread-safe; configure on one thread before starting.
@@ -44,6 +46,11 @@ public:
         return queue_;
     }
 
+    /// True when the host wants to be asked before each upgrade (handshake_hook).
+    [[nodiscard]] bool handshake_hook() const noexcept {
+        return handshake_hook_;
+    }
+
     /// Copy the listen address and the server settings into `builder`.
     void apply_to(ServerBuilder& builder) const;
 
@@ -58,11 +65,16 @@ private:
     [[nodiscard]] Result<void> set_shutdown_grace_ms(std::string_view value);
     [[nodiscard]] Result<void> set_event_queue_events(std::string_view value);
     [[nodiscard]] Result<void> set_event_queue_bytes(std::string_view value);
+    [[nodiscard]] Result<void> set_handshake_hook(std::string_view value);
+    [[nodiscard]] Result<void> add_handshake_forward_header(std::string_view value);
+    [[nodiscard]] Result<void> set_handshake_decision_timeout_ms(std::string_view value);
+    [[nodiscard]] Result<void> set_max_pending_handshakes(std::string_view value);
 
     std::string host_ = "127.0.0.1";  // loopback unless the operator opts into exposure
     std::uint16_t port_ = 0;
     ServerConfig server_;
     EventQueueConfig queue_;
+    bool handshake_hook_ = false;
 };
 
 }  // namespace wsrv

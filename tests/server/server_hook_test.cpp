@@ -55,6 +55,14 @@ public:
         handles_.push_back(std::move(handle));
         return {};
     }
+    void withdrawn(wsrv::ConnectionId id) noexcept override {
+        const std::lock_guard lock{mutex_};
+        withdrawals_.push_back(id);
+    }
+    std::size_t withdrawals() {
+        const std::lock_guard lock{mutex_};
+        return withdrawals_.size();
+    }
     void set_full(bool full) {
         const std::lock_guard lock{mutex_};
         full_ = full;
@@ -85,6 +93,7 @@ private:
     std::mutex mutex_;
     std::vector<wsrv::HandshakeRequest> requests_;
     std::vector<wsrv::PendingHandle> handles_;
+    std::vector<wsrv::ConnectionId> withdrawals_;
     bool full_ = false;
 };
 
@@ -130,6 +139,7 @@ TEST_F(HookServerTest, TheApplicationRefusesAndTheClientGetsThatStatus) {
     EXPECT_EQ(client.read_http_head().rfind("HTTP/1.1 401 ", 0), 0U);
     EXPECT_TRUE(client.wait_for_eof());
     EXPECT_EQ(factory.created.load(), 0);
+    EXPECT_EQ(decider.withdrawals(), 0U) << "it answered, so there is nothing to withdraw";
 }
 
 TEST_F(HookServerTest, NoAnswerInTimeIsA503AndALateAnswerIsHarmless) {  // EC-H29, EC-H30

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * wsrv C API, version 0.1 (ABI major 0: not yet frozen; frozen at 1.0, additive only after).
+ * wsrv C API, version 0.2 (ABI major 0: not yet frozen; frozen at 1.0, additive only after).
  *
  * An embedded WebSocket server (RFC 6455): the library runs its own I/O thread(s); the host
  * (your language runtime) never runs on them and they never call into it. The host PULLS events
@@ -35,7 +35,7 @@ extern "C" {
 #endif
 
 /* (major << 16) | minor. Compare the major with the one you compiled against. */
-#define WSRV_ABI_VERSION ((0u << 16) | 1u)
+#define WSRV_ABI_VERSION ((0u << 16) | 2u)
 WSRV_API uint32_t wsrv_abi_version(void);
 
 typedef enum wsrv_status {
@@ -90,6 +90,14 @@ WSRV_API void wsrv_config_free(wsrv_config *config); /* NULL is fine */
  *   shutdown_grace_ms    graceful shutdown deadline
  *   event_queue_events   most events waiting for the host
  *   event_queue_bytes    most payload bytes waiting for the host
+ *   handshake_hook       "true"/"false"/"1"/"0", default false. When true, every valid upgrade
+ *                        waits for the host: a WSRV_EV_HANDSHAKE event, answered with
+ *                        wsrv_handshake_accept() or wsrv_handshake_reject(). Unanswered upgrades
+ *                        are refused with 503 (fail closed). See "handshake decisions" below.
+ *   handshake_forward_header  a request header name (for example "Cookie") to include in the
+ *                        event; repeatable. Cookie and Authorization are NOT sent unless listed.
+ *   handshake_decision_timeout_ms  how long the host has to answer, default 3000 (> 0)
+ *   max_pending_handshakes  most upgrades waiting at once, default 256 (> 0); more get 503
  * Any thread, but not concurrently with another call on the same config. */
 WSRV_API wsrv_status wsrv_config_set(wsrv_config *config,
                                      const char *key,
@@ -132,10 +140,39 @@ typedef enum wsrv_event_type {
     WSRV_EV_TEXT = 2,   /* data = a complete message, valid UTF-8 */
     WSRV_EV_BINARY = 3, /* data = a complete message */
     WSRV_EV_CLOSE = 4,  /* data = the close reason; close_code and clean are set */
-    WSRV_EV_ERROR = 5   /* data = a short error name; informational, may be dropped */
+    WSRV_EV_ERROR = 5,  /* data = a short error name; informational, may be dropped */
+    WSRV_EV_HANDSHAKE = 6 /* (0.2) an upgrade waits for your answer; see `handshake` below */
 } wsrv_event_type;
 
-/* For one connection the order is always: OPEN, then messages, then exactly one CLOSE. */
+/* A byte string that is NOT NUL-terminated: use `len`. Never NULL `data`, even when len is 0. */
+typedef struct wsrv_str {
+    const char *data;
+    size_t len;
+} wsrv_str;
+
+typedef struct wsrv_header {
+    wsrv_str name; /* spelled as in handshake_forward_header */
+    wsrv_str value;
+} wsrv_header;
+
+/* What the client asked for (WSRV_EV_HANDSHAKE). All of it belongs to the event and is valid until
+ * wsrv_event_release(). Values come straight from the client: validate them, never trust them. */
+typedef struct wsrv_handshake {
+    wsrv_str peer;     /* "host:port" */
+    wsrv_str path;     /* "/room/7" */
+    wsrv_str query;    /* "token=abc" (no '?'), empty if none */
+    wsrv_str origin;   /* the Origin header, empty if none (it already passed allow_origin) */
+    wsrv_str host;     /* the Host header */
+    wsrv_str subprotocol;            /* what the server would choose; may be empty */
+    const wsrv_str *offered;         /* every subprotocol the client offered */
+    size_t offered_count;
+    const wsrv_header *headers;      /* the handshake_forward_header ones, every value, in order */
+    size_t header_count;
+} wsrv_handshake;
+
+/* For one connection the order is always: OPEN, then messages, then exactly one CLOSE. A
+ * HANDSHAKE comes before the OPEN of an accepted upgrade (same conn id); a refused upgrade
+ * produces no OPEN and no CLOSE. */
 typedef struct wsrv_event {
     uint32_t struct_size; /* set to sizeof(wsrv_event) BEFORE calling wsrv_poll */
     wsrv_event_type type;
@@ -145,6 +182,7 @@ typedef struct wsrv_event {
     uint16_t close_code; /* CLOSE: the peer's code, or 1006 when the connection just vanished */
     int clean;           /* CLOSE: the closing handshake completed */
     void *reserved;      /* private */
+    const wsrv_handshake *handshake; /* (0.2) HANDSHAKE: the request, else NULL */
 } wsrv_event;
 
 /* Wait up to timeout_ms for the next event (0 = only look). WSRV_OK fills *event, which you must
@@ -152,6 +190,23 @@ typedef struct wsrv_event {
  * One thread at a time may call this per server. */
 WSRV_API wsrv_status wsrv_poll(wsrv_server *server, wsrv_event *event, uint32_t timeout_ms);
 WSRV_API void wsrv_event_release(wsrv_event *event); /* safe on a released or zeroed event */
+
+/* ---- handshake decisions (0.2): any thread, by the conn id of a WSRV_EV_HANDSHAKE ---------- */
+
+/* Let the upgrade in. `subprotocol` (NULL or len 0 = none) must be one the client offered; the
+ * server then answers 101 with it. WSRV_ERR_INVALID_ARGUMENT: not offered (nothing changes, the
+ * wait goes on, you may answer again). WSRV_ERR_NO_SUCH_CONN: already answered, or the server
+ * gave up (timeout, the client left, shutdown): answer once, within the timeout. OK means handed
+ * to the connection's loop, as for the commands below. */
+WSRV_API wsrv_status wsrv_handshake_accept(wsrv_server *server,
+                                           wsrv_conn_id conn,
+                                           const char *subprotocol,
+                                           size_t subprotocol_len);
+
+/* Refuse the upgrade with an HTTP status: 400, 401, 403, 404, 429, 500 or 503 (anything else is
+ * WSRV_ERR_INVALID_ARGUMENT and the wait goes on). The reason text is fixed by the server: nothing
+ * you pass reaches the client. 429 and 503 carry "Retry-After: 5". */
+WSRV_API wsrv_status wsrv_handshake_reject(wsrv_server *server, wsrv_conn_id conn, int status);
 
 /* ---- commands: any thread, by connection id ---------------------------------------------- */
 

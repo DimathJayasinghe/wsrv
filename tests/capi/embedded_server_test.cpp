@@ -198,4 +198,55 @@ TEST(EmbeddedServer, AForkedChildGetsWrongProcessAndCanDestroyTheServerWithoutHa
     EXPECT_TRUE(client.upgrade());
 }
 
+// ADR-0018: with the hook on, the host decides who gets in, through poll() and two commands.
+TEST(EmbeddedServer, WithTheHookOnTheHostDecidesWhoGetsIn) {
+    EmbeddedConfig config = base_config();
+    ASSERT_TRUE(config.set("handshake_hook", "true").has_value());
+    ASSERT_TRUE(config.set("handshake_forward_header", "Cookie").has_value());
+    const auto server = started(config);
+
+    TcpClient allowed{server->port()};
+    std::string request = TcpClient::upgrade_request();
+    request.insert(request.size() - 2, "Cookie: session=good\r\n");
+    ASSERT_TRUE(allowed.send(request));
+    const auto question = server->poll(3000ms);
+    ASSERT_TRUE(question.has_value());
+    ASSERT_EQ(question->type, HostEventType::Handshake);
+    ASSERT_TRUE(server->accept_handshake(question->conn, std::nullopt).has_value());
+    EXPECT_EQ(allowed.read_http_head().rfind("HTTP/1.1 101 ", 0), 0U);
+    const auto open = server->poll(3000ms);
+    ASSERT_TRUE(open.has_value());
+    EXPECT_EQ(open->type, HostEventType::Open);
+
+    TcpClient refused{server->port()};
+    ASSERT_TRUE(refused.send(TcpClient::upgrade_request()));
+    const auto second = server->poll(3000ms);
+    ASSERT_TRUE(second.has_value());
+    ASSERT_EQ(second->type, HostEventType::Handshake);
+    ASSERT_TRUE(server->reject_handshake(second->conn, 403).has_value());
+    EXPECT_EQ(refused.read_http_head().rfind("HTTP/1.1 403 ", 0), 0U);
+}
+
+TEST(EmbeddedServer, WithoutTheHookTheHostIsNeverAsked) {
+    const auto server = started();
+    TcpClient client{server->port()};
+    ASSERT_TRUE(client.upgrade());
+    const auto first = server->poll(3000ms);
+    ASSERT_TRUE(first.has_value());
+    EXPECT_EQ(first->type, HostEventType::Open);
+    EXPECT_EQ(server->accept_handshake(first->conn, std::nullopt).error().code, ErrorCode::Closing);
+}
+
+TEST(EmbeddedServer, AQuestionNobodyAnswersIsA503AfterTheConfiguredWait) {
+    EmbeddedConfig config = base_config();
+    ASSERT_TRUE(config.set("handshake_hook", "1").has_value());
+    ASSERT_TRUE(config.set("handshake_decision_timeout_ms", "200").has_value());
+    const auto server = started(config);
+    TcpClient client{server->port()};
+    ASSERT_TRUE(client.send(TcpClient::upgrade_request()));
+    const auto question = server->poll(3000ms);
+    ASSERT_TRUE(question.has_value());
+    EXPECT_EQ(client.read_http_head().rfind("HTTP/1.1 503 ", 0), 0U);
+}
+
 }  // namespace

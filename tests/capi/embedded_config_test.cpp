@@ -4,6 +4,8 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <string>
+#include <vector>
 
 namespace {
 
@@ -85,6 +87,30 @@ TEST(EmbeddedConfig, TheEventQueueLimitsAreCheckedWhenTheQueueIsBuiltNotHere) {
     EmbeddedConfig config;
     EXPECT_TRUE(config.set("event_queue_events", "1").has_value());
     EXPECT_EQ(config.queue().max_events, 1U);
+}
+
+TEST(EmbeddedConfig, TheHandshakeHookIsOffByDefaultAndItsKeysAreChecked) {  // ADR-0018
+    EmbeddedConfig config;
+    EXPECT_FALSE(config.handshake_hook());
+    ASSERT_TRUE(config.set("handshake_hook", "true").has_value());
+    EXPECT_TRUE(config.handshake_hook());
+    ASSERT_TRUE(config.set("handshake_forward_header", "Cookie").has_value());
+    ASSERT_TRUE(config.set("handshake_forward_header", "Authorization").has_value());
+    ASSERT_TRUE(config.set("handshake_decision_timeout_ms", "1500").has_value());
+    ASSERT_TRUE(config.set("max_pending_handshakes", "32").has_value());
+    EXPECT_EQ(config.server().handshake_forward_headers,
+              (std::vector<std::string>{"Cookie", "Authorization"}));
+    EXPECT_EQ(config.server().handshake_decision_timeout, 1500ms);
+    EXPECT_EQ(config.server().max_pending_handshakes, 32U);
+
+    EXPECT_FALSE(config.set("handshake_hook", "maybe").has_value());
+    EXPECT_FALSE(config.set("handshake_forward_header", "").has_value());
+    EXPECT_FALSE(config.set("handshake_forward_header", "Bad Header").has_value());
+    EXPECT_FALSE(config.set("handshake_decision_timeout_ms", "0").has_value())
+        << "a zero wait would refuse everyone";
+    EXPECT_FALSE(config.set("handshake_decision_timeout_ms", "x").has_value());
+    EXPECT_FALSE(config.set("max_pending_handshakes", "0").has_value());
+    EXPECT_EQ(config.server().handshake_decision_timeout, 1500ms) << "a refusal changes nothing";
 }
 
 }  // namespace

@@ -224,7 +224,8 @@ void Connection::await_decision(HandshakeOutcome& outcome, ByteView leftover) {
     auto offered = std::make_shared<const std::vector<std::string>>(request->offered_subprotocols);
     pending_.emplace(PendingUpgrade{std::move(outcome),
                                     std::vector<std::byte>(leftover.begin(), leftover.end()),
-                                    std::move(slot)});
+                                    std::move(slot),
+                                    false});
     phase_ = Phase::AwaitingDecision;
     apply_interest();  // Read off, Hangup on: a client that leaves is noticed at once
     if (phase_ == Phase::Finished) {
@@ -242,6 +243,8 @@ void Connection::await_decision(HandshakeOutcome& outcome, ByteView leftover) {
         !asked) {
         log(LogLevel::Warn, "nobody can decide the handshake, refusing");  // fail closed
         refuse(503);
+    } else if (pending_) {
+        pending_->asked = true;  // (an answer already delivered inside request() cleared pending_)
     }
 }
 
@@ -256,6 +259,7 @@ void Connection::decide(const HandshakeVerdict& verdict) {
     if (phase_ != Phase::AwaitingDecision || !pending_) {
         return;  // EC-H30: late, repeated or for a connection that has moved on
     }
+    pending_->asked = false;  // answered: the decider has nothing to forget
     if (verdict.accept) {
         accept_pending(verdict);
     } else {
@@ -280,9 +284,17 @@ void Connection::accept_pending(const HandshakeVerdict& verdict) {
     establish(outcome, MutableByteView{leftover});
 }
 
+void Connection::end_wait() noexcept {
+    if (pending_ && pending_->asked && ctx_.decider != nullptr) {
+        pending_->asked = false;
+        ctx_.decider->withdrawn(id_);
+    }
+    pending_.reset();
+}
+
 void Connection::refuse(int status) {
     disarm(handshake_timer_);
-    pending_.reset();
+    end_wait();
     phase_ =
         Phase::Handshaking;  // the driver is finished: later bytes are ignored, as for any refusal
     HandshakeReject reject{status, {}, false};
@@ -702,7 +714,7 @@ void Connection::release() noexcept {
     disarm(handshake_timer_);
     disarm(tick_timer_);
     disarm(stall_timer_);
-    pending_.reset();  // frees the place among the waiting upgrades, whatever ended the wait
+    end_wait();  // frees the place among the waiting upgrades, whatever ended the wait
     if (watching_) {
         ctx_.host.unwatch(watch_);
         watching_ = false;
