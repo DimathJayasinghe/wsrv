@@ -75,6 +75,13 @@ class CheckIncludes(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("a.inl:4: protocol must not include net", r.stdout)
 
+    def test_the_daemon_in_apps_obeys_the_graph(self):
+        # apps/wsrvd may use capi, ipc, net and base, but not reach into server directly.
+        r = run(FIXTURES / "bad_daemon")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("a.hpp:4: wsrvd must not include server", r.stdout)
+        self.assertNotIn("a.hpp:5", r.stdout)
+
     def test_missing_root_is_a_usage_error(self):
         r = run(FIXTURES / "does_not_exist")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)

@@ -36,6 +36,12 @@ wsrv_add_test(NAME capi_embedded_config_test SOURCES capi/embedded_config_test.c
 wsrv_add_test(NAME capi_embedded_server_test SOURCES capi/embedded_server_test.cpp LINK wsrv::capi)
 wsrv_add_test(NAME ipc_message_test SOURCES ipc/message_test.cpp LINK wsrv::ipc)
 wsrv_add_test(NAME ipc_frame_decoder_test SOURCES ipc/frame_decoder_test.cpp LINK wsrv::ipc)
+wsrv_add_test(NAME wsrvd_token_test SOURCES wsrvd/token_test.cpp LINK wsrv::wsrvd)
+wsrv_add_test(NAME wsrvd_handshake_test SOURCES wsrvd/handshake_test.cpp LINK wsrv::wsrvd)
+wsrv_add_test(NAME wsrvd_config_test SOURCES wsrvd/config_test.cpp LINK wsrv::wsrvd)
+wsrv_add_test(NAME wsrvd_token_file_test SOURCES wsrvd/token_file_test.cpp LINK wsrv::wsrvd)
+wsrv_add_test(NAME wsrvd_ipc_server_test SOURCES wsrvd/ipc_server_test.cpp LINK wsrv::wsrvd)
+wsrv_add_test(NAME wsrvd_startup_test SOURCES wsrvd/startup_test.cpp LINK wsrv::wsrvd)
 wsrv_add_test(NAME capi_c_status_test SOURCES capi/c_status_test.cpp LINK wsrv::capi)
 
 # The C ABI (ADR-0016 section 8): exports equal the checked-in list, and a C-only program can use
@@ -91,7 +97,7 @@ endif()
 # Architecture guard: the real link graph must equal the allowed graph (docs/ARCHITECTURE.md 2.1).
 include(WsrvModuleGraph)
 wsrv_write_module_graph("${CMAKE_BINARY_DIR}/module_graph.actual"
-    MODULES base crypto http protocol extensions net server capi ipc)
+    MODULES base crypto http protocol extensions net server capi ipc wsrvd)
 add_test(NAME module_graph
     COMMAND ${CMAKE_COMMAND} -E compare_files
             "${CMAKE_CURRENT_SOURCE_DIR}/module_graph.expected"

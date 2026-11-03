@@ -27,6 +27,7 @@ enum class Call : std::size_t {
     StatPath,
     ChmodPath,
     UnlinkPath,
+    PeerUid,
     EffectiveUid,
     EpollCreate1,
     EpollCtl,
@@ -148,6 +149,16 @@ public:
             return *injected;
         }
         return real_.unlink_path(path);
+    }
+    /// A scripted `succeed(Call::PeerUid, uid)` reports that uid as the peer's.
+    SysResult peer_uid(int fd, std::uint32_t& uid) override {
+        if (const auto injected = scripted(Call::PeerUid)) {
+            if (injected->err == 0) {
+                uid = static_cast<std::uint32_t>(injected->value);
+            }
+            return *injected;
+        }
+        return real_.peer_uid(fd, uid);
     }
     /// A scripted `succeed(Call::EffectiveUid, uid)` makes the next call report that uid.
     std::uint32_t effective_uid() noexcept override {
