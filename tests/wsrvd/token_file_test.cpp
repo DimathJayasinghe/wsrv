@@ -35,7 +35,8 @@ struct TokenFileTest : public ::testing::Test {
         std::error_code ignored;
         fs::remove_all(dir, ignored);
     }
-    std::string write(const std::string& name, const std::string& content, mode_t mode = 0600) const {
+    std::string
+    write(const std::string& name, const std::string& content, mode_t mode = 0600) const {
         const std::string path = dir + "/" + name;
         {
             std::ofstream file{path, std::ios::binary};
