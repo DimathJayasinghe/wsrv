@@ -7,12 +7,15 @@
 //                                --allow-origin=http://localhost:8000
 //      (the directory must be private: mode 0700, owned by you)
 //   2. Run this script:    php examples/echo.php /tmp/wsrv/ipc.sock
-//   3. Connect any WebSocket client to ws://127.0.0.1:8080/ and send something.
+//   3. Connect a WebSocket client to ws://127.0.0.1:8080/ and send something. Browsers must come from
+//      an allowed Origin; a command-line client sends none, so add --allow-missing-origin=true to the
+//      daemon for local experiments.
 
 declare(strict_types=1);
 
 use Wsrv\Client;
 use Wsrv\Connection;
+use Wsrv\ConnectionClosed;
 use Wsrv\Worker;
 
 require __DIR__ . '/../tests/bootstrap.php';  // or vendor/autoload.php when installed with Composer
@@ -30,4 +33,11 @@ pcntl_async_signals(true);
 pcntl_signal(SIGTERM, static fn () => $worker->stop());
 pcntl_signal(SIGINT, static fn () => $worker->stop());
 
-$worker->run();
+try {
+    $worker->run();
+} catch (ConnectionClosed $e) {
+    // The daemon stopped, restarted, or dropped us (for example after ipc_stall_ms of not reading).
+    // A supervisor (systemd, supervisord) restarts this script; that is the normal recovery.
+    fwrite(STDERR, 'wsrvd went away: ' . $e->getMessage() . "\n");
+    exit(1);
+}

@@ -24,7 +24,11 @@ Protocol: [`docs/IPC_PROTOCOL.md`](../../docs/IPC_PROTOCOL.md). Lesson: [`docs/l
    $worker->run();
    ```
 
-3. Connect any WebSocket client to `ws://127.0.0.1:8080/` and send something.
+3. Connect a WebSocket client to `ws://127.0.0.1:8080/` and send something. The daemon enforces the
+   `Origin` policy (RFC 6455 section 10.2): a browser page served from `http://localhost:8000` is
+   accepted; a command-line client such as `websocat` or `wscat` sends **no** `Origin` header and gets
+   `403 Forbidden` unless the daemon was started with `--allow-missing-origin=true` (fine for local
+   experiments; think before using it on a browser-facing deployment).
 
 ## API
 

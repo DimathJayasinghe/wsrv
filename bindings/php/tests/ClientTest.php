@@ -176,7 +176,7 @@ test('client: ping is answered by a Pong message', function () {
 
 test('client: a burst of commands does not deadlock against a daemon that waits for us to read', function () {
     if (!function_exists('pcntl_fork')) {
-        return;  // cannot fork here; the scenario needs a second process
+        skip('needs ext-pcntl to run the fake daemon as a second process');
     }
     // The daemon writes a lot of events and only THEN starts reading our command. A client that
     // wrote without reading would block forever (both socket buffers full): this is the situation

@@ -25,6 +25,16 @@ function test(string $name, callable $body): void
     $GLOBALS['wsrv_tests'][$name] = $body;
 }
 
+/** Thrown by skip(); the runner counts it separately and CTest treats a skip as a failure. */
+final class SkippedTest extends RuntimeException
+{
+}
+
+function skip(string $why): never
+{
+    throw new SkippedTest($why);
+}
+
 function fail(string $message): never
 {
     throw new AssertionError($message);
