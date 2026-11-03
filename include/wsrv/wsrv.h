@@ -53,8 +53,11 @@ typedef enum wsrv_status {
     WSRV_ERR_INTERNAL = 11          /* a bug; please report it */
 } wsrv_status;
 
-/* A short constant name such as "WSRV_ERR_NO_SUCH_CONN". Never NULL. Any thread. */
-WSRV_API const char *wsrv_status_name(wsrv_status status);
+/* A short constant name such as "WSRV_ERR_NO_SUCH_CONN", or "WSRV_ERR_UNKNOWN" for a number this
+ * library does not know (a newer library may return codes an older header lacks). Never NULL. The
+ * parameter is an int, not a wsrv_status: an enum may only hold its declared values, so passing an
+ * undeclared number as an enum would be undefined behaviour. Any thread. */
+WSRV_API const char *wsrv_status_name(int status);
 
 /* Filled on failure by the functions that take one (pass NULL to ignore). The message is for
  * people and logs, NUL-terminated, truncated to fit, never to be parsed. */

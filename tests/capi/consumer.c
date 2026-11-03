@@ -127,10 +127,10 @@ int main(void) {
     {   /* every status has a name; a value this version does not know does not crash */
         int code;
         for (code = (int)WSRV_OK; code <= (int)WSRV_ERR_INTERNAL; ++code) {
-            CHECK(strncmp(wsrv_status_name((wsrv_status)code), "WSRV_", 5) == 0);
-            CHECK(strcmp(wsrv_status_name((wsrv_status)code), "WSRV_ERR_UNKNOWN") != 0);
+            CHECK(strncmp(wsrv_status_name(code), "WSRV_", 5) == 0);
+            CHECK(strcmp(wsrv_status_name(code), "WSRV_ERR_UNKNOWN") != 0);
         }
-        CHECK(strcmp(wsrv_status_name((wsrv_status)9999), "WSRV_ERR_UNKNOWN") == 0);
+        CHECK(strcmp(wsrv_status_name(9999), "WSRV_ERR_UNKNOWN") == 0);
     }
 
     config = wsrv_config_new();

@@ -115,7 +115,7 @@ uint32_t wsrv_abi_version(void) {
     return WSRV_ABI_VERSION;
 }
 
-const char* wsrv_status_name(wsrv_status status) {
+const char* wsrv_status_name(int status) {
     switch (status) {
     case WSRV_OK:
         return "WSRV_OK";
