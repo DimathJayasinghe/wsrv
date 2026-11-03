@@ -29,6 +29,8 @@ ALLOWED = {
     "server": {"base", "http", "protocol", "net", "extensions"},
     "capi": {"base", "net", "server"},
     "ipc": {"base"},
+    # The sidecar daemon (ADR-0017) lives in apps/wsrvd/, not src/, but obeys the same graph.
+    "wsrvd": {"base", "net", "ipc", "capi"},
 }
 SANS_IO = {"base", "crypto", "http", "protocol", "ipc"}
 OS_HEADER = re.compile(
@@ -58,6 +60,23 @@ def project_module(header: str, including_file: pathlib.Path, src: pathlib.Path)
     return None, False
 
 
+def file_violations(path: pathlib.Path, module: str, where_file: pathlib.Path, src: pathlib.Path):
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        match = INCLUDE.match(line)
+        if not match:
+            continue
+        _kind, header = match.groups()
+        where = f"{where_file}:{number}"
+        other, is_project = project_module(header, path, src)
+        if is_project:
+            if other not in ALLOWED:
+                yield f"{where}: {module} includes unknown module '{other}'"
+            elif other != module and other not in ALLOWED[module]:
+                yield f"{where}: {module} must not include {other}"
+        elif module in SANS_IO and OS_HEADER.match(header):
+            yield f"{where}: {module} must not include <{header}> (sans-I/O layer, ADR-0002)"
+
+
 def violations(root: pathlib.Path):
     src = root / "src"
     for path in sorted(src.rglob("*")):
@@ -68,20 +87,12 @@ def violations(root: pathlib.Path):
         if module not in ALLOWED:
             yield f"{where_file}:1: unknown module '{module}' (not in ARCHITECTURE section 2.1)"
             continue
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            match = INCLUDE.match(line)
-            if not match:
-                continue
-            _kind, header = match.groups()
-            where = f"{where_file}:{number}"
-            other, is_project = project_module(header, path, src)
-            if is_project:
-                if other not in ALLOWED:
-                    yield f"{where}: {module} includes unknown module '{other}'"
-                elif other != module and other not in ALLOWED[module]:
-                    yield f"{where}: {module} must not include {other}"
-            elif module in SANS_IO and OS_HEADER.match(header):
-                yield f"{where}: {module} must not include <{header}> (sans-I/O layer, ADR-0002)"
+        yield from file_violations(path, module, where_file, src)
+    daemon = root / "apps" / "wsrvd"
+    if daemon.is_dir():
+        for path in sorted(daemon.rglob("*")):
+            if path.is_file() and path.suffix in SUFFIXES:
+                yield from file_violations(path, "wsrvd", path.relative_to(root), src)
 
 
 def main() -> int:

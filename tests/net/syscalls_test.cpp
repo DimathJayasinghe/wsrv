@@ -235,6 +235,26 @@ TEST(LinuxSyscalls, ConnectReportsRefusalForASocketFileNobodyListensOn) {
     fs::remove_all(pattern, ignored);
 }
 
+TEST(LinuxSyscalls, PeerUidIsTheUidOfTheOtherEndOfAUnixSocket) {
+    wsrv::LinuxSyscalls sys;
+    std::array<int, 2> pair{};
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, pair.data()), 0);
+    std::uint32_t uid = 99999;
+    EXPECT_EQ(sys.peer_uid(pair[0], uid).err, 0);
+    EXPECT_EQ(uid, sys.effective_uid());  // both ends are this process
+    ::close(pair[0]);
+    ::close(pair[1]);
+    EXPECT_EQ(sys.peer_uid(pair[0], uid).err, EBADF);
+}
+
+TEST(FakeSyscalls, ScriptsThePeerUid) {
+    FakeSyscalls sys;
+    sys.succeed(Call::PeerUid, 4242);
+    std::uint32_t uid = 0;
+    EXPECT_EQ(sys.peer_uid(-1, uid).err, 0);
+    EXPECT_EQ(uid, 4242U);
+}
+
 TEST(FakeSyscalls, ScriptsTheFilesystemCallsAndTheEffectiveUid) {
     FakeSyscalls sys;
     sys.succeed(Call::EffectiveUid, 4242);

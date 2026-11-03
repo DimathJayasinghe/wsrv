@@ -89,6 +89,17 @@ SysResult LinuxSyscalls::unlink_path(const char* path) {
     return captured(::unlink(path));
 }
 
+SysResult LinuxSyscalls::peer_uid(int fd, std::uint32_t& uid) {
+    ucred credentials{};
+    socklen_t length = sizeof(credentials);
+    const SysResult result =
+        captured(::getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credentials, &length));
+    if (result.err == 0) {
+        uid = static_cast<std::uint32_t>(credentials.uid);
+    }
+    return result;
+}
+
 std::uint32_t LinuxSyscalls::effective_uid() noexcept {
     return static_cast<std::uint32_t>(::geteuid());
 }

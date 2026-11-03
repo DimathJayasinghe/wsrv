@@ -7,3 +7,4 @@ net: base
 server: base extensions http net protocol
 capi: base net server
 ipc: base
+wsrvd: base capi ipc net

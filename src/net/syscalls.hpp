@@ -75,6 +75,10 @@ public:
     virtual SysResult stat_path(const char* path, bool follow_links, FileInfo& info) = 0;
     virtual SysResult chmod_path(const char* path, std::uint32_t mode) = 0;
     virtual SysResult unlink_path(const char* path) = 0;
+    /// The uid of the process on the other end of a connected Unix-domain socket, as the kernel
+    /// recorded it when the connection was made (SO_PEERCRED on Linux; macOS would use
+    /// LOCAL_PEERCRED). It cannot be forged by the peer. On success `uid` is filled in.
+    virtual SysResult peer_uid(int fd, std::uint32_t& uid) = 0;
     /// geteuid(2): cannot fail.
     virtual std::uint32_t effective_uid() noexcept = 0;
     virtual SysResult epoll_create1(int flags) = 0;
@@ -111,6 +115,7 @@ public:
     SysResult stat_path(const char* path, bool follow_links, FileInfo& info) override;
     SysResult chmod_path(const char* path, std::uint32_t mode) override;
     SysResult unlink_path(const char* path) override;
+    SysResult peer_uid(int fd, std::uint32_t& uid) override;
     std::uint32_t effective_uid() noexcept override;
     SysResult epoll_create1(int flags) override;
     SysResult epoll_ctl(int epoll_fd, int op, int fd, epoll_event* event) override;
