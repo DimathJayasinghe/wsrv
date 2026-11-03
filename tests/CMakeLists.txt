@@ -40,6 +40,7 @@ wsrv_add_test(NAME wsrvd_token_test SOURCES wsrvd/token_test.cpp LINK wsrv::wsrv
 wsrv_add_test(NAME wsrvd_handshake_test SOURCES wsrvd/handshake_test.cpp LINK wsrv::wsrvd)
 wsrv_add_test(NAME wsrvd_config_test SOURCES wsrvd/config_test.cpp LINK wsrv::wsrvd)
 wsrv_add_test(NAME wsrvd_token_file_test SOURCES wsrvd/token_file_test.cpp LINK wsrv::wsrvd)
+wsrv_add_test(NAME wsrvd_ipc_server_test SOURCES wsrvd/ipc_server_test.cpp LINK wsrv::wsrvd)
 wsrv_add_test(NAME capi_c_status_test SOURCES capi/c_status_test.cpp LINK wsrv::capi)
 
 # The C ABI (ADR-0016 section 8): exports equal the checked-in list, and a C-only program can use
