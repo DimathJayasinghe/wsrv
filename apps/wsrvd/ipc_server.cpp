@@ -175,19 +175,28 @@ private:
                 }
                 return;
             }
-            const Result<std::size_t> got = transport_.read(scratch_);
-            if (!got) {
-                if (got.error().code != ErrorCode::WouldBlock) {
-                    close();
-                }
+            if (!read_and_feed()) {
                 return;
             }
-            if (*got == 0) {
-                close();  // the application went away
-                return;
-            }
-            feed(ByteView{scratch_.data(), *got});
         }
+    }
+
+    /// One read from the socket, handed to the decoder.
+    /// @return true if more may be waiting; false if the socket is drained or the link is closed.
+    [[nodiscard]] bool read_and_feed() noexcept {
+        const Result<std::size_t> got = transport_.read(scratch_);
+        if (!got) {
+            if (got.error().code != ErrorCode::WouldBlock) {
+                close();
+            }
+            return false;
+        }
+        if (*got == 0) {
+            close();  // the application went away
+            return false;
+        }
+        feed(ByteView{scratch_.data(), *got});
+        return true;
     }
 
     void feed(ByteView input) noexcept {
