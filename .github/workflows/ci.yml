@@ -48,6 +48,7 @@ jobs:
           cmake --version | head -1
           ninja --version
           clang-format-18 --version
+          php --version | head -1   # the PHP binding tests (bindings/php) must run in CI, not be skipped
       - name: Quality gates
         run: |
           cmake --preset dev

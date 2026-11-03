@@ -1,0 +1,20 @@
+{
+    "name": "wsrv/client",
+    "description": "PHP client for the wsrvd WebSocket sidecar (IPC protocol v0). Pure PHP, works on every PHP stack including PHP-FPM workers.",
+    "type": "library",
+    "license": "Apache-2.0",
+    "require": {
+        "php": ">=8.1"
+    },
+    "suggest": {
+        "ext-pcntl": "Needed only for signal handling in worker scripts (see examples/echo.php)"
+    },
+    "autoload": {
+        "psr-4": {
+            "Wsrv\\": "src/"
+        }
+    },
+    "scripts": {
+        "test": "php tests/run.php"
+    }
+}
