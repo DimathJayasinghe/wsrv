@@ -9,13 +9,13 @@
 #include <gtest/gtest.h>
 
 #include <array>
-#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -88,11 +88,19 @@ public:
                 started.set_value(server.error().code);
                 return;
             }
-            loop_.store(loop->get());
+            {
+                const std::lock_guard<std::mutex> lock{mutex_};
+                loop_ = loop->get();
+            }
             started.set_value(std::nullopt);
             const wsrv::Result<void> ran = (*loop)->run();
             static_cast<void>(ran);
-            loop_.store(nullptr);
+            {
+                // stop() calls the loop while holding this lock, so once we hold it no other
+                // thread is inside the loop and none can start: only then may it be destroyed.
+                const std::lock_guard<std::mutex> lock{mutex_};
+                loop_ = nullptr;
+            }
             server->reset();  // before the loop, as the daemon does
         });
         failure_ = started_future.get();
@@ -103,8 +111,11 @@ public:
         stop();
     }
     void stop() {
-        if (EventLoop* loop = loop_.load()) {
-            loop->stop();
+        {
+            const std::lock_guard<std::mutex> lock{mutex_};
+            if (loop_ != nullptr) {
+                loop_->stop();
+            }
         }
         if (thread_.joinable()) {
             thread_.join();
@@ -116,7 +127,8 @@ public:
 
 private:
     std::thread thread_;
-    std::atomic<EventLoop*> loop_{nullptr};
+    std::mutex mutex_;
+    EventLoop* loop_ = nullptr;  // guarded by mutex_
     std::optional<ErrorCode> failure_;
 };
 
