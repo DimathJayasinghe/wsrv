@@ -15,6 +15,8 @@
 #include <utility>
 #include <vector>
 
+#include "capi/embedded_server.hpp"
+#include "wsrvd/embedded_backend.hpp"
 #include "wsrvd/ipc_server.hpp"
 #include "wsrvd/startup.hpp"
 
@@ -23,6 +25,51 @@ namespace {
 int fail_with(std::string_view what, const wsrv::Error& error) {
     std::cerr << "wsrvd: " << what << ": " << error.context << '\n';
     return 1;
+}
+
+wsrv::wsrvd::IpcServerConfig ipc_config(const wsrv::wsrvd::Startup& startup) {
+    wsrv::wsrvd::IpcServerConfig ipc;
+    ipc.socket_path = startup.config.socket_path();
+    ipc.token = startup.token;
+    ipc.max_frame = startup.config.max_frame();
+    ipc.hello_timeout = startup.config.hello_timeout();
+    ipc.stall_timeout = startup.config.stall_timeout();
+    ipc.restart_grace = startup.config.embedded().server().shutdown_grace;
+    return ipc;
+}
+
+/// Create the WebSocket server and the IPC server on `loop`, start the WebSocket threads, run the
+/// loop until it is stopped, and shut everything down in the right order.
+int run_daemon(wsrv::EventLoop& loop, wsrv::ISyscalls& sys, const wsrv::wsrvd::Startup& startup) {
+    // The WebSocket side. Created (not started) first: the IPC server needs its event descriptor.
+    auto embedded = wsrv::EmbeddedServer::create(startup.config.embedded());
+    if (!embedded) {
+        return fail_with("cannot create the WebSocket server", embedded.error());
+    }
+    wsrv::wsrvd::EmbeddedBackend backend{**embedded};
+
+    auto server = wsrv::wsrvd::IpcServer::create(loop, sys, backend, ipc_config(startup));
+    if (!server) {
+        return fail_with("cannot open the IPC socket", server.error());
+    }
+    std::cerr << "wsrvd: ipc socket " << startup.config.socket_path() << " ready\n";
+
+    // Only now spawn the WebSocket threads: the signal mask is already set (see serve()), the IPC
+    // socket is listening, and an application can connect before the first browser does.
+    if (const wsrv::Result<void> started = (*embedded)->start(); !started) {
+        std::cerr << "wsrvd: cannot start the WebSocket server: " << (*embedded)->start_error()
+                  << '\n';
+        server->reset();
+        return 1;
+    }
+    std::cerr << "wsrvd: websocket server listening on port " << (*embedded)->port() << '\n';
+
+    const wsrv::Result<void> ran = loop.run();
+    // Shutdown order matters: the IPC server uses the backend's descriptor and the loop, so it
+    // goes first (and removes the socket file); then the WebSocket server drains and joins.
+    server->reset();
+    embedded->reset();
+    return ran ? 0 : fail_with("event loop failed", ran.error());
 }
 
 /// Open everything and serve until SIGINT/SIGTERM. Returns the process exit code.
@@ -41,21 +88,7 @@ int serve(const wsrv::wsrvd::Startup& startup, wsrv::ISyscalls& sys) {
     if (!watcher) {
         return fail_with("cannot watch signals", watcher.error());
     }
-
-    wsrv::wsrvd::IpcServerConfig ipc;
-    ipc.socket_path = startup.config.socket_path();
-    ipc.token = startup.token;
-    ipc.max_frame = startup.config.max_frame();
-    ipc.hello_timeout = startup.config.hello_timeout();
-    auto server = wsrv::wsrvd::IpcServer::create(**loop, sys, std::move(ipc));
-    if (!server) {
-        return fail_with("cannot open the IPC socket", server.error());
-    }
-    std::cerr << "wsrvd: ipc socket " << startup.config.socket_path() << " ready\n";
-
-    const wsrv::Result<void> ran = (*loop)->run();
-    server->reset();  // removes the socket file; before the loop, which it uses
-    return ran ? 0 : fail_with("event loop failed", ran.error());
+    return run_daemon(**loop, sys, startup);
 }
 
 int run(const std::vector<std::string_view>& args) {

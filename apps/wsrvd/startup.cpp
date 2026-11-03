@@ -74,6 +74,8 @@ std::string_view usage() noexcept {
            "  --ipc-token-file=FILE      shared token; FILE must be mode 0600 and yours\n"
            "  --ipc-max-frame=BYTES      largest IPC frame (default: max_message_size + 64 KiB)\n"
            "  --ipc-hello-timeout-ms=MS  time allowed for HELLO (default 5000)\n"
+           "  --ipc-stall-ms=MS          drop an application that reads nothing for MS (default "
+           "10000)\n"
            "  --config=FILE              read 'key = value' lines (later arguments override)\n"
            "  --listen-host=ADDR  --listen-port=PORT  --threads=N  --allow-origin=ORIGIN\n"
            "  --max-message-size=BYTES  --max-connections=N  --shutdown-grace-ms=MS\n"
