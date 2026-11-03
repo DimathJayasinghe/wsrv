@@ -73,7 +73,14 @@ final class Client
         $decoder = new FrameDecoder(1024);
         $client = new self($stream, 1024, $decoder);
         try {
-            $client->writeAll(Codec::hello($token), $timeout);
+            try {
+                $client->writeAll(Codec::hello($token), $timeout);
+            } catch (ConnectionClosed $closed) {
+                // A daemon that refuses us says so and hangs up at once, possibly before our HELLO
+                // is written. What it said is already in the queue: report that, not "closed".
+                $said = $client->queue[0] ?? null;
+                throw $said instanceof StatusReply ? new HandshakeRefused($said->status) : $closed;
+            }
             $message = $client->next(microtime(true) + $timeout);
             if ($message instanceof HelloOk && $message->major === Codec::VERSION_MAJOR) {
                 $client->maxFrame = $message->maxFrame;
@@ -215,6 +222,19 @@ final class Client
         }
     }
 
+    /** Move whatever the daemon already sent into the queue; an EOF here is not an error yet. */
+    private function takeWhatWasSaid(): void
+    {
+        try {
+            $this->readAvailable();
+        } catch (ConnectionClosed) {
+            // the stream is gone; the bytes read before it ended are in the decoder
+        }
+        while (($message = $this->decoder->next()) !== null) {
+            $this->queue[] = $message;
+        }
+    }
+
     /**
      * Write all of $bytes. If the daemon is not reading (its output to us is full, so it stopped
      * reading commands), reading from it is what unblocks it: we read and queue its messages while
@@ -228,6 +248,7 @@ final class Client
         while ($bytes !== '') {
             $written = @fwrite($stream, $bytes);
             if ($written === false) {
+                $this->takeWhatWasSaid();  // the daemon may have told us why before it hung up
                 $this->close();
                 throw new ConnectionClosed('wsrvd closed the connection');
             }

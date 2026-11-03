@@ -82,6 +82,23 @@ test('client: another application already connected is BACKPRESSURE', function (
     assertSame(StatusCode::BACKPRESSURE, $e->status);
 });
 
+test('client: a refusal sent by a daemon that hangs up at once is still reported as a refusal', function () {
+    // wsrvd answers a second application with one STATUS and closes without reading our HELLO. If
+    // the close wins the race, our HELLO write fails (broken pipe), but the STATUS is already in
+    // our receive buffer and says why: it must not be thrown away as "connection closed".
+    [$app, $daemon] = socket_pair();
+    fwrite($daemon, status_frame(0, StatusCode::BACKPRESSURE));
+    fclose($daemon);
+    $e = assertThrows(HandshakeRefused::class, fn () => Client::handshake($app, '', 1.0));
+    assertSame(StatusCode::BACKPRESSURE, $e->status);
+});
+
+test('client: a daemon that hangs up without a word is ConnectionClosed', function () {
+    [$app, $daemon] = socket_pair();
+    fclose($daemon);
+    assertThrows(ConnectionClosed::class, fn () => Client::handshake($app, '', 1.0));
+});
+
 test('client: no answer within the timeout is ConnectionClosed', function () {
     [$app, $daemon] = socket_pair();
     $started = microtime(true);
