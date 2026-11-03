@@ -23,6 +23,7 @@ namespace {
     case HostEventType::Close:
         return ipc::EventKind::Close;
     case HostEventType::Error:
+    case HostEventType::Handshake:  // wsrvd does not enable the hook yet (ADR-0018 slice 3)
         return ipc::EventKind::Error;
     }
     return ipc::EventKind::Error;  // unreachable for a valid enum; the encoder judges the rest

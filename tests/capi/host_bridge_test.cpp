@@ -17,6 +17,8 @@
 
 #include <poll.h>
 
+#include "capi/handshake_blob.hpp"
+
 namespace {
 
 using namespace wsrv;
@@ -303,6 +305,138 @@ TEST_F(HostBridgeTest, ManyHostThreadsSendingToOneConnectionLoseNothing) {
         ASSERT_TRUE(frame.has_value()) << "frame " << i;
         EXPECT_EQ(frame->payload, "ping");
     }
+}
+
+// ---- the asynchronous handshake decision (ADR-0018) -------------------------------------------
+
+/// A bridge that is also the server's decider, as the embedded server wires it.
+class HostBridgeHookTest : public HostBridgeTest {
+protected:
+    void start_hook(EventQueueConfig queue = {},
+                    std::chrono::milliseconds decision_timeout = 5000ms,
+                    std::size_t max_pending = 256) {
+        auto made = HostBridge::make(sys_, queue);
+        ASSERT_TRUE(made.has_value());
+        bridge_ = std::move(*made);
+        ServerBuilder builder;
+        builder.listen("127.0.0.1", 0).handler_factory(*bridge_).handshake_decider(*bridge_);
+        builder.config().handshake.allowed_origins = {"https://app.example.com"};
+        builder.config().handshake.subprotocols = {"chat", "v2"};
+        builder.config().handshake_forward_headers = {"Cookie"};
+        builder.config().handshake_decision_timeout = decision_timeout;
+        builder.config().max_pending_handshakes = max_pending;
+        server_ = std::make_unique<RunningServer>(std::move(builder));
+    }
+
+    static std::string upgrade_with_cookie() {
+        std::string request = TcpClient::upgrade_request();
+        request.insert(request.size() - 2,
+                       "Cookie: session=abc\r\nSec-WebSocket-Protocol: chat, v2\r\n");
+        return request;
+    }
+};
+
+TEST_F(HostBridgeHookTest, TheHostIsToldWhoAsksAndItsAcceptLetsTheClientIn) {
+    start_hook();
+    TcpClient client{server_->port()};
+    ASSERT_TRUE(client.send(upgrade_with_cookie()));
+    const auto event = next();
+    ASSERT_TRUE(event.has_value());
+    ASSERT_EQ(event->type, HostEventType::Handshake);
+    const auto view = decode_handshake(ByteView{event->data});
+    ASSERT_TRUE(view.has_value());
+    EXPECT_EQ(view->path, "/chat");
+    EXPECT_EQ(view->origin, "https://app.example.com");
+    ASSERT_EQ(view->headers.size(), 1U);
+    EXPECT_EQ(view->headers[0].second, "session=abc");
+    EXPECT_EQ(view->offered.size(), 2U);
+    EXPECT_EQ(view->peer.rfind("127.0.0.1:", 0), 0U);
+
+    ASSERT_TRUE(bridge_->accept_handshake(event->conn, "v2").has_value());
+    EXPECT_NE(client.read_http_head().find("Sec-WebSocket-Protocol: v2"), std::string::npos);
+    const auto open = next();
+    ASSERT_TRUE(open.has_value());
+    EXPECT_EQ(open->type, HostEventType::Open);
+    EXPECT_EQ(open->conn, event->conn) << "the same id from the question to the connection";
+}
+
+TEST_F(HostBridgeHookTest, RejectAnswersWithThatStatusAndTheConnectionNeverOpens) {
+    start_hook();
+    TcpClient client{server_->port()};
+    ASSERT_TRUE(client.send(upgrade_with_cookie()));
+    const auto event = next();
+    ASSERT_TRUE(event.has_value());
+    ASSERT_TRUE(bridge_->reject_handshake(event->conn, 401).has_value());
+    EXPECT_EQ(client.read_http_head().rfind("HTTP/1.1 401 ", 0), 0U);
+    EXPECT_FALSE(next(200ms).has_value()) << "no Open and no Close: it never was a connection";
+}
+
+TEST_F(HostBridgeHookTest, AnAnswerIsAcceptedOnceAndTheSecondOneIsNoSuchConnection) {
+    start_hook();
+    TcpClient client{server_->port()};
+    ASSERT_TRUE(client.send(upgrade_with_cookie()));
+    const auto event = next();
+    ASSERT_TRUE(event.has_value());
+    ASSERT_TRUE(bridge_->accept_handshake(event->conn, std::nullopt).has_value());
+    const auto again = bridge_->reject_handshake(event->conn, 403);
+    ASSERT_FALSE(again.has_value());
+    EXPECT_EQ(again.error().code, ErrorCode::Closing);
+    EXPECT_EQ(bridge_->accept_handshake(999999, std::nullopt).error().code, ErrorCode::Closing);
+}
+
+TEST_F(HostBridgeHookTest, AMistakeIsReportedAndTheWaitGoesOn) {
+    start_hook();
+    TcpClient client{server_->port()};
+    ASSERT_TRUE(client.send(upgrade_with_cookie()));
+    const auto event = next();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_EQ(bridge_->accept_handshake(event->conn, "nope").error().code,
+              ErrorCode::InvalidArgument);
+    EXPECT_EQ(bridge_->reject_handshake(event->conn, 302).error().code, ErrorCode::InvalidArgument);
+    EXPECT_TRUE(bridge_->accept_handshake(event->conn, "chat").has_value()) << "still waiting";
+    EXPECT_EQ(client.read_http_head().rfind("HTTP/1.1 101 ", 0), 0U);
+}
+
+TEST_F(HostBridgeHookTest, AfterTheServerGaveUpTheAnswerIsNoSuchConnectionNotSilentSuccess) {
+    start_hook({}, 200ms);
+    TcpClient client{server_->port()};
+    ASSERT_TRUE(client.send(upgrade_with_cookie()));
+    const auto event = next();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_EQ(client.read_http_head().rfind("HTTP/1.1 503 ", 0), 0U);  // timed out
+    for (int i = 0; i < 100 && bridge_->waiting_handshakes() != 0; ++i) {
+        std::this_thread::sleep_for(10ms);
+    }
+    EXPECT_EQ(bridge_->waiting_handshakes(), 0U) << "withdrawn() cleans the entry";
+    // The withdrawal runs on the loop thread just after the 503 was written.
+    Result<void> late = bridge_->accept_handshake(event->conn, std::nullopt);
+    for (int i = 0; i < 100 && late.has_value(); ++i) {
+        std::this_thread::sleep_for(10ms);
+        late = bridge_->accept_handshake(event->conn, std::nullopt);
+    }
+    ASSERT_FALSE(late.has_value());
+    EXPECT_EQ(late.error().code, ErrorCode::Closing);
+}
+
+TEST_F(HostBridgeHookTest, AFullEventQueueMeansA503NotAnAcceptance) {
+    EventQueueConfig tiny;
+    tiny.max_events = 2;  // the smallest queue there is
+    start_hook(tiny);
+    TcpClient first{server_->port()};
+    TcpClient second{server_->port()};
+    ASSERT_TRUE(first.send(upgrade_with_cookie()));
+    ASSERT_TRUE(second.send(upgrade_with_cookie()));
+    for (int i = 0; i < 200 && bridge_->events().pending() < 2; ++i) {
+        std::this_thread::sleep_for(10ms);
+    }
+    ASSERT_EQ(bridge_->events().pending(), 2U);  // the host has not polled yet: the queue is full
+    TcpClient third{server_->port()};
+    ASSERT_TRUE(third.send(upgrade_with_cookie()));
+    EXPECT_EQ(third.read_http_head().rfind("HTTP/1.1 503 ", 0), 0U);
+    EXPECT_EQ(bridge_->waiting_handshakes(), 2U) << "the refused one left nothing behind";
+    const auto event = next();  // the first two are still waiting and still answerable
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(bridge_->accept_handshake(event->conn, std::nullopt).has_value());
 }
 
 }  // namespace

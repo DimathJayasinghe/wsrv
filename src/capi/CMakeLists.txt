@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # wsrv_capi: the C++ behaviour (EmbeddedServer & co) plus the status table, testable without any C.
-wsrv_add_module(NAME capi SOURCES event_queue.cpp host_bridge.cpp embedded_config.cpp embedded_server.cpp c_status.cpp DEPS wsrv::base wsrv::net wsrv::server)
+wsrv_add_module(NAME capi SOURCES event_queue.cpp handshake_blob.cpp host_bridge.cpp embedded_config.cpp embedded_server.cpp c_status.cpp DEPS wsrv::base wsrv::net wsrv::server)
 # The one public header lives outside src/ (include/wsrv/wsrv.h, ADR-0016 section 1).
 target_include_directories(wsrv_capi PUBLIC "${PROJECT_SOURCE_DIR}/include")
 

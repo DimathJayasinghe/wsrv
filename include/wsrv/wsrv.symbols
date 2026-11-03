@@ -4,6 +4,8 @@ wsrv_config_free
 wsrv_config_new
 wsrv_config_set
 wsrv_event_release
+wsrv_handshake_accept
+wsrv_handshake_reject
 wsrv_poll
 wsrv_send_binary
 wsrv_send_text

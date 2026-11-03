@@ -4,6 +4,7 @@
 #include "base/bytes.hpp"
 #include "base/error.hpp"
 #include "server/handler.hpp"
+#include "server/handshake_decider.hpp"
 #include "server/session_handle.hpp"
 
 #include <memory>
@@ -36,7 +37,7 @@ namespace wsrv {
 ///     when poll() has drained the queue to low water.
 /// Thread-affinity: the factory part on loop threads; send_*, close, events() any thread, with a
 /// single consumer thread for poll().
-class HostBridge final : public IHandlerFactory {
+class HostBridge final : public IHandlerFactory, public IHandshakeDecider {
 public:
     /// @return Error from EventQueue::create.
     [[nodiscard]] static Result<std::unique_ptr<HostBridge>> make(ISyscalls& sys,
@@ -51,6 +52,24 @@ public:
         : events_{std::move(events)} {}
 
     [[nodiscard]] std::unique_ptr<IWebSocketHandler> create(const ConnectionInfo& info) override;
+
+    /// IHandshakeDecider: queue a Handshake event for the host and remember how to answer it. A
+    /// full queue is an Error (the server then refuses the upgrade with 503, never accepts).
+    [[nodiscard]] Result<void> request(HandshakeRequest request, PendingHandle handle) override;
+    void withdrawn(ConnectionId id) noexcept override;
+
+    /// Answer the waiting upgrade `id` from a Handshake event. The answer is consumed: a second
+    /// one, or one for an upgrade the server gave up on (timeout, client left), is Closing.
+    /// @return Error{Closing} (unknown, answered or ended), Error{InvalidArgument} (a subprotocol
+    /// the client did not offer, a status outside kDecisionStatuses; the upgrade keeps waiting),
+    /// Error{BufferFull} (the loop's queue is full; try again).
+    [[nodiscard]] Result<void> accept_handshake(ConnectionId id,
+                                                std::optional<std::string_view> subprotocol);
+    [[nodiscard]] Result<void> reject_handshake(ConnectionId id, int status);
+
+    /// How many upgrades wait for an answer from the host right now (a gauge for tests and, later,
+    /// metrics). Never counts one the server already gave up on.
+    [[nodiscard]] std::size_t waiting_handshakes();
 
     /// The next event for the host, or nothing when none is waiting. Never blocks: wait on
     /// events().event_fd() and call again. Draining the queue is what lets connections that were
@@ -81,11 +100,14 @@ private:
     bool unpark(ConnectionId id);
     void resume_parked();
     [[nodiscard]] std::optional<SessionHandle> find(ConnectionId id);
+    [[nodiscard]] std::optional<PendingHandle> find_asked(ConnectionId id);
+    void forget_asked(ConnectionId id);
 
     const std::unique_ptr<EventQueue> events_;
     std::mutex mutex_;  // guards handles_; held for one map operation, never across a call out
     std::unordered_map<ConnectionId, SessionHandle> handles_;
     std::unordered_set<ConnectionId> parked_;  // paused for a full queue; guarded by mutex_
+    std::unordered_map<ConnectionId, PendingHandle> asked_;  // upgrades awaiting the host; mutex_
 };
 
 }  // namespace wsrv

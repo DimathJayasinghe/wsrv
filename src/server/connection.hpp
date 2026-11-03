@@ -129,6 +129,8 @@ private:
     void establish(HandshakeOutcome& outcome, MutableByteView leftover);
     void await_decision(HandshakeOutcome& outcome, ByteView leftover);
     void on_waiting_event(PollEvents events);
+    /// Drop the waiting upgrade; tell the decider if it still thinks it owes an answer.
+    void end_wait() noexcept;
     void accept_pending(const HandshakeVerdict& verdict);
     /// Answer the upgrade with `status` and close once it is written (no body, Connection: close).
     void refuse(int status);
@@ -199,6 +201,7 @@ private:
         HandshakeOutcome outcome;
         std::vector<std::byte> leftover;
         std::optional<PendingSlot> slot;
+        bool asked = false;  ///< the decider took the request and has not answered or been told off
     };
     std::optional<PendingUpgrade> pending_;
 

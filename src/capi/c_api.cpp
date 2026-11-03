@@ -16,10 +16,12 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "capi/c_status.hpp"
 #include "capi/embedded_config.hpp"
 #include "capi/embedded_server.hpp"
+#include "capi/handshake_blob.hpp"
 
 struct wsrv_config {
     wsrv::EmbeddedConfig value;
@@ -30,6 +32,47 @@ struct wsrv_server {
 };
 
 namespace {
+
+/// Everything one polled event owns: the queued event and, for a handshake, the decoded view that
+/// the C structs point into (the strings point into `event.data`, which never moves again).
+/// `wsrv_event.reserved` is a pointer to one of these, freed by wsrv_event_release().
+struct EventBox {
+    wsrv::HostEvent event;
+    std::vector<wsrv_str> offered;
+    std::vector<wsrv_header> headers;
+    wsrv_handshake handshake{};
+};
+
+wsrv_str c_str(std::string_view text) noexcept {
+    // An empty view may carry a null pointer; the contract says data is never NULL.
+    return wsrv_str{text.empty() ? "" : text.data(), text.size()};
+}
+
+/// Fill box.handshake from box.event.data. @return false if the blob is not well formed (cannot
+/// happen for a blob our own encoder made; checked because it crosses a queue).
+bool describe_handshake(EventBox& box) {
+    const auto view = wsrv::decode_handshake(wsrv::ByteView{box.event.data});
+    if (!view) {
+        return false;
+    }
+    for (const std::string_view item : view->offered) {
+        box.offered.push_back(c_str(item));
+    }
+    for (const auto& [name, value] : view->headers) {
+        box.headers.push_back(wsrv_header{c_str(name), c_str(value)});
+    }
+    box.handshake = wsrv_handshake{c_str(view->peer),
+                                   c_str(view->path),
+                                   c_str(view->query),
+                                   c_str(view->origin),
+                                   c_str(view->host),
+                                   c_str(view->subprotocol),
+                                   box.offered.data(),
+                                   box.offered.size(),
+                                   box.headers.data(),
+                                   box.headers.size()};
+    return true;
+}
 
 // What an event with no payload points at: the documented "data is never NULL".
 constexpr std::array<std::uint8_t, 1> kNoBytes = {0};
@@ -103,8 +146,27 @@ wsrv_event_type to_c_type(wsrv::HostEventType type) noexcept {
         return WSRV_EV_CLOSE;
     case wsrv::HostEventType::Error:
         return WSRV_EV_ERROR;
+    case wsrv::HostEventType::Handshake:
+        return WSRV_EV_HANDSHAKE;
     }
     return WSRV_EV_ERROR;
+}
+
+/// Copy the box's event into the caller's struct. @return false if a handshake blob is malformed.
+bool publish(EventBox& box, wsrv_event& out) {
+    const bool is_handshake = box.event.type == wsrv::HostEventType::Handshake;
+    if (is_handshake && !describe_handshake(box)) {
+        return false;
+    }
+    out.type = to_c_type(box.event.type);
+    out.conn = box.event.conn;
+    // The blob is an implementation detail: a handshake exposes only `handshake`.
+    out.data = is_handshake ? kNoBytes.data() : c_bytes(box.event.data);
+    out.len = is_handshake ? 0 : box.event.data.size();
+    out.close_code = box.event.close_code;
+    out.clean = box.event.clean ? 1 : 0;
+    out.handshake = is_handshake ? &box.handshake : nullptr;
+    return true;
 }
 
 }  // namespace
@@ -240,13 +302,13 @@ wsrv_status wsrv_poll(wsrv_server* server, wsrv_event* event, uint32_t timeout_m
         if (!next) {
             return WSRV_TIMEOUT;
         }
-        auto owned = std::make_unique<wsrv::HostEvent>(std::move(*next));
-        event->type = to_c_type(owned->type);
-        event->conn = owned->conn;
-        event->data = c_bytes(owned->data);
-        event->len = owned->data.size();
-        event->close_code = owned->close_code;
-        event->clean = owned->clean ? 1 : 0;
+        auto owned = std::make_unique<EventBox>();
+        owned->event = std::move(*next);
+        if (!publish(*owned, *event)) {
+            // Unreachable by construction; fail closed rather than leave the client waiting.
+            static_cast<void>(server->impl->reject_handshake(owned->event.conn, 503).has_value());
+            return WSRV_ERR_INTERNAL;
+        }
         event->reserved = owned.release();
         return WSRV_OK;
     });
@@ -256,10 +318,38 @@ void wsrv_event_release(wsrv_event* event) {
     if (event == nullptr) {
         return;
     }
-    const std::unique_ptr<wsrv::HostEvent> owner{static_cast<wsrv::HostEvent*>(event->reserved)};
+    const std::unique_ptr<EventBox> owner{static_cast<EventBox*>(event->reserved)};
     event->reserved = nullptr;
     event->data = nullptr;
     event->len = 0;
+    event->handshake = nullptr;
+}
+
+// ---- handshake decisions -----------------------------------------------------------------------
+
+wsrv_status wsrv_handshake_accept(wsrv_server* server,
+                                  wsrv_conn_id conn,
+                                  const char* subprotocol,
+                                  size_t subprotocol_len) {
+    if (server == nullptr || (subprotocol == nullptr && subprotocol_len != 0)) {
+        return WSRV_ERR_INVALID_ARGUMENT;
+    }
+    return guarded(nullptr, [&] {
+        std::optional<std::string_view> chosen;
+        if (subprotocol_len != 0) {
+            chosen = std::string_view{subprotocol, subprotocol_len};
+        }
+        return from_result(server->impl->accept_handshake(conn, chosen), nullptr);
+    });
+}
+
+wsrv_status wsrv_handshake_reject(wsrv_server* server, wsrv_conn_id conn, int status) {
+    if (server == nullptr) {
+        return WSRV_ERR_INVALID_ARGUMENT;
+    }
+    return guarded(nullptr, [&] {
+        return from_result(server->impl->reject_handshake(conn, status), nullptr);
+    });
 }
 
 // ---- commands ----------------------------------------------------------------------------------

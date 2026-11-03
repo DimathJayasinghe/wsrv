@@ -100,6 +100,11 @@ public:
     /// full, nobody to ask) makes the server refuse the upgrade with 503 at once. Failing closed:
     /// "cannot ask" never means "accept".
     [[nodiscard]] virtual Result<void> request(HandshakeRequest request, PendingHandle handle) = 0;
+
+    /// The server ended the wait for connection `id` without an answer from the application
+    /// (timeout, the client left, shutdown, abort): forget anything kept for it. Called at most
+    /// once per accepted request, on a loop thread, and never after an answer was delivered.
+    virtual void withdrawn(ConnectionId id) noexcept = 0;
 };
 
 }  // namespace wsrv

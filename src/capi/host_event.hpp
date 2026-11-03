@@ -15,7 +15,11 @@ enum class HostEventType : std::uint8_t {
     Text,    ///< data = a complete message, valid UTF-8 (FR-F7)
     Binary,  ///< data = a complete message
     Close,   ///< data = the close reason (at most kMaxCloseReason bytes); code and clean are set
-    Error    ///< data = the error name, a short literal; best effort, may be dropped
+    Error,   ///< data = the error name, a short literal; best effort, may be dropped
+    /// A valid upgrade waits for the host's decision (ADR-0018): `conn` is the id the connection
+    /// will have if accepted, `data` is the blob of capi/handshake_blob.hpp. Not followed by a
+    /// Close: only an accepted upgrade becomes a connection (and then starts with Open).
+    Handshake
 };
 
 /// One event, owned by value so it can leave the loop thread: the loops copy into it, the host

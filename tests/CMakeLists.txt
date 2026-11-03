@@ -34,6 +34,7 @@ wsrv_add_test(NAME server_hook_test SOURCES server/server_hook_test.cpp LINK wsr
 wsrv_add_test(NAME server_config_test SOURCES server/config_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME capi_event_queue_test SOURCES capi/event_queue_test.cpp LINK wsrv::capi)
 wsrv_add_test(NAME capi_host_bridge_test SOURCES capi/host_bridge_test.cpp LINK wsrv::capi)
+wsrv_add_test(NAME capi_handshake_blob_test SOURCES capi/handshake_blob_test.cpp LINK wsrv::capi)
 wsrv_add_test(NAME capi_embedded_config_test SOURCES capi/embedded_config_test.cpp LINK wsrv::capi)
 wsrv_add_test(NAME capi_embedded_server_test SOURCES capi/embedded_server_test.cpp LINK wsrv::capi)
 wsrv_add_test(NAME ipc_message_test SOURCES ipc/message_test.cpp LINK wsrv::ipc)

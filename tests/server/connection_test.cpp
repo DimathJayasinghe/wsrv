@@ -955,8 +955,12 @@ public:
         handles.push_back(std::move(handle));
         return {};
     }
+    void withdrawn(wsrv::ConnectionId id) noexcept override {
+        withdrawals.push_back(id);
+    }
     std::vector<wsrv::HandshakeRequest> requests;
     std::vector<wsrv::PendingHandle> handles;
+    std::vector<wsrv::ConnectionId> withdrawals;
     bool refuse = false;
 };
 
@@ -985,6 +989,12 @@ struct HookTest : public ConnectionTest {
     wsrv::PendingGate gate{4};
     wsrv::HandshakeNegotiator hook_negotiator{hook_handshake_config()};
     std::string request_text{kRequest};
+
+    /// The decider outlives every connection, as in the server (a connection tells it when it
+    /// goes): release ours before the members below are destroyed.
+    ~HookTest() override {
+        conn.reset();
+    }
 
     /// A connection with the hook on. `which_gate` lets a test share one gate between connections.
     std::unique_ptr<Connection> make(FakeTransport*& out_transport, wsrv::PendingGate* which_gate) {
@@ -1232,6 +1242,57 @@ TEST_F(HookTest, AForwardedHeaderOverTheCapIsRefusedWith431) {  // EC-H34
     EXPECT_EQ(transport->written_text().rfind("HTTP/1.1 431 ", 0), 0U);
     EXPECT_TRUE(decider.requests.empty());
     EXPECT_EQ(gate.waiting(), 0U);
+}
+
+TEST_F(HookTest, TheDeciderIsToldWhenTheServerEndsTheWaitWithoutAnAnswer) {  // EC-H29/H32/H33
+    // timeout
+    config.handshake_decision_timeout = 300ms;
+    open_hook();
+    send_request();
+    host.advance(400ms, 50ms);
+    EXPECT_EQ(decider.withdrawals, std::vector<wsrv::ConnectionId>{conn->id()});
+    // peer gone
+    decider.withdrawals.clear();
+    open_hook();
+    send_request();
+    conn->on_event(PollEvents::Hangup);
+    EXPECT_EQ(decider.withdrawals.size(), 1U);
+    // shutdown
+    decider.withdrawals.clear();
+    open_hook();
+    send_request();
+    conn->begin_shutdown();
+    EXPECT_EQ(decider.withdrawals.size(), 1U);
+    // abort, and destruction
+    decider.withdrawals.clear();
+    open_hook();
+    send_request();
+    conn->abort();
+    conn.reset();
+    EXPECT_EQ(decider.withdrawals.size(), 1U) << "exactly once, not once per exit path";
+    decider.withdrawals.clear();
+    open_hook();
+    send_request();
+    conn.reset();
+    EXPECT_EQ(decider.withdrawals.size(), 1U);
+}
+
+TEST_F(HookTest, ADeciderThatAnsweredIsNeverToldAboutAWithdrawal) {
+    open_hook();
+    send_request();
+    decide(accept_verdict());
+    conn->abort();
+    open_hook();
+    send_request();
+    decide(reject_verdict(403));
+    EXPECT_TRUE(decider.withdrawals.empty()) << "it answered; there is nothing to forget";
+}
+
+TEST_F(HookTest, ADeciderThatRefusedTheRequestIsNotToldAboutAWithdrawalEither) {
+    decider.refuse = true;
+    open_hook();
+    send_request();
+    EXPECT_TRUE(decider.withdrawals.empty()) << "it never took the request";
 }
 
 TEST_F(HookTest, ARefusedHandshakeNeverReachesTheApplication) {

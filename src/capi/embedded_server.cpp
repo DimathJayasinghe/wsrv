@@ -88,6 +88,9 @@ void EmbeddedServer::io_thread_main(std::promise<Started>& ready) {
         ServerBuilder builder;
         config_.apply_to(builder);
         builder.handler_factory(*bridge_);
+        if (config_.handshake_hook()) {
+            builder.handshake_decider(*bridge_);
+        }
         server = builder.build();
     } catch (const ConfigError& error) {
         // The code says what kind of failure it is; the message says which field or address.
@@ -168,6 +171,21 @@ Result<void> EmbeddedServer::close(ConnectionId id, CloseCode code, std::string_
         return same;
     }
     return bridge_->close(id, code, reason);
+}
+
+Result<void> EmbeddedServer::accept_handshake(ConnectionId id,
+                                              std::optional<std::string_view> subprotocol) {
+    if (const Result<void> same = check_process(); !same) {
+        return same;
+    }
+    return bridge_->accept_handshake(id, subprotocol);
+}
+
+Result<void> EmbeddedServer::reject_handshake(ConnectionId id, int status) {
+    if (const Result<void> same = check_process(); !same) {
+        return same;
+    }
+    return bridge_->reject_handshake(id, status);
 }
 
 }  // namespace wsrv

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "capi/embedded_config.hpp"
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <chrono>
@@ -31,6 +32,30 @@ Result<std::size_t> parse_size(std::string_view value, std::string_view context)
     return fail(ErrorCode::InvalidConfig, context);
 }
 
+/// A boolean is exactly true, false, 1 or 0 (so "yes" or "True" cannot silently mean something).
+std::optional<bool> parse_bool(std::string_view value) {
+    if (value == "true" || value == "1") {
+        return true;
+    }
+    if (value == "false" || value == "0") {
+        return false;
+    }
+    return std::nullopt;
+}
+
+/// A header name is an RFC 9110 section 5.6.2 token: no spaces, colons or control characters.
+bool is_header_name(std::string_view name) {
+    constexpr std::string_view kPunctuation = "!#$%&'*+-.^_`|~";
+    if (name.empty()) {
+        return false;
+    }
+    return std::ranges::all_of(name, [&](char c) {
+        const bool alnum =
+            (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+        return alnum || kPunctuation.find(c) != std::string_view::npos;
+    });
+}
+
 struct KeyEntry {
     std::string_view name;
     Result<void> (EmbeddedConfig::*setter)(std::string_view);
@@ -50,6 +75,11 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
         KeyEntry{"shutdown_grace_ms", &EmbeddedConfig::set_shutdown_grace_ms},
         KeyEntry{"event_queue_events", &EmbeddedConfig::set_event_queue_events},
         KeyEntry{"event_queue_bytes", &EmbeddedConfig::set_event_queue_bytes},
+        KeyEntry{"handshake_hook", &EmbeddedConfig::set_handshake_hook},
+        KeyEntry{"handshake_forward_header", &EmbeddedConfig::add_handshake_forward_header},
+        KeyEntry{"handshake_decision_timeout_ms",
+                 &EmbeddedConfig::set_handshake_decision_timeout_ms},
+        KeyEntry{"max_pending_handshakes", &EmbeddedConfig::set_max_pending_handshakes},
     };
     for (const KeyEntry& entry : kKeys) {
         if (entry.name == key) {
@@ -103,13 +133,11 @@ Result<void> EmbeddedConfig::add_allow_origin(std::string_view value) {
 }
 
 Result<void> EmbeddedConfig::set_allow_missing_origin(std::string_view value) {
-    if (value == "true" || value == "1") {
-        server_.handshake.allow_missing_origin = true;
-    } else if (value == "false" || value == "0") {
-        server_.handshake.allow_missing_origin = false;
-    } else {
+    const std::optional<bool> flag = parse_bool(value);
+    if (!flag) {
         return fail(ErrorCode::InvalidConfig, "config: a boolean is true, false, 1 or 0");
     }
+    server_.handshake.allow_missing_origin = *flag;
     return {};
 }
 
@@ -161,6 +189,51 @@ Result<void> EmbeddedConfig::set_event_queue_bytes(std::string_view value) {
         return std::unexpected{number.error()};
     }
     queue_.max_bytes = *number;
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_handshake_hook(std::string_view value) {
+    const std::optional<bool> flag = parse_bool(value);
+    if (!flag) {
+        return fail(ErrorCode::InvalidConfig, "config: a boolean is true, false, 1 or 0");
+    }
+    handshake_hook_ = *flag;
+    return {};
+}
+
+Result<void> EmbeddedConfig::add_handshake_forward_header(std::string_view value) {
+    if (!is_header_name(value)) {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: handshake_forward_header needs a header name");
+    }
+    try {
+        server_.handshake_forward_headers.emplace_back(value);
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "config: out of memory");
+    }
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_handshake_decision_timeout_ms(std::string_view value) {
+    const auto number = parse_number<std::int64_t>(value);
+    if (!number || *number <= 0) {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: handshake_decision_timeout_ms needs a number above 0");
+    }
+    server_.handshake_decision_timeout = std::chrono::milliseconds{*number};
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_max_pending_handshakes(std::string_view value) {
+    const Result<std::size_t> number =
+        parse_size(value, "config: max_pending_handshakes needs a number");
+    if (!number) {
+        return std::unexpected{number.error()};
+    }
+    if (*number == 0) {
+        return fail(ErrorCode::InvalidConfig, "config: max_pending_handshakes must be above 0");
+    }
+    server_.max_pending_handshakes = *number;
     return {};
 }
 

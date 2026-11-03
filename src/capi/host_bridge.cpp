@@ -8,6 +8,8 @@
 #include <string>
 #include <utility>
 
+#include "capi/handshake_blob.hpp"
+
 namespace wsrv {
 
 namespace {
@@ -22,6 +24,7 @@ HostEvent make_event(HostEventType type, ConnectionId conn, std::string_view tex
 }
 
 constexpr std::string_view kNoSuchConnection = "capi: unknown or finished connection";
+constexpr std::string_view kNoSuchHandshake = "capi: no upgrade is waiting for that id";
 
 }  // namespace
 
@@ -172,6 +175,73 @@ void HostBridge::resume_parked() {
     for (const SessionHandle& handle : to_resume) {
         static_cast<void>(handle.resume_reads().has_value());  // Closing: it ended, nothing to do
     }
+}
+
+Result<void> HostBridge::request(HandshakeRequest request, PendingHandle handle) {
+    HostEvent event;
+    try {
+        event.type = HostEventType::Handshake;
+        event.conn = request.id;
+        event.data = encode_handshake(format_endpoint(request.peer), request);
+        const std::lock_guard lock{mutex_};
+        asked_.insert_or_assign(request.id, std::move(handle));  // before the push: see on_open
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "capi: out of memory");
+    }
+    const ConnectionId id = event.conn;
+    if (const Result<PushOutcome> pushed = events_->push(std::move(event)); !pushed) {
+        forget_asked(id);  // the host will never hear of it: fail closed (the server refuses)
+        return std::unexpected{pushed.error()};
+    }
+    return {};
+}
+
+void HostBridge::withdrawn(ConnectionId id) noexcept {
+    forget_asked(id);
+}
+
+std::size_t HostBridge::waiting_handshakes() {
+    const std::lock_guard lock{mutex_};
+    return asked_.size();
+}
+
+void HostBridge::forget_asked(ConnectionId id) {
+    const std::lock_guard lock{mutex_};
+    asked_.erase(id);
+}
+
+std::optional<PendingHandle> HostBridge::find_asked(ConnectionId id) {
+    const std::lock_guard lock{mutex_};
+    const auto it = asked_.find(id);
+    if (it == asked_.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+Result<void> HostBridge::accept_handshake(ConnectionId id,
+                                          std::optional<std::string_view> subprotocol) {
+    const std::optional<PendingHandle> handle = find_asked(id);
+    if (!handle) {
+        return fail(ErrorCode::Closing, kNoSuchHandshake);
+    }
+    Result<void> answered = handle->accept(subprotocol);
+    if (answered) {
+        forget_asked(id);  // consumed: the next answer for this id is "no such"
+    }
+    return answered;
+}
+
+Result<void> HostBridge::reject_handshake(ConnectionId id, int status) {
+    const std::optional<PendingHandle> handle = find_asked(id);
+    if (!handle) {
+        return fail(ErrorCode::Closing, kNoSuchHandshake);
+    }
+    Result<void> answered = handle->reject(status);
+    if (answered) {
+        forget_asked(id);
+    }
+    return answered;
 }
 
 std::optional<HostEvent> HostBridge::poll() {

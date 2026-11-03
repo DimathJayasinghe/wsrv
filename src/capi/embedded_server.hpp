@@ -93,6 +93,11 @@ public:
     [[nodiscard]] Result<void> send_binary(ConnectionId id, ByteView data);
     [[nodiscard]] Result<void> close(ConnectionId id, CloseCode code, std::string_view reason);
 
+    /// Answer a HostEventType::Handshake (only with handshake_hook on); see HostBridge.
+    [[nodiscard]] Result<void> accept_handshake(ConnectionId id,
+                                                std::optional<std::string_view> subprotocol);
+    [[nodiscard]] Result<void> reject_handshake(ConnectionId id, int status);
+
 private:
     struct Started {
         Result<std::uint16_t> port;

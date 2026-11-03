@@ -102,6 +102,92 @@ static int expect_event(wsrv_server *server, wsrv_event_type type, wsrv_event *o
     return 0;
 }
 
+/* Wait for a WSRV_EV_HANDSHAKE and check what the host is told (ADR-0018). */
+static int hook_scenario(void) {
+    static const char request[] =
+        "GET /room/7?token=abc HTTP/1.1\r\n"
+        "Host: chat.example.com\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        "Sec-WebSocket-Version: 13\r\n"
+        "Origin: https://app.example.com\r\n"
+        "Sec-WebSocket-Protocol: chat, v2\r\n"
+        "Cookie: session=abc\r\n"
+        "X-Not-Forwarded: nope\r\n"
+        "\r\n";
+    wsrv_config *config = wsrv_config_new();
+    wsrv_server *server = NULL;
+    wsrv_event event;
+    wsrv_error error;
+    char head[1024];
+    int fd;
+
+    CHECK(config != NULL);
+    CHECK(wsrv_config_set(config, "allow_origin", "https://app.example.com", NULL) == WSRV_OK);
+    CHECK(wsrv_config_set(config, "handshake_hook", "true", NULL) == WSRV_OK);
+    CHECK(wsrv_config_set(config, "handshake_forward_header", "Cookie", NULL) == WSRV_OK);
+    CHECK(wsrv_config_set(config, "handshake_decision_timeout_ms", "5000", NULL) == WSRV_OK);
+    CHECK(wsrv_config_set(config, "shutdown_grace_ms", "1000", NULL) == WSRV_OK);
+    CHECK(wsrv_server_create(config, &server, &error) == WSRV_OK);
+    wsrv_config_free(config);
+    CHECK(wsrv_server_start(server, &error) == WSRV_OK);
+
+    /* Accepted, choosing an offered subprotocol. */
+    fd = connect_loopback(wsrv_server_port(server));
+    CHECK(fd >= 0);
+    CHECK(send(fd, request, sizeof request - 1, 0) == (ssize_t)(sizeof request - 1));
+    CHECK(expect_event(server, WSRV_EV_HANDSHAKE, &event));
+    CHECK(event.conn != 0);
+    CHECK(event.handshake != NULL);
+    CHECK(event.handshake->path.len == 7 && memcmp(event.handshake->path.data, "/room/7", 7) == 0);
+    CHECK(event.handshake->query.len == 9 && memcmp(event.handshake->query.data, "token=abc", 9) == 0);
+    CHECK(event.handshake->host.len == 16);
+    CHECK(event.handshake->origin.len == 23);
+    CHECK(event.handshake->peer.len > 0);
+    CHECK(event.handshake->offered_count == 2);
+    CHECK(event.handshake->offered[1].len == 2 && memcmp(event.handshake->offered[1].data, "v2", 2) == 0);
+    CHECK(event.handshake->header_count == 1); /* only Cookie was listed */
+    CHECK(event.handshake->headers[0].value.len == 11);
+    CHECK(memcmp(event.handshake->headers[0].value.data, "session=abc", 11) == 0);
+    {
+        const wsrv_conn_id conn = event.conn;
+        wsrv_event_release(&event);
+        CHECK(wsrv_handshake_accept(server, conn, "v2", 2) == WSRV_OK);
+        CHECK(wsrv_handshake_accept(server, conn, NULL, 0) == WSRV_ERR_NO_SUCH_CONN); /* once */
+        CHECK(read_head(fd, head, sizeof head));
+        CHECK(strstr(head, "101") != NULL);
+        CHECK(strstr(head, "Sec-WebSocket-Protocol: v2") != NULL);
+        CHECK(expect_event(server, WSRV_EV_OPEN, &event)); /* same id as the question */
+        CHECK(event.conn == conn);
+        wsrv_event_release(&event);
+    }
+    close(fd);
+
+    /* Refused: that status, and the host never sees an OPEN for it. */
+    fd = connect_loopback(wsrv_server_port(server));
+    CHECK(fd >= 0);
+    CHECK(send(fd, request, sizeof request - 1, 0) == (ssize_t)(sizeof request - 1));
+    CHECK(expect_event(server, WSRV_EV_HANDSHAKE, &event));
+    {
+        const wsrv_conn_id conn = event.conn;
+        wsrv_event_release(&event);
+        CHECK(wsrv_handshake_accept(server, conn, "not-offered", 11) == WSRV_ERR_INVALID_ARGUMENT);
+        CHECK(wsrv_handshake_reject(server, conn, 302) == WSRV_ERR_INVALID_ARGUMENT);
+        CHECK(wsrv_handshake_reject(server, conn, 401) == WSRV_OK);
+        CHECK(read_head(fd, head, sizeof head));
+        CHECK(strncmp(head, "HTTP/1.1 401 ", 13) == 0);
+        CHECK(wsrv_handshake_reject(server, conn + 1000, 403) == WSRV_ERR_NO_SUCH_CONN);
+    }
+    close(fd);
+    CHECK(wsrv_handshake_accept(NULL, 1, NULL, 0) == WSRV_ERR_INVALID_ARGUMENT);
+    CHECK(wsrv_handshake_accept(server, 1, NULL, 3) == WSRV_ERR_INVALID_ARGUMENT);
+
+    CHECK(wsrv_server_stop(server) == WSRV_OK);
+    wsrv_server_destroy(server);
+    return 0;
+}
+
 int main(void) {
     static const char request[] =
         "GET /chat HTTP/1.1\r\n"
@@ -192,5 +278,5 @@ int main(void) {
     CHECK(wsrv_server_stop(server) == WSRV_OK); /* idempotent */
     wsrv_server_destroy(server);
     wsrv_server_destroy(NULL);
-    return 0;
+    return hook_scenario();
 }
