@@ -583,15 +583,24 @@ TEST_F(IpcServerTest, AnApplicationThatStopsReadingForTooLongIsDisconnected) {
     EXPECT_TRUE(client->closed_by_server());
 }
 
-TEST_F(IpcServerTest, AnApplicationThatReadsPromptlyIsNeverDisconnected) {
+TEST_F(IpcServerTest, AnApplicationThatKeepsReadingIsNeverDisconnectedHoweverLongItTakes) {
+    // The burst is queued BEFORE the application connects, so the daemon fills the socket the
+    // moment HELLO_OK is out and the stall clock starts then: the test thread cannot be late
+    // starting to read (pushing 6 MB while the daemon already waits was slow enough, under a
+    // sanitizer on a busy machine, to outlast the timeout before the first read).
+    push_burst(backend);
     IpcServerConfig c = config();
-    c.stall_timeout = 1500ms;
+    c.stall_timeout = 1000ms;
     const RunningServer server{sys, backend, c};
     const auto client = connect_ready(path());
-    push_burst(backend);
-    std::this_thread::sleep_for(300ms);  // slow, but well inside the stall timeout
+    // Read in steps with short pauses: the whole transfer takes longer than the stall timeout, but
+    // no single pause comes near it, so progress must restart the clock every time.
+    constexpr std::size_t kStep = 150;
     for (std::size_t i = 0; i < kBurst + 1; ++i) {
         ASSERT_TRUE(client->receive()) << "cut off at event " << i;
+        if (i % kStep == kStep - 1) {
+            std::this_thread::sleep_for(100ms);
+        }
     }
     client->send_message(ipc::Ping{});
     EXPECT_EQ(client->receive()->kind, Reply::Kind::Pong);
