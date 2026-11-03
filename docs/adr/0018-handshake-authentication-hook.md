@@ -1,8 +1,8 @@
 # ADR-0018: Handshake authentication hook (the application decides who may connect)
 
-- Status: **Proposed** (needs the project owner's acceptance before any code)
+- Status: **Accepted** (2026-11-03; the project owner delegated the decision to the maintainer assistant)
 - Date: 2026-11-03
-- Deciders: project owner (to accept)
+- Deciders: project owner (delegated), maintainer assistant
 
 ## Context
 Today the server accepts a WebSocket upgrade if the request is well formed and the `Origin`, subprotocol and path rules pass (`HandshakeNegotiator`). It cannot ask the *application* "is this user allowed in?". ADR-0016 section 7 left this out because the handshake driver is a pure function of bytes and answers immediately, while an application (PHP, over a socket, on another thread) answers later.
