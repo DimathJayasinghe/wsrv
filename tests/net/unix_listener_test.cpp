@@ -212,6 +212,15 @@ TEST_F(UnixListenerTest, AGroupReadableButNotWritableDirectoryIsFine) {
     EXPECT_TRUE(UnixListener::open(sys, config()).has_value());
 }
 
+TEST_F(UnixListenerTest, RefusesADirectoryOwnedBySomeoneElse) {
+    sys.succeed(Call::EffectiveUid,
+                4242);  // we pretend to be another user: the directory is not ours
+    const auto listener = UnixListener::open(sys, config());
+    ASSERT_FALSE(listener.has_value());
+    EXPECT_EQ(listener.error().code, ErrorCode::InvalidConfig);
+    EXPECT_EQ(sys.calls(Call::Bind), 0U);
+}
+
 TEST_F(UnixListenerTest, ADirectoryThatDoesNotExistIsAConfigurationError) {
     const auto listener =
         UnixListener::open(sys, UnixListenerConfig{.path = dir.file("no/such/ipc.sock")});

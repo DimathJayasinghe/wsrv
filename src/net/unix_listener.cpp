@@ -49,9 +49,10 @@ constexpr std::uint32_t kGroupOrOtherWrite = S_IWGRP | S_IWOTH;
     return slash == 0 ? "/" : path.substr(0, slash);
 }
 
-/// Anyone who can write into the directory can replace the socket between our checks and our use
-/// (a race known as TOCTOU). A sticky bit only stops deleting other users' files, not creating a
-/// look-alike first, so a sticky world-writable directory such as /tmp is refused too.
+/// Anyone who can write into the directory (its owner included) can replace the socket between our
+/// checks and our use (a race known as TOCTOU). A sticky bit only stops deleting other users'
+/// files, not creating a look-alike first, so a sticky world-writable directory such as /tmp is
+/// refused too.
 [[nodiscard]] Result<void> check_directory(ISyscalls& sys, const std::string& directory) {
     FileInfo info;
     const SysResult result = sys.stat_path(directory.c_str(), true, info);
@@ -63,6 +64,10 @@ constexpr std::uint32_t kGroupOrOtherWrite = S_IWGRP | S_IWOTH;
     }
     if (!is_directory(info.mode)) {
         return fail(ErrorCode::InvalidConfig, "unix socket parent is not a directory");
+    }
+    // The owner can always rename things inside, so the owner must be us (or root, who can anyway).
+    if (info.uid != sys.effective_uid() && info.uid != 0) {
+        return fail(ErrorCode::InvalidConfig, "unix socket directory is owned by another user");
     }
     if ((info.mode & kGroupOrOtherWrite) != 0) {
         return fail(ErrorCode::InvalidConfig,
