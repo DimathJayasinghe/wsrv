@@ -75,6 +75,8 @@ Usage: `cmake --preset dev && cmake --build --preset dev && ctest --preset dev`.
 - `.clang-tidy` committed with `WarningsAsErrors: '*'` (suppress only with `// NOLINT(check): reason`; reasons reviewed).
 - `tools/check_banned_functions.sh` greps for `strcpy|sprintf|gets|strtok|atoi|rand\(|system\(|popen`.
 - `tools/check_includes.py` enforces module dependency graph on `#include` lines.
+- `tools/check_c_api.py` (ctest `capi_header_matches_symbols`) requires every `WSRV_API` function in `include/wsrv/wsrv.h` to be listed in `include/wsrv/wsrv.symbols`, and the reverse. The linker version script for `libwsrv.so` is generated from that list, so without this check a forgotten entry would silently hide an exported function. `capi_abi_symbols` then compares `nm -D libwsrv.so` with the list, and `capi_consumer` (`tests/capi/consumer.c`, C99, `-Wpedantic -Werror`) links the shared library and serves a real handshake and echo.
+- **clang-tidy does not look at `include/`** (`HeaderFilterRegex` covers `src/` only, changed in ADR-0016 slice 3): the public header is C99 with C naming (`wsrv_status`, `WSRV_OK`, `typedef enum`), which the C++ naming and `modernize-*` rules reject. It is checked instead by compiling it as C99 with `-Wpedantic -Werror` in the consumer. Anything else added under `include/` is therefore not tidied; keep that directory to the C header and its symbol list.
 - Header self-containment target compiles each header alone.
 - `pre-commit` hooks (format, trailing whitespace, banned functions, markdown links) — optional locally, enforced in CI.
 - `.editorconfig`: LF, UTF-8, final newline, 4 spaces (2 for YAML/JSON/CMake).

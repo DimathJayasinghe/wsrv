@@ -28,8 +28,9 @@ ALLOWED = {
     "net": {"base"},
     "server": {"base", "http", "protocol", "net", "extensions"},
     "capi": {"base", "net", "server"},
+    "ipc": {"base"},
 }
-SANS_IO = {"base", "crypto", "http", "protocol"}
+SANS_IO = {"base", "crypto", "http", "protocol", "ipc"}
 OS_HEADER = re.compile(
     r"^(sys/|netinet/|arpa/|linux/|asm/|net/if\.h$|netdb\.h$|unistd\.h$|poll\.h$|fcntl\.h$|signal\.h$"
     r"|pthread\.h$|ifaddrs\.h$|dlfcn\.h$|sched\.h$|semaphore\.h$|termios\.h$|windows\.h$"

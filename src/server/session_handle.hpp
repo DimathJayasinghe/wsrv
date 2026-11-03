@@ -67,7 +67,8 @@ private:
 };
 
 /// A kept-alive, copyable way to send to one connection from any thread (FR-S3, EC-N13).
-/// send_text checks UTF-8 before queueing anything and returns Error{InvalidUtf8} to the caller.
+/// send_text and close check their arguments (UTF-8, a sendable close code) before queueing
+/// anything and return Error{InvalidUtf8} / Error{InvalidArgument} to the caller.
 ///
 /// It holds the connection's id and the loop's link, never a pointer to the connection: a send is
 /// copied, posted to the owning loop, and applied there only if the id is still alive. So it is

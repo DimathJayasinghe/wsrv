@@ -30,7 +30,7 @@ Checks: >
   -misc-include-cleaner,
   -bugprone-easily-swappable-parameters
 WarningsAsErrors: '*'
-HeaderFilterRegex: '.*/(src|include)/.*'
+HeaderFilterRegex: '.*/src/.*'  # include/wsrv/wsrv.h is a C header with C naming (ADR-0016)
 FormatStyle: none
 CheckOptions:
   # Naming (CODING_STANDARDS section 2)

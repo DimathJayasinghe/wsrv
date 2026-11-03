@@ -19,6 +19,7 @@ wsrv_add_test(NAME net_event_loop_test SOURCES net/event_loop_test.cpp LINK wsrv
 wsrv_add_test(NAME net_signal_watcher_test SOURCES net/signal_watcher_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_endpoint_test SOURCES net/endpoint_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_plain_transport_test SOURCES net/plain_transport_test.cpp LINK wsrv::net)
+wsrv_add_test(NAME net_unix_listener_test SOURCES net/unix_listener_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_acceptor_test SOURCES net/acceptor_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_loopback_test SOURCES net/loopback_test.cpp LINK wsrv::net)
 
@@ -31,6 +32,33 @@ wsrv_add_test(NAME server_session_handle_test SOURCES server/session_handle_test
 wsrv_add_test(NAME server_config_test SOURCES server/config_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME capi_event_queue_test SOURCES capi/event_queue_test.cpp LINK wsrv::capi)
 wsrv_add_test(NAME capi_host_bridge_test SOURCES capi/host_bridge_test.cpp LINK wsrv::capi)
+wsrv_add_test(NAME capi_embedded_config_test SOURCES capi/embedded_config_test.cpp LINK wsrv::capi)
+wsrv_add_test(NAME capi_embedded_server_test SOURCES capi/embedded_server_test.cpp LINK wsrv::capi)
+wsrv_add_test(NAME ipc_message_test SOURCES ipc/message_test.cpp LINK wsrv::ipc)
+wsrv_add_test(NAME ipc_frame_decoder_test SOURCES ipc/frame_decoder_test.cpp LINK wsrv::ipc)
+wsrv_add_test(NAME capi_c_status_test SOURCES capi/c_status_test.cpp LINK wsrv::capi)
+
+# The C ABI (ADR-0016 section 8): exports equal the checked-in list, and a C-only program can use
+# the shared library. The consumer is C99 with the strictest warnings, so wsrv.h stays pure C.
+enable_language(C)
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(capi_consumer capi/consumer.c)
+target_link_libraries(capi_consumer PRIVATE wsrv::shared)
+target_include_directories(capi_consumer PRIVATE "${PROJECT_SOURCE_DIR}/include")
+target_compile_options(capi_consumer PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    -Wstrict-prototypes -Wmissing-prototypes $<$<BOOL:${WSRV_WARNINGS_AS_ERRORS}>:-Werror>)
+add_test(NAME capi_consumer COMMAND capi_consumer)
+add_test(NAME capi_abi_symbols
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/capi/check_symbols.sh
+            $<TARGET_FILE:wsrv_shared> ${PROJECT_SOURCE_DIR}/include/wsrv/wsrv.symbols)
+# wsrv.h and wsrv.symbols must agree, otherwise the (symbols-driven) linker script hides a function
+# the header promises. Python is already a tooling requirement (WsrvChecks).
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME capi_header_matches_symbols
+    COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tools/check_c_api.py --root ${PROJECT_SOURCE_DIR})
+set_tests_properties(capi_consumer capi_abi_symbols capi_header_matches_symbols PROPERTIES LABELS capi)
 
 # Differential tests against OpenSSL are test-only and optional (ADR-0005: no runtime dependency).
 find_package(OpenSSL QUIET)
@@ -63,7 +91,7 @@ endif()
 # Architecture guard: the real link graph must equal the allowed graph (docs/ARCHITECTURE.md 2.1).
 include(WsrvModuleGraph)
 wsrv_write_module_graph("${CMAKE_BINARY_DIR}/module_graph.actual"
-    MODULES base crypto http protocol extensions net server capi)
+    MODULES base crypto http protocol extensions net server capi ipc)
 add_test(NAME module_graph
     COMMAND ${CMAKE_COMMAND} -E compare_files
             "${CMAKE_CURRENT_SOURCE_DIR}/module_graph.expected"

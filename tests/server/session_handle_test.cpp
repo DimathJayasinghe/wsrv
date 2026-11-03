@@ -156,6 +156,29 @@ TEST_F(SessionHandleTest, BinaryAndCloseReachTheSession) {
     EXPECT_EQ(session_.closes.front().second, "bye");
 }
 
+TEST_F(SessionHandleTest, ACloseTheWireCannotCarryIsRefusedToTheCallerAndNothingIsQueued) {
+    const SessionHandle handle{link_, kId};
+    for (const std::uint16_t code : {std::uint16_t{0},
+                                     std::uint16_t{999},
+                                     std::uint16_t{1004},
+                                     std::uint16_t{1005},
+                                     std::uint16_t{1006},
+                                     std::uint16_t{1015},
+                                     std::uint16_t{2999},
+                                     std::uint16_t{5000}}) {
+        const wsrv::Result<void> sent = handle.close(static_cast<CloseCode>(code), "x");
+        ASSERT_FALSE(sent.has_value()) << code;
+        EXPECT_EQ(sent.error().code, ErrorCode::InvalidArgument);
+    }
+    const wsrv::Result<void> bad_reason = handle.close(CloseCode::Normal, "bad\xFF");
+    ASSERT_FALSE(bad_reason.has_value());
+    EXPECT_EQ(bad_reason.error().code, ErrorCode::InvalidUtf8);
+
+    ASSERT_TRUE(handle.close(static_cast<CloseCode>(4000), "caf\xC3\xA9").has_value());
+    ASSERT_TRUE(pump_until([&] { return !session_.closes.empty(); }));
+    EXPECT_EQ(session_.closes.size(), 1U);  // only the valid one
+}
+
 TEST_F(SessionHandleTest, AResumeReachesTheSessionOnTheLoopThread) {
     const SessionHandle handle{link_, kId};
     ASSERT_TRUE(handle.resume_reads().has_value());

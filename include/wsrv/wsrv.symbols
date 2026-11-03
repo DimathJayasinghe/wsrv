@@ -1,0 +1,16 @@
+wsrv_abi_version
+wsrv_close
+wsrv_config_free
+wsrv_config_new
+wsrv_config_set
+wsrv_event_release
+wsrv_poll
+wsrv_send_binary
+wsrv_send_text
+wsrv_server_create
+wsrv_server_destroy
+wsrv_server_event_fd
+wsrv_server_port
+wsrv_server_start
+wsrv_server_stop
+wsrv_status_name

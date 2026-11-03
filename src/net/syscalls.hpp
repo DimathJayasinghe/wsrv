@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <csignal>
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
 
 #include <sys/epoll.h>
@@ -26,6 +27,20 @@ struct SysResult {
 struct SockOpt {
     int level;
     int name;
+};
+
+/// What the server needs to know about a file, in plain integers so no caller touches `struct stat`
+/// (whose fields differ per OS) and a test can describe a file without creating one.
+struct FileInfo {
+    std::uint32_t mode = 0;  ///< st_mode: file type and permission bits
+    std::uint32_t uid = 0;   ///< owner
+    std::uint64_t device = 0;
+    std::uint64_t inode = 0;
+    /// device + inode name one file for as long as it exists; a replaced file gets a new inode.
+    /// (Not operator==: the mode legitimately changes, for instance after chmod.)
+    [[nodiscard]] bool same_file_as(const FileInfo& other) const noexcept {
+        return device == other.device && inode == other.inode;
+    }
 };
 
 /// Every kernel call the server makes, behind one interface (docs/TESTING_STRATEGY.md section 2,
@@ -54,6 +69,14 @@ public:
     virtual SysResult shutdown(int fd, int how) = 0;
     virtual SysResult setsockopt(int fd, SockOpt option, const void* value, socklen_t len) = 0;
     virtual SysResult getsockname(int fd, sockaddr* addr, socklen_t* len) = 0;
+    virtual SysResult connect(int fd, const sockaddr* addr, socklen_t len) = 0;
+    /// stat(2) when `follow_links`, lstat(2) otherwise. `path` is NUL-terminated. On success `info`
+    /// is filled in.
+    virtual SysResult stat_path(const char* path, bool follow_links, FileInfo& info) = 0;
+    virtual SysResult chmod_path(const char* path, std::uint32_t mode) = 0;
+    virtual SysResult unlink_path(const char* path) = 0;
+    /// geteuid(2): cannot fail.
+    virtual std::uint32_t effective_uid() noexcept = 0;
     virtual SysResult epoll_create1(int flags) = 0;
     virtual SysResult epoll_ctl(int epoll_fd, int op, int fd, epoll_event* event) = 0;
     virtual SysResult
@@ -84,6 +107,11 @@ public:
     SysResult shutdown(int fd, int how) override;
     SysResult setsockopt(int fd, SockOpt option, const void* value, socklen_t len) override;
     SysResult getsockname(int fd, sockaddr* addr, socklen_t* len) override;
+    SysResult connect(int fd, const sockaddr* addr, socklen_t len) override;
+    SysResult stat_path(const char* path, bool follow_links, FileInfo& info) override;
+    SysResult chmod_path(const char* path, std::uint32_t mode) override;
+    SysResult unlink_path(const char* path) override;
+    std::uint32_t effective_uid() noexcept override;
     SysResult epoll_create1(int flags) override;
     SysResult epoll_ctl(int epoll_fd, int op, int fd, epoll_event* event) override;
     SysResult

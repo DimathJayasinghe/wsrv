@@ -9,10 +9,15 @@
 #include <array>
 #include <cerrno>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <string>
 
 #include <netinet/in.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 namespace {
@@ -166,6 +171,79 @@ TEST(FakeSyscalls, InjectsSeveralFailuresAndForcedSuccessValuesInOrder) {
     const SysResult eof = sys.read(-1, nullptr, 0);
     EXPECT_EQ(eof.err, 0);
     EXPECT_EQ(eof.value, 0);
+}
+
+// ---- the filesystem calls (ADR-0017 section 4) -------------------------------------------------
+
+TEST(LinuxSyscalls, StatPathFillsFileInfoAndLstatDoesNotFollowLinks) {
+    namespace fs = std::filesystem;
+    wsrv::LinuxSyscalls sys;
+    std::string pattern = (fs::temp_directory_path() / "wsrv-sys-XXXXXX").string();
+    ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
+    const std::string file = pattern + "/file";
+    const std::string link = pattern + "/link";
+    std::ofstream{file} << "x";
+    ASSERT_EQ(::symlink(file.c_str(), link.c_str()), 0);
+
+    wsrv::FileInfo info;
+    ASSERT_EQ(sys.stat_path(file.c_str(), false, info).err, 0);
+    EXPECT_EQ(info.mode & S_IFMT, static_cast<std::uint32_t>(S_IFREG));
+    EXPECT_EQ(info.uid, sys.effective_uid());
+    EXPECT_NE(info.inode, 0U);
+
+    wsrv::FileInfo through_link;
+    wsrv::FileInfo link_itself;
+    ASSERT_EQ(sys.stat_path(link.c_str(), true, through_link).err, 0);
+    ASSERT_EQ(sys.stat_path(link.c_str(), false, link_itself).err, 0);
+    EXPECT_TRUE(through_link.same_file_as(info));
+    EXPECT_EQ(link_itself.mode & S_IFMT, static_cast<std::uint32_t>(S_IFLNK));
+    EXPECT_FALSE(link_itself.same_file_as(info));
+
+    EXPECT_EQ(sys.stat_path((pattern + "/missing").c_str(), false, info).err, ENOENT);
+
+    ASSERT_EQ(sys.chmod_path(file.c_str(), 0640).err, 0);
+    ASSERT_EQ(sys.stat_path(file.c_str(), false, info).err, 0);
+    EXPECT_EQ(info.mode & 0777U, 0640U);
+    EXPECT_TRUE(info.same_file_as(through_link)) << "chmod keeps the identity";
+
+    EXPECT_EQ(sys.unlink_path(file.c_str()).err, 0);
+    EXPECT_EQ(sys.unlink_path(file.c_str()).err, ENOENT);
+    std::error_code ignored;
+    fs::remove_all(pattern, ignored);
+}
+
+TEST(LinuxSyscalls, ConnectReportsRefusalForASocketFileNobodyListensOn) {
+    namespace fs = std::filesystem;
+    wsrv::LinuxSyscalls sys;
+    std::string pattern = (fs::temp_directory_path() / "wsrv-sys-XXXXXX").string();
+    ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
+    sockaddr_un address{};
+    address.sun_family = AF_UNIX;
+    const std::string path = pattern + "/s";
+    std::copy(path.begin(), path.end(), static_cast<char*>(address.sun_path));
+    const int server = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    const auto* generic = reinterpret_cast<const sockaddr*>(&address);
+    ASSERT_EQ(::bind(server, generic, sizeof(address)), 0);
+    ASSERT_EQ(::listen(server, 1), 0);
+    ::close(server);  // the file stays, nobody answers
+
+    const int client = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    EXPECT_EQ(sys.connect(client, generic, sizeof(address)).err, ECONNREFUSED);
+    ::close(client);
+    std::error_code ignored;
+    fs::remove_all(pattern, ignored);
+}
+
+TEST(FakeSyscalls, ScriptsTheFilesystemCallsAndTheEffectiveUid) {
+    FakeSyscalls sys;
+    sys.succeed(Call::EffectiveUid, 4242);
+    EXPECT_EQ(sys.effective_uid(), 4242U);
+    EXPECT_NE(sys.effective_uid(), 4242U) << "a scripted value is used once";
+    sys.fail(Call::UnlinkPath, EPERM);
+    EXPECT_EQ(sys.unlink_path("/nonexistent/wsrv").err, EPERM);
+    EXPECT_EQ(sys.unlink_path("/nonexistent/wsrv").err, ENOENT);
+    EXPECT_EQ(sys.calls(Call::UnlinkPath), 2U);
 }
 
 }  // namespace
