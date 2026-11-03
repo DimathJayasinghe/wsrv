@@ -68,6 +68,21 @@ add_test(NAME capi_header_matches_symbols
     COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tools/check_c_api.py --root ${PROJECT_SOURCE_DIR})
 set_tests_properties(capi_consumer capi_abi_symbols capi_header_matches_symbols PROPERTIES LABELS capi)
 
+# PHP binding (M12, bindings/php): unit tests of the pure-PHP sidecar client, and an interop test that
+# starts the REAL wsrvd and drives it with the PHP Worker and a raw WebSocket client. PHP is optional
+# for building the server; CI checks that it is present so these cannot be skipped there unnoticed.
+find_program(WSRV_PHP php)
+if(WSRV_PHP)
+    add_test(NAME php_unit
+        COMMAND ${WSRV_PHP} ${PROJECT_SOURCE_DIR}/bindings/php/tests/run.php)
+    add_test(NAME php_interop
+        COMMAND ${WSRV_PHP} ${PROJECT_SOURCE_DIR}/bindings/php/tests/interop.php $<TARGET_FILE:wsrvd>)
+    set_tests_properties(php_unit php_interop PROPERTIES
+        LABELS php TIMEOUT 120 ENVIRONMENT "WSRV_PHP_NO_SKIP=1")
+else()
+    message(STATUS "php not found: the PHP binding tests are not registered")
+endif()
+
 # Differential tests against OpenSSL are test-only and optional (ADR-0005: no runtime dependency).
 find_package(OpenSSL QUIET)
 

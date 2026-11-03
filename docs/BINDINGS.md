@@ -102,6 +102,12 @@ Laravel/Symfony request (FPM) ──► `Wsrv\Client::publish()` ──► wsrvd
 ```
 FPM requests only *publish* (short-lived connection / persistent pconnect to wsrvd); inbound client messages are delivered to a CLI worker pool or HTTP webhook with HMAC signature. Delivery semantics: at-most-once by default; optional at-least-once with ack + replay window (documented).
 
+**What exists today (M12 slice 1, `bindings/php/`, pure PHP, no extension).** Two classes over the IPC protocol (`docs/IPC_PROTOCOL.md`):
+- `Wsrv\Client`: one connection to `wsrvd`: `connect()`, `poll()`, `sendText()`, `sendBinary()`, `closeConnection()`, `ping()`.
+- `Wsrv\Worker`: the callback style on top of it: `on('open'|'message'|'close'|'error'|'status', ...)`, `run()`, `step()`, `stop()`, with a `Connection` handle given to callbacks.
+
+`Wsrv\Client::publish()` / `subscribe()` (publish-only FPM requests, topics and rooms) are **not** implemented: they need the M10 broker. `Wsrv\Server` below is the *embedded* mode (FFI or extension, Mode A) and is also not implemented yet.
+
 ### 4.3 PHP API (target ergonomics)
 
 ```php

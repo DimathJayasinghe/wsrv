@@ -5,6 +5,7 @@
 #include "base/clock.hpp"
 #include "support/fake_backend.hpp"
 #include "support/fake_syscalls.hpp"
+#include "support/ipc_client.hpp"
 #include "support/tcp_client.hpp"
 #include "support/wire.hpp"
 #include "wsrv/wsrv.h"
@@ -45,34 +46,16 @@ using wsrv::ErrorCode;
 using wsrv::EventLoop;
 using wsrv::SteadyClock;
 using wsrv::test::Call;
+using wsrv::test::Client;
 using wsrv::test::FakeSyscalls;
+using wsrv::test::header;
+using wsrv::test::Reply;
+using wsrv::test::TempDir;
 using wsrv::wsrvd::IpcServer;
 using wsrv::wsrvd::IpcServerConfig;
 namespace ipc = wsrv::ipc;
 
 constexpr std::uint32_t kMaxFrame = 8192;
-
-/// A private directory removed with its contents.
-class TempDir {
-public:
-    TempDir() {
-        std::string pattern = (fs::temp_directory_path() / "wsrv-ipcd-XXXXXX").string();
-        EXPECT_NE(::mkdtemp(pattern.data()), nullptr);
-        path_ = pattern;
-    }
-    TempDir(const TempDir&) = delete;
-    TempDir& operator=(const TempDir&) = delete;
-    ~TempDir() {
-        std::error_code ignored;
-        fs::remove_all(path_, ignored);
-    }
-    [[nodiscard]] std::string file(const std::string& name) const {
-        return path_ + "/" + name;
-    }
-
-private:
-    std::string path_;
-};
 
 /// The server running on its own thread, as EmbeddedServer does: the loop and the server are
 /// created, run and destroyed on that thread; the test thread only talks to the socket.
@@ -137,157 +120,6 @@ private:
     EventLoop* loop_ = nullptr;  // guarded by mutex_
     std::optional<ErrorCode> failure_;
 };
-
-/// What a test cares about in a reply.
-struct Reply {
-    enum class Kind : std::uint8_t { HelloOk, Status, Pong, Event, Other } kind = Kind::Other;
-    std::uint32_t request = 0;
-    std::uint8_t status = 0;
-    std::uint32_t max_frame = 0;
-    // EVENT frames
-    ipc::EventKind event = ipc::EventKind::Open;
-    std::uint64_t conn = 0;
-    std::uint16_t close_code = 0;
-    bool clean = false;
-    std::string data;
-};
-
-const sockaddr* as_generic(const sockaddr_un& address) {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    return reinterpret_cast<const sockaddr*>(&address);
-}
-
-/// A blocking client with a receive timeout, so a server that misbehaves fails a test instead of
-/// hanging it.
-class Client {
-public:
-    explicit Client(const std::string& path, std::chrono::milliseconds timeout = 3000ms)
-        : fd_{::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0)}, decoder_{1U << 20U} {
-        sockaddr_un address{};
-        address.sun_family = AF_UNIX;
-        std::memcpy(address.sun_path, path.c_str(), path.size() + 1);
-        connected_ = ::connect(fd_, as_generic(address), sizeof(address)) == 0;
-        timeval tv{};
-        tv.tv_sec = static_cast<time_t>(timeout.count() / 1000);
-        tv.tv_usec = static_cast<suseconds_t>((timeout.count() % 1000) * 1000);
-        ::setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    }
-    Client(const Client&) = delete;
-    Client& operator=(const Client&) = delete;
-    ~Client() {
-        ::close(fd_);
-    }
-    [[nodiscard]] bool connected() const {
-        return connected_;
-    }
-
-    void send_raw(const std::vector<std::byte>& bytes) const {
-        ASSERT_EQ(::send(fd_, bytes.data(), bytes.size(), MSG_NOSIGNAL),
-                  static_cast<ssize_t>(bytes.size()));
-    }
-    void send_message(const ipc::Message& message) const {
-        send_raw(encode(message));
-    }
-    /// For a peer the server is expected to drop: it may already have closed by the time we send,
-    /// and that is a valid outcome, so a failed send is not a test failure.
-    void send_hello_if_still_open() const {
-        const std::vector<std::byte> bytes = encode(ipc::Hello{});
-        (void)::send(fd_, bytes.data(), bytes.size(), MSG_NOSIGNAL);
-    }
-    void send_hello(std::string_view token = "") const {
-        ipc::Hello hello;
-        hello.token = ByteView{reinterpret_cast<const std::byte*>(token.data()),  // NOLINT
-                               token.size()};
-        send_message(hello);
-    }
-
-    /// The next frame, or nothing on EOF / timeout.
-    std::optional<Reply> receive() {
-        for (;;) {
-            ByteView view{pending_};
-            const auto before = view.size();
-            auto next = decoder_.next(view);
-            const auto consumed = before - view.size();
-            if (!next) {
-                return std::nullopt;
-            }
-            if (next->has_value()) {
-                const Reply reply = to_reply(**next);
-                pending_.erase(pending_.begin(),
-                               pending_.begin() + static_cast<std::ptrdiff_t>(consumed));
-                return reply;
-            }
-            pending_.erase(pending_.begin(),
-                           pending_.begin() + static_cast<std::ptrdiff_t>(consumed));
-            std::array<std::byte, 512> buffer{};
-            const ssize_t n = ::recv(fd_, buffer.data(), buffer.size(), 0);
-            if (n <= 0) {
-                return std::nullopt;
-            }
-            pending_.insert(pending_.end(), buffer.begin(), buffer.begin() + n);
-        }
-    }
-
-    /// True if the server closes the connection (EOF) without sending anything more.
-    [[nodiscard]] bool closed_by_server() const {
-        std::array<std::byte, 64> buffer{};
-        for (;;) {
-            const ssize_t n = ::recv(fd_, buffer.data(), buffer.size(), 0);
-            if (n == 0) {
-                return true;
-            }
-            if (n < 0) {
-                return errno == ECONNRESET;  // a reset is a close too; a timeout is not
-            }
-            return false;  // data arrived: it was not silent
-        }
-    }
-
-    static std::vector<std::byte> encode(const ipc::Message& message) {
-        wsrv::ByteBuffer out{1U << 20U};
-        EXPECT_TRUE(ipc::encode(message, 1U << 20U, out).has_value());
-        const ByteView view = out.view();
-        return {view.begin(), view.end()};
-    }
-
-private:
-    static Reply to_reply(const ipc::Message& message) {
-        Reply reply;
-        if (const auto* ok = std::get_if<ipc::HelloOk>(&message)) {
-            reply.kind = Reply::Kind::HelloOk;
-            reply.max_frame = ok->max_frame;
-        } else if (const auto* status = std::get_if<ipc::Status>(&message)) {
-            reply.kind = Reply::Kind::Status;
-            reply.request = status->request;
-            reply.status = status->status;
-        } else if (std::holds_alternative<ipc::Pong>(message)) {
-            reply.kind = Reply::Kind::Pong;
-        } else if (const auto* event = std::get_if<ipc::Event>(&message)) {
-            reply.kind = Reply::Kind::Event;
-            reply.event = event->kind;
-            reply.conn = event->conn;
-            reply.close_code = event->close_code;
-            reply.clean = event->clean;
-            reply.data = std::string{wsrv::as_chars(event->data)};
-        }
-        return reply;
-    }
-
-    int fd_;
-    bool connected_ = false;
-    ipc::FrameDecoder decoder_;
-    std::vector<std::byte> pending_;
-};
-
-/// A frame header with an arbitrary declared length: `u32 length, u8 type, u8 flags`.
-std::vector<std::byte> header(std::uint32_t length, std::uint8_t type, std::uint8_t flags = 0) {
-    return {std::byte(length >> 24U),
-            std::byte((length >> 16U) & 0xFFU),
-            std::byte((length >> 8U) & 0xFFU),
-            std::byte(length & 0xFFU),
-            std::byte(type),
-            std::byte(flags)};
-}
 
 struct IpcServerTest : public ::testing::Test {
     FakeSyscalls sys;
@@ -751,15 +583,24 @@ TEST_F(IpcServerTest, AnApplicationThatStopsReadingForTooLongIsDisconnected) {
     EXPECT_TRUE(client->closed_by_server());
 }
 
-TEST_F(IpcServerTest, AnApplicationThatReadsPromptlyIsNeverDisconnected) {
+TEST_F(IpcServerTest, AnApplicationThatKeepsReadingIsNeverDisconnectedHoweverLongItTakes) {
+    // The burst is queued BEFORE the application connects, so the daemon fills the socket the
+    // moment HELLO_OK is out and the stall clock starts then: the test thread cannot be late
+    // starting to read (pushing 6 MB while the daemon already waits was slow enough, under a
+    // sanitizer on a busy machine, to outlast the timeout before the first read).
+    push_burst(backend);
     IpcServerConfig c = config();
-    c.stall_timeout = 1500ms;
+    c.stall_timeout = 1000ms;
     const RunningServer server{sys, backend, c};
     const auto client = connect_ready(path());
-    push_burst(backend);
-    std::this_thread::sleep_for(300ms);  // slow, but well inside the stall timeout
+    // Read in steps with short pauses: the whole transfer takes longer than the stall timeout, but
+    // no single pause comes near it, so progress must restart the clock every time.
+    constexpr std::size_t kStep = 150;
     for (std::size_t i = 0; i < kBurst + 1; ++i) {
         ASSERT_TRUE(client->receive()) << "cut off at event " << i;
+        if (i % kStep == kStep - 1) {
+            std::this_thread::sleep_for(100ms);
+        }
     }
     client->send_message(ipc::Ping{});
     EXPECT_EQ(client->receive()->kind, Reply::Kind::Pong);

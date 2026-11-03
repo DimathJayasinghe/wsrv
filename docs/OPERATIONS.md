@@ -98,3 +98,56 @@ Admin endpoints: `/metrics`, `/healthz` (liveness), `/readyz` (accepting & not s
 | Many `handshake_failed` | log sample, Origin list | wrong origin config / scanners |
 | Memory growth | pool metrics, deflate on? | context takeover memory, leak (run soak with heaptrack) |
 | Clients dropping every N seconds | proxy idle timeout vs heartbeat | proxy timeout < ping interval |
+
+## 7. Running `wsrvd` (the sidecar)
+
+What the daemon does today (ADR-0017, IPC protocol in `docs/IPC_PROTOCOL.md`). Metrics and an admin listener arrive with M10.
+
+### Start-up
+```sh
+mkdir -m 700 /run/wsrv                       # private directory, owned by the service user (or root)
+install -m 600 /dev/null /etc/wsrv/ipc.token  # then put a long random token in it
+wsrvd --ipc-socket=/run/wsrv/ipc.sock --ipc-token-file=/etc/wsrv/ipc.token \
+      --listen-host=0.0.0.0 --listen-port=8080 --allow-origin=https://app.example.com
+```
+- The socket directory must not be group- or world-writable and must belong to the service user or root. The daemon creates the socket with mode `0600` and refuses to follow a symlink at that path.
+- The token file must be mode `0600` and owned by the service user. There is **no** command-line or config-file value for the token (it would show in `ps` and `/proc`). Without a token only the peer-uid check protects the socket, and the daemon warns at start-up.
+- `--config=FILE` reads `key = value` lines; later arguments override earlier ones. Keys: `ipc_socket`, `ipc_token_file`, `ipc_max_frame`, `ipc_hello_timeout_ms`, `ipc_stall_ms`, plus every embedded-server key (`listen_host`, `listen_port`, `threads`, `allow_origin`, `allow_missing_origin`, `max_message_size`, `max_connections`, `shutdown_grace_ms`, ...).
+- The daemon prints `ipc socket ... ready` and `websocket server listening on port N` on stderr when it is ready.
+
+### Signals and exit codes
+- `SIGTERM` / `SIGINT`: graceful stop. The IPC server closes first (the socket file is removed), then the WebSocket server sends Close 1001 to every connection, waits up to `shutdown_grace_ms`, closes the rest and joins its threads. Exit code 0.
+- A **second** signal during the graceful stop is not treated specially today (it does not force an immediate exit); use `SIGKILL` if a stop hangs. A stale socket file left by `SIGKILL` is recovered by the next start (it probes the socket and removes it only if nothing answers and it is ours).
+- `wsrvd` installs its signal handling before it creates any other thread (signals are read from a descriptor), so every thread it starts inherits the mask.
+- Exit code 1: bad configuration, unusable socket path or token file, bind failure, or an event-loop error. The reason is printed on stderr.
+- `SIGHUP` is not used (no reload yet).
+
+### Fork and process rules
+- `wsrvd` never forks. Run it under a supervisor (systemd, supervisord, a container runtime).
+- The embedded library (`libwsrv.so`) refuses calls from a forked child of the process that created the server (`WSRV_ERR_WRONG_PROCESS`): threads do not survive `fork()`. Create the server after the fork.
+- An application connects with one process per daemon. Do not share the IPC connection across a fork.
+
+### What happens when things go wrong
+| Situation | Behaviour |
+|---|---|
+| No application connected | New WebSocket clients complete the handshake and wait; events queue (bounded) and the queue's own limits pause the clients. The first application receives everything in order. |
+| Application disconnects | Connections it knew are closed with 1012 after `shutdown_grace_ms`; its later events for them are discarded; connections it never saw wait for the next application. |
+| Application stops reading for `ipc_stall_ms` | The IPC link is closed and its connections are closed with 1001 at once. |
+| Application sends garbage | The IPC link is closed with no reply. |
+| Second application connects | Refused with `STATUS(0, BACKPRESSURE)`; the first is unaffected. |
+| Daemon restarts | Browsers see the close or a dropped connection and must reconnect; messages in flight are lost (at-most-once). |
+
+### systemd example
+```ini
+[Service]
+User=wsrv
+RuntimeDirectory=wsrv
+RuntimeDirectoryMode=0700
+ExecStart=/usr/local/bin/wsrvd --config=/etc/wsrv/wsrvd.conf
+Restart=on-failure
+KillSignal=SIGTERM
+TimeoutStopSec=15
+NoNewPrivileges=yes
+ProtectSystem=strict
+PrivateTmp=yes
+```

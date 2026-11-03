@@ -48,6 +48,7 @@ jobs:
           cmake --version | head -1
           ninja --version
           clang-format-18 --version
+          php --version | head -1   # the PHP binding tests (bindings/php) must run in CI, not be skipped
       - name: Quality gates
         run: |
           cmake --preset dev
@@ -84,6 +85,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends libc++-18-dev libc++abi-18-dev libclang-rt-18-dev ccache
           clang++-18 --version | head -1
+          php --version | head -1   # the PHP binding tests (bindings/php) must run here too, not be skipped
       - name: dev-clang (ASan+UBSan)
         run: |
           cmake --preset dev-clang -DCMAKE_CXX_COMPILER=clang++-18

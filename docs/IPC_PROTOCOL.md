@@ -69,3 +69,7 @@ Answers every command (`SEND_*`, `CLOSE`) with the command's `request` id. `stat
 
 ## 7. Versioning
 Major version in `HELLO` must equal the daemon's (currently 0); minors are additive. Version 0 is not frozen: until 1.0, the frame set may change between minors with an ADR.
+
+## 8. Reference clients
+- PHP: `bindings/php` (`Wsrv\Client`, `Wsrv\Worker`).
+- C++ (tests): `tests/support/ipc_client.hpp`, a blocking client with a receive timeout. It speaks the protocol through the same `ipc/` codec the daemon uses; copy it as the starting point for a test of your own application against a real `wsrvd`.
