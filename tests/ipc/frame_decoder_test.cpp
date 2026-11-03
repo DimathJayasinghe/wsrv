@@ -54,7 +54,7 @@ Outcome run(const std::vector<std::byte>& stream, std::size_t chunk, std::size_t
                                                static_cast<std::ptrdiff_t>(pos + take));
         pos += take;
         ByteView input{piece};
-        while (!input.empty() || false) {
+        while (!input.empty()) {
             const auto r = decoder.next(input);
             if (!r) {
                 out.failure = r.error().code;

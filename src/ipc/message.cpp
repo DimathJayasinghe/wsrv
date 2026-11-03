@@ -167,7 +167,7 @@ public:
         return rest_.size();
     }
     std::uint8_t u8() {
-        WSRV_ASSERT(rest_.size() >= 1);
+        WSRV_ASSERT(!rest_.empty());
         const auto v = std::to_integer<std::uint8_t>(rest_[0]);
         rest_ = rest_.subspan(1);
         return v;
@@ -253,100 +253,119 @@ Result<void> encode(const Message& message, std::size_t max_frame, ByteBuffer& o
     }
 }
 
+namespace {
+
+Result<Message> parse_hello(Reader& r) {
+    if (r.remaining() < kHelloFixed) {
+        return invalid("ipc: hello too short");
+    }
+    Hello m;
+    m.major = r.u16();
+    m.minor = r.u16();
+    const std::size_t token_size = r.u16();
+    if (token_size > kMaxTokenSize || r.remaining() != token_size) {
+        return invalid("ipc: hello token size");
+    }
+    m.token = r.take(token_size);
+    return m;
+}
+
+Result<Message> parse_hello_ok(Reader& r) {
+    if (r.remaining() != kHelloOkSize) {
+        return invalid("ipc: hello_ok size");
+    }
+    HelloOk m;
+    m.major = r.u16();
+    m.minor = r.u16();
+    m.max_frame = r.u32();
+    return m;
+}
+
+Result<Message> parse_send(Reader& r, bool text) {
+    if (r.remaining() < kSendFixed) {
+        return invalid("ipc: send too short");
+    }
+    SendData m;
+    m.text = text;
+    m.request = r.u32();
+    m.conn = r.u64();
+    if (m.conn == 0) {
+        return invalid("ipc: connection id 0");
+    }
+    m.data = r.take_rest();
+    return m;
+}
+
+Result<Message> parse_close(Reader& r) {
+    if (r.remaining() < kCloseFixed) {
+        return invalid("ipc: close too short");
+    }
+    CloseCommand m;
+    m.request = r.u32();
+    m.conn = r.u64();
+    m.code = r.u16();
+    if (m.conn == 0 || r.remaining() > kMaxCloseReason) {
+        return invalid("ipc: close command fields");
+    }
+    m.reason = r.take_rest();
+    return m;
+}
+
+Result<Message> parse_event(Reader& r) {
+    if (r.remaining() < kEventFixed) {
+        return invalid("ipc: event too short");
+    }
+    Event m;
+    m.kind = static_cast<EventKind>(r.u8());
+    m.conn = r.u64();
+    m.close_code = r.u16();
+    const std::uint8_t clean = r.u8();
+    if (clean > 1) {
+        return invalid("ipc: clean flag");
+    }
+    m.clean = clean == 1;
+    if (!event_fields_consistent(m.kind, m.conn, m.close_code, m.clean)) {
+        return invalid("ipc: inconsistent event");
+    }
+    m.data = r.take_rest();
+    return m;
+}
+
+Result<Message> parse_status(Reader& r) {
+    if (r.remaining() != kStatusSize) {
+        return invalid("ipc: status size");
+    }
+    Status m;
+    m.request = r.u32();
+    m.status = r.u8();
+    return m;
+}
+
+}  // namespace
+
 Result<Message> parse_message(FrameType type, ByteView body) {
     Reader r{body};
     switch (type) {
-    case FrameType::Hello: {
-        if (r.remaining() < kHelloFixed) {
-            return invalid("ipc: hello too short");
-        }
-        Hello m;
-        m.major = r.u16();
-        m.minor = r.u16();
-        const std::size_t token_size = r.u16();
-        if (token_size > kMaxTokenSize || r.remaining() != token_size) {
-            return invalid("ipc: hello token size");
-        }
-        m.token = r.take(token_size);
-        return m;
-    }
-    case FrameType::HelloOk: {
-        if (r.remaining() != kHelloOkSize) {
-            return invalid("ipc: hello_ok size");
-        }
-        HelloOk m;
-        m.major = r.u16();
-        m.minor = r.u16();
-        m.max_frame = r.u32();
-        return m;
-    }
+    case FrameType::Hello:
+        return parse_hello(r);
+    case FrameType::HelloOk:
+        return parse_hello_ok(r);
     case FrameType::SendText:
-    case FrameType::SendBinary: {
-        if (r.remaining() < kSendFixed) {
-            return invalid("ipc: send too short");
-        }
-        SendData m;
-        m.text = type == FrameType::SendText;
-        m.request = r.u32();
-        m.conn = r.u64();
-        if (m.conn == 0) {
-            return invalid("ipc: connection id 0");
-        }
-        m.data = r.take_rest();
-        return m;
-    }
-    case FrameType::Close: {
-        if (r.remaining() < kCloseFixed) {
-            return invalid("ipc: close too short");
-        }
-        CloseCommand m;
-        m.request = r.u32();
-        m.conn = r.u64();
-        m.code = r.u16();
-        if (m.conn == 0 || r.remaining() > kMaxCloseReason) {
-            return invalid("ipc: close command fields");
-        }
-        m.reason = r.take_rest();
-        return m;
-    }
+        return parse_send(r, true);
+    case FrameType::SendBinary:
+        return parse_send(r, false);
+    case FrameType::Close:
+        return parse_close(r);
     case FrameType::Ping:
-    case FrameType::Pong: {
+    case FrameType::Pong:
         if (r.remaining() != 0) {
             return invalid("ipc: ping/pong carries no body");
         }
-        if (type == FrameType::Ping) {
-            return Message{Ping{}};
-        }
-        return Message{Pong{}};
-    }
-    case FrameType::Event: {
-        if (r.remaining() < kEventFixed) {
-            return invalid("ipc: event too short");
-        }
-        Event m;
-        m.kind = static_cast<EventKind>(r.u8());
-        m.conn = r.u64();
-        m.close_code = r.u16();
-        const std::uint8_t clean = r.u8();
-        if (clean > 1) {
-            return invalid("ipc: clean flag");
-        }
-        m.clean = clean == 1;
-        if (!event_fields_consistent(m.kind, m.conn, m.close_code, m.clean)) {
-            return invalid("ipc: inconsistent event");
-        }
-        m.data = r.take_rest();
-        return m;
-    }
-    case FrameType::Status: {
-        if (r.remaining() != kStatusSize) {
-            return invalid("ipc: status size");
-        }
-        Status m;
-        m.request = r.u32();
-        m.status = r.u8();
-        return m;
-    }
+        return type == FrameType::Ping ? Message{Ping{}} : Message{Pong{}};
+    case FrameType::Event:
+        return parse_event(r);
+    case FrameType::Status:
+        return parse_status(r);
     }
     return invalid("ipc: unknown frame type");
 }

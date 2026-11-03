@@ -39,7 +39,7 @@ Result<std::optional<Message>> FrameDecoder::finish(ByteView body) {
     if (!message) {
         return stop(message.error());
     }
-    return std::optional<Message>{std::move(*message)};
+    return std::optional<Message>{*message};
 }
 
 Result<std::optional<Message>> FrameDecoder::next(ByteView& input) {

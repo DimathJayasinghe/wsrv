@@ -83,7 +83,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     WSRV_ASSERT(whole.reencoded.size() <= bytes.size());
     WSRV_ASSERT(std::equal(whole.reencoded.begin(), whole.reencoded.end(), bytes.begin()));
 
-    WSRV_ASSERT(!whole.failure || *whole.failure == wsrv::ErrorCode::InvalidFrame ||
-                *whole.failure == wsrv::ErrorCode::BufferFull);
+    const bool failure_is_expected = !whole.failure.has_value() ||
+                                     *whole.failure == wsrv::ErrorCode::InvalidFrame ||
+                                     *whole.failure == wsrv::ErrorCode::BufferFull;
+    WSRV_ASSERT(failure_is_expected);
     return 0;
 }
