@@ -13,7 +13,9 @@
 #include "protocol/handshake.hpp"
 #include "server/config.hpp"
 #include "server/handler.hpp"
+#include "server/handshake_decider.hpp"
 #include "server/loop_shard.hpp"
+#include "server/pending_gate.hpp"
 #include "server/worker_thread.hpp"
 
 #include <atomic>
@@ -33,6 +35,9 @@ struct ServerDeps {
     ISyscalls* sys = nullptr;
     const IClock* clock = nullptr;
     ILogger* logger = nullptr;
+    /// Opt-in asynchronous handshake decision (ADR-0018). Null = valid upgrades are accepted at
+    /// once. Borrowed; must be thread-safe (it is asked from every loop thread).
+    IHandshakeDecider* decider = nullptr;
 };
 
 /// A WebSocket server (Facade): accepts connections, runs them on one or more loops, shuts them
@@ -105,6 +110,7 @@ private:
 
     ServerConfig config_;
     IHandlerFactory& factory_;
+    IHandshakeDecider* decider_;  // null = the hook is off
     LinuxSyscalls own_sys_;
     SteadyClock own_clock_;
     NullLogger own_logger_;
@@ -116,7 +122,8 @@ private:
     // Destruction runs in reverse declaration order. The acceptor and the signal watcher come
     // last: they are destroyed first and stop feeding new work. Then the worker threads (their
     // shards die on their own threads), then loop 0's shard, which everything above may use.
-    std::atomic<std::size_t> live_{0};  // connections alive in every shard: the global cap
+    std::atomic<std::size_t> live_{0};      // connections alive in every shard: the global cap
+    std::unique_ptr<PendingGate> pending_;  // upgrades waiting for the decider; outlives the shards
     std::unique_ptr<HandshakeNegotiator> negotiator_;
     std::unique_ptr<ShardShared> shared_;
     std::unique_ptr<LoopShard> main_;  // shard 0, on the thread that created the server

@@ -53,8 +53,9 @@ public:
     IPoller& operator=(IPoller&&) = delete;
     virtual ~IPoller() = default;
 
-    /// Start watching `fd` for `interest` (Read and/or Write; Error and Hangup are always
-    /// reported). Error if `fd` is already registered or invalid.
+    /// Start watching `fd` for `interest` (Read and/or Write; Error is always reported, and so
+    /// is a full hang-up (HUP). Asking for Hangup also reports a peer that merely closed its
+    /// sending side, which Read implies). Error if `fd` is already registered or invalid.
     [[nodiscard]] virtual Result<void> add(int fd, PollEvents interest, std::uint64_t token) = 0;
     /// Replace the interest and token of a registered descriptor. Also re-arms the edge: if the
     /// descriptor is ready now, it is reported again.

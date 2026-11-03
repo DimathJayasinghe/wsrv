@@ -24,6 +24,20 @@ Result<void> LoopLink::submit(ConnectionId id, SessionCommand command) {
     }
 }
 
+Result<void> LoopLink::submit_decision(ConnectionId id, HandshakeVerdict verdict) {
+    const std::lock_guard lock{mutex_};
+    if (loop_ == nullptr) {
+        return fail(ErrorCode::Closing, "handshake: the server is gone");
+    }
+    ISessionDirectory* const directory = directory_;
+    try {
+        return loop_->post(
+            [directory, id, verdict = std::move(verdict)] { directory->decide(id, verdict); });
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "handshake: out of memory");
+    }
+}
+
 void LoopLink::close() noexcept {
     const std::lock_guard lock{mutex_};
     loop_ = nullptr;

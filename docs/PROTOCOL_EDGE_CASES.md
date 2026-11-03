@@ -34,6 +34,14 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | EC-H24 | Very long idle keep-alive after 101 failure | Close |
 | EC-H25 | Auth hook rejects / throws / times out | 401/403/500 mapped; exception contained and flagged (`from_exception`); an invalid refusal or a rule that alters the negotiated subprotocol/extensions becomes 500. Timeouts: M6 (rules are synchronous in M2) |
 | EC-H26 | `/healthz` request without Upgrade (if enabled) | 200, then close |
+| EC-H27 | Hook enabled: the request is valid, the application has not answered yet | Connection waits in `AwaitingDecision`: no 101 yet, no reads (RDHUP and HUP still reported), decision timer running (ADR-0018) |
+| EC-H28 | Frame bytes arrive behind the request head while waiting (same read, or later) | Same-read bytes are copied (at most one 16 KiB read) and delivered, in order, right after the 101; later bytes stay in the kernel buffer |
+| EC-H29 | No decision within `handshake_decision_timeout` | Fail closed: 503 with `Retry-After`, then close; no `on_open`, no `on_close`; slot released |
+| EC-H30 | Decision arrives twice, or after timeout / disconnect / shutdown | Ignored on the loop; no effect on a later connection (ids are never reused) |
+| EC-H31 | More upgrades pending than `max_pending_handshakes`, or no decider / full host queue | The new connection is refused at once with 503 (never queued unbounded, never accepted by default) |
+| EC-H32 | Server shutdown or `abort` while waiting | 503 queued and written if possible; slot released exactly once on every exit path |
+| EC-H33 | Peer closes (FIN) or resets while waiting | Reset is seen at once; FIN is seen via RDHUP at once; connection finished, no handler, slot released |
+| EC-H34 | A forwarded header value is over 4 KiB, or the forwarded total over 16 KiB | 431, never a silently truncated credential |
 
 ## 2. Framing (EC-F)
 

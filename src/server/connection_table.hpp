@@ -32,6 +32,8 @@ public:
 
     /// ISessionDirectory: run a command on a live (not finished) connection.
     void run(ConnectionId id, const SessionCommand& command) override;
+    /// ISessionDirectory: the application's answer for a waiting upgrade.
+    void decide(ConnectionId id, const HandshakeVerdict& verdict) override;
 
     /// Live connections, including finished ones not yet destroyed.
     [[nodiscard]] std::size_t size() const noexcept {

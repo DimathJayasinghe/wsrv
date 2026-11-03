@@ -54,6 +54,10 @@ public:
     ServerBuilder& logger(ILogger& logger) noexcept;
     ServerBuilder& clock(const IClock& clock) noexcept;
     ServerBuilder& syscalls(ISyscalls& sys) noexcept;
+    /// Turn the asynchronous handshake decision on (ADR-0018): every valid upgrade waits for
+    /// `decider` (see ServerConfig::handshake_decision_timeout). Without it, upgrades are accepted
+    /// at once. Borrowed; must be thread-safe and outlive the Server.
+    ServerBuilder& handshake_decider(IHandshakeDecider& decider) noexcept;
 
     /// Everything else (limits, timeouts, Origin policy, subprotocols, delivery mode...).
     [[nodiscard]] ServerConfig& config() noexcept {

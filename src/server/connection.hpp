@@ -10,11 +10,15 @@
 #include "server/config.hpp"
 #include "server/connection_host.hpp"
 #include "server/handler.hpp"
+#include "server/handshake_decider.hpp"
+#include "server/handshake_verdict.hpp"
+#include "server/pending_gate.hpp"
 #include "server/session_handle.hpp"
 
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace wsrv {
 
@@ -30,6 +34,10 @@ struct ConnectionContext {
     MutableByteView scratch;
     /// How a SessionHandle reaches this loop; null (tests, single-use fakes) gives inert handles.
     std::shared_ptr<LoopLink> link;
+    /// The asynchronous handshake decision (ADR-0018). Both null = the hook is off and a valid
+    /// upgrade is accepted at once. A decider without a gate is a wiring mistake and fails closed.
+    IHandshakeDecider* decider = nullptr;
+    PendingGate* pending = nullptr;
 };
 
 /// One client, from accept to close: the glue between a transport, the handshake, the
@@ -38,6 +46,14 @@ struct ConnectionContext {
 ///
 ///   Handshaking --101--> Established --Closed event / transport failure--> Finished
 ///        \--refusal / timeout / EOF-------------------------------------------^
+///
+/// With a handshake decider (ADR-0018) a valid upgrade first waits:
+///
+///   Handshaking --valid--> AwaitingDecision --decide(accept)--> Established
+///                               \--decide(reject) / timeout / decider full / shutdown--> 4xx/5xx,
+///                               close
+///                               \--peer gone / abort-------------------------------------->
+///                               Finished
 ///
 /// Rules this class enforces (ADR-0013, docs/PROTOCOL_EDGE_CASES.md):
 ///  - Reads are edge-triggered: read until WouldBlock, but at most ReadBudget per event; when the
@@ -75,6 +91,9 @@ public:
     /// Run a command from outside a handler callback (a SessionHandle's posted task), then write
     /// what it queued. Ignored once the connection is finished.
     void apply(const SessionCommand& command);
+    /// The application's answer to a waiting upgrade (ADR-0018). Acts only in AwaitingDecision;
+    /// late, repeated and misdirected answers are dropped without effect.
+    void decide(const HandshakeVerdict& verdict);
     /// Shutdown deadline passed: close the transport now, without waiting for the peer.
     void abort();
 
@@ -101,13 +120,18 @@ public:
     }
 
 private:
-    enum class Phase : std::uint8_t { Handshaking, Established, Finished };
+    enum class Phase : std::uint8_t { Handshaking, AwaitingDecision, Established, Finished };
 
     // reading
     void on_readable();
     void on_bytes(MutableByteView chunk);
     void on_handshake_bytes(MutableByteView chunk);
     void establish(HandshakeOutcome& outcome, MutableByteView leftover);
+    void await_decision(HandshakeOutcome& outcome, ByteView leftover);
+    void on_waiting_event(PollEvents events);
+    void accept_pending(const HandshakeVerdict& verdict);
+    /// Answer the upgrade with `status` and close once it is written (no body, Connection: close).
+    void refuse(int status);
     void feed_session(MutableByteView chunk);
     void dispatch(const SessionEvent& event);
     void deliver_part(const SessionEvent& event);
@@ -146,6 +170,7 @@ private:
     arm(TimerHandle& slot, std::chrono::milliseconds delay, void (Connection::*action)());
     void disarm(TimerHandle& slot) noexcept;
     void on_handshake_timeout();
+    void on_decision_timeout();
     void on_tick();
     void on_write_stall();
 
@@ -165,6 +190,17 @@ private:
     std::string head_out_;  ///< the handshake response (101 or a refusal) still being written
     std::size_t head_sent_ = 0;
     bool close_after_head_ = false;  ///< a refusal: close once it is written
+
+    /// An upgrade that passed every rule and waits for the application. It owns everything needed
+    /// to finish the job later: the rendered 101, the key (to render it again with another
+    /// subprotocol), the bytes that arrived behind the head (the read buffer is shared and reused,
+    /// so they are copied; at most one read), and its place among the waiting upgrades.
+    struct PendingUpgrade {
+        HandshakeOutcome outcome;
+        std::vector<std::byte> leftover;
+        std::optional<PendingSlot> slot;
+    };
+    std::optional<PendingUpgrade> pending_;
 
     std::optional<ProtocolSession> session_;
     std::unique_ptr<IWebSocketHandler> handler_;

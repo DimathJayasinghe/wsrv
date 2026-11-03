@@ -111,6 +111,19 @@ TEST_F(EpollPollerTest, APeerThatClosesIsReportedAsHangupAndReadable) {
     EXPECT_TRUE(wsrv::has(events[0].events, PollEvents::Read));  // the EOF is read, not guessed
 }
 
+TEST_F(EpollPollerTest,
+       HangupInterestSeesAPeerCloseButNotIncomingData) {  // ADR-0018: waiting phase
+    Pair pair;
+    ASSERT_TRUE(poller->add(pair.near.get(), PollEvents::Hangup, 4).has_value());
+    pair.send("data the owner does not want to read yet");
+    EXPECT_TRUE(wait(*poller).empty()) << "data is not reported when Read is not wanted";
+    ASSERT_EQ(::shutdown(pair.far.get(), SHUT_WR), 0);  // a FIN: the peer is done sending
+    const auto events = wait(*poller);
+    ASSERT_EQ(events.size(), 1U);
+    EXPECT_TRUE(wsrv::has(events[0].events, PollEvents::Hangup));
+    EXPECT_FALSE(wsrv::has(events[0].events, PollEvents::Read));
+}
+
 TEST_F(EpollPollerTest, ModifyChangesTheInterestAndRearmsTheEdge) {
     const Pair pair;
     ASSERT_TRUE(poller->add(pair.near.get(), kRead, 5).has_value());

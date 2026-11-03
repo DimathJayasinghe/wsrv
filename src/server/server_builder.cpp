@@ -44,6 +44,11 @@ ServerBuilder& ServerBuilder::syscalls(ISyscalls& sys) noexcept {
     return *this;
 }
 
+ServerBuilder& ServerBuilder::handshake_decider(IHandshakeDecider& decider) noexcept {
+    deps_.decider = &decider;
+    return *this;
+}
+
 std::unique_ptr<Server> ServerBuilder::build() const {
     const Result<Endpoint> endpoint = parse_endpoint(ip_, port_);
     if (!endpoint) {

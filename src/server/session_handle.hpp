@@ -4,6 +4,7 @@
 #include "base/error.hpp"
 #include "net/event_loop.hpp"
 #include "server/handler.hpp"
+#include "server/handshake_verdict.hpp"
 
 #include <functional>
 #include <memory>
@@ -30,6 +31,11 @@ public:
     /// command queued (a posted command is not inside a handler callback, so nothing else would
     /// flush it). A missing connection is not an error: the command is dropped.
     virtual void run(ConnectionId id, const SessionCommand& command) = 0;
+
+    /// Deliver the application's answer to the upgrade of connection `id`. It acts only if that
+    /// connection exists and is still waiting for a decision; in every other case (gone, already
+    /// decided, never asked) it is dropped without effect (ADR-0018 section 3).
+    virtual void decide(ConnectionId id, const HandshakeVerdict& verdict) = 0;
 };
 
 /// The one object shared between a loop and every thread that holds a SessionHandle (ADR-0014
@@ -56,6 +62,9 @@ public:
     /// (EC-N14), Error{ResourceExhausted} on allocation failure. Ok means "accepted for
     /// delivery", not "delivered".
     [[nodiscard]] Result<void> submit(ConnectionId id, SessionCommand command);
+
+    /// The same for a handshake decision: runs `ISessionDirectory::decide` on the loop thread.
+    [[nodiscard]] Result<void> submit_decision(ConnectionId id, HandshakeVerdict verdict);
 
     /// After this, submit() fails with Closing. Safe to call more than once.
     void close() noexcept;

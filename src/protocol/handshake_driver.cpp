@@ -10,14 +10,19 @@ HandshakeDriver::HandshakeDriver(const HandshakeNegotiator& negotiator, const Ht
 
 HandshakeOutcome HandshakeDriver::feed(ByteView chunk) {
     if (finished_) {
-        return HandshakeOutcome{HandshakeStep::Finished, 0, {}, {}, {}};
+        HandshakeOutcome ignored;
+        ignored.step = HandshakeStep::Finished;
+        return ignored;
     }
     const HttpResult<ParseProgress> progress = parser_.feed(chunk);
     if (!progress) {
         return reject(progress.error(), chunk.size());
     }
     if (!progress->complete) {
-        return HandshakeOutcome{HandshakeStep::NeedMore, progress->consumed, {}, {}, {}};
+        HandshakeOutcome waiting;
+        waiting.step = HandshakeStep::NeedMore;
+        waiting.consumed = progress->consumed;
+        return waiting;
     }
     return decide(progress->consumed);
 }
@@ -32,6 +37,7 @@ HandshakeOutcome HandshakeDriver::decide(std::size_t consumed) {
         outcome.step = HandshakeStep::Accepted;
         outcome.subprotocol = accepted->subprotocol;
         outcome.annotations = accepted->annotations;
+        outcome.accept_key = accepted->accept_key;
     } else {
         outcome.step = HandshakeStep::Rejected;
     }

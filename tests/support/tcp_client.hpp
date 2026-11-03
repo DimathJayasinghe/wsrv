@@ -79,8 +79,14 @@ public:
         return head;
     }
 
-    /// Handshake with a standard request; true if the answer is 101.
-    bool upgrade(std::string_view origin = "https://app.example.com") {
+    /// True if nothing at all (data or EOF) arrives within `period`: used to show that a server
+    /// is deliberately keeping quiet.
+    [[nodiscard]] bool silent_for(std::chrono::milliseconds period) const {
+        return !readable(period);
+    }
+
+    /// The standard upgrade request, without sending it.
+    static std::string upgrade_request(std::string_view origin = "https://app.example.com") {
         std::string request =
             "GET /chat HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\n"
             "Upgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
@@ -91,7 +97,12 @@ public:
             request += "\r\n";
         }
         request += "\r\n";
-        return send(request) && read_http_head().rfind("HTTP/1.1 101 ", 0) == 0;
+        return request;
+    }
+
+    /// Handshake with a standard request; true if the answer is 101.
+    bool upgrade(std::string_view origin = "https://app.example.com") {
+        return send(upgrade_request(origin)) && read_http_head().rfind("HTTP/1.1 101 ", 0) == 0;
     }
 
     /// One server frame (unmasked), or nullopt on timeout/EOF/garbage.

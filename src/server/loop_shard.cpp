@@ -59,7 +59,9 @@ LoopShard::LoopShard(Key /*unused*/,
                                                                      shared_.negotiator,
                                                                      shared_.factory,
                                                                      MutableByteView{scratch_},
-                                                                     link_});
+                                                                     link_,
+                                                                     shared_.decider,
+                                                                     shared_.pending});
 }
 
 LoopShard::~LoopShard() {
