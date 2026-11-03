@@ -36,6 +36,13 @@ void ConnectionTable::run(ConnectionId id, const SessionCommand& command) {
     }
 }
 
+void ConnectionTable::decide(ConnectionId id, const HandshakeVerdict& verdict) {
+    const auto found = connections_.find(id);
+    if (found != connections_.end()) {
+        found->second->decide(verdict);
+    }
+}
+
 void ConnectionTable::for_each(const std::function<void(Connection&)>& visit) {
     for (auto& entry : connections_) {
         visit(*entry.second);

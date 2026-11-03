@@ -30,6 +30,9 @@ struct HandshakeOutcome {
     /// Accepted only: facts for the application, never sent to the peer.
     std::string subprotocol;
     std::map<std::string, std::string> annotations;
+    /// Accepted only: the Sec-WebSocket-Accept value, kept so a response can be rendered again
+    /// later with another subprotocol (the application decides asynchronously, ADR-0018).
+    std::string accept_key;
 };
 
 /// The opening handshake as a pure function of bytes (ADR-0002): feeds the strict HTTP parser,
@@ -44,6 +47,13 @@ public:
     HandshakeDriver(const HandshakeNegotiator& negotiator, const HttpLimits& limits);
 
     [[nodiscard]] HandshakeOutcome feed(ByteView chunk);
+
+    /// The parsed request head. Meaningful once feed() returned Accepted or Rejected for a
+    /// request that parsed; the driver keeps it so the connection can describe the request to
+    /// the application without parsing it twice.
+    [[nodiscard]] const HttpRequest& request() const {
+        return parser_.request();
+    }
 
 private:
     [[nodiscard]] HandshakeOutcome decide(std::size_t consumed);

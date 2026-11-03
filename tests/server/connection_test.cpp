@@ -2,7 +2,9 @@
 // Connection behaviour with a fake transport and a fake host: no kernel, no real time.
 #include "server/connection.hpp"
 
+#include "server/handshake_decider.hpp"
 #include "server/message_writer.hpp"
+#include "server/pending_gate.hpp"
 #include "support/fake_connection_env.hpp"
 #include "support/wire.hpp"
 
@@ -936,6 +938,316 @@ TEST_F(ConnectionTest, APeerThatHangsUpWhilePausedIsStillSeenAndTheConnectionEnd
     conn->on_event(PollEvents::Hangup);  // epoll reports a hang-up whatever the interest mask
     EXPECT_TRUE(conn->finished());
     EXPECT_EQ(script.closed, 1);
+}
+
+// ---- the asynchronous handshake decision (ADR-0018)
+// -----------------------------------------------
+
+/// Records what the server asked and keeps the handles; can be told to refuse the request.
+class FakeDecider final : public wsrv::IHandshakeDecider {
+public:
+    wsrv::Result<void> request(wsrv::HandshakeRequest request,
+                               wsrv::PendingHandle handle) override {
+        if (refuse) {
+            return wsrv::fail(ErrorCode::BufferFull, "fake decider: queue full");
+        }
+        requests.push_back(std::move(request));
+        handles.push_back(std::move(handle));
+        return {};
+    }
+    std::vector<wsrv::HandshakeRequest> requests;
+    std::vector<wsrv::PendingHandle> handles;
+    bool refuse = false;
+};
+
+wsrv::HandshakeVerdict accept_verdict(std::optional<std::string> subprotocol = std::nullopt) {
+    wsrv::HandshakeVerdict verdict;
+    verdict.accept = true;
+    verdict.subprotocol = std::move(subprotocol);
+    return verdict;
+}
+
+wsrv::HandshakeVerdict reject_verdict(int status) {
+    wsrv::HandshakeVerdict verdict;
+    verdict.accept = false;
+    verdict.status = status;
+    return verdict;
+}
+
+wsrv::HandshakeConfig hook_handshake_config() {
+    wsrv::HandshakeConfig config = handshake_config();
+    config.subprotocols = {"chat", "v2"};
+    return config;
+}
+
+struct HookTest : public ConnectionTest {
+    FakeDecider decider;
+    wsrv::PendingGate gate{4};
+    wsrv::HandshakeNegotiator hook_negotiator{hook_handshake_config()};
+    std::string request_text{kRequest};
+
+    /// A connection with the hook on. `which_gate` lets a test share one gate between connections.
+    std::unique_ptr<Connection> make(FakeTransport*& out_transport, wsrv::PendingGate* which_gate) {
+        auto owned = std::make_unique<FakeTransport>();
+        out_transport = owned.get();
+        wsrv::ConnectionContext context{
+            host, config, hook_negotiator, factory, wsrv::MutableByteView{scratch}, nullptr};
+        context.decider = &decider;
+        context.pending = which_gate;
+        auto connection =
+            std::make_unique<Connection>(static_cast<wsrv::ConnectionId>(host.retired.size() + 20),
+                                         wsrv::Endpoint{},
+                                         std::move(owned),
+                                         context);
+        EXPECT_TRUE(connection->start().has_value());
+        return connection;
+    }
+    void open_hook() {
+        conn = make(transport, &gate);
+    }
+    void send_request() {
+        send_bytes(request_text);
+    }
+    void decide(const wsrv::HandshakeVerdict& verdict) {
+        conn->decide(verdict);
+    }
+};
+
+TEST_F(HookTest, AValidUpgradeWaitsForTheApplicationAndWritesNothingYet) {  // EC-H27
+    open_hook();
+    send_request();
+    ASSERT_EQ(decider.requests.size(), 1U);
+    EXPECT_EQ(decider.requests[0].path, "/chat");
+    EXPECT_EQ(decider.requests[0].origin, "https://app.example.com");
+    EXPECT_TRUE(transport->written.empty()) << "no 101 before the application agrees";
+    EXPECT_EQ(script.created, 0);
+    EXPECT_EQ(script.opened, 0);
+    EXPECT_EQ(gate.waiting(), 1U);
+    EXPECT_FALSE(conn->finished());
+    EXPECT_FALSE(wsrv::has(host.interest_now, PollEvents::Read)) << "reading is off while waiting";
+    EXPECT_TRUE(wsrv::has(host.interest_now, PollEvents::Hangup)) << "a leaving client is noticed";
+}
+
+TEST_F(HookTest, AcceptWritesThe101OpensTheHandlerAndFreesTheSlot) {
+    open_hook();
+    send_request();
+    decide(accept_verdict());
+    EXPECT_EQ(transport->written_text().rfind(kResponseStart, 0), 0U);
+    EXPECT_EQ(script.opened, 1);
+    EXPECT_EQ(gate.waiting(), 0U);
+    EXPECT_TRUE(wsrv::has(host.interest_now, PollEvents::Read)) << "the edge is re-armed";
+    EXPECT_EQ(host.pending_timers(), 1U) << "only the tick timer is left, not the decision timer";
+}
+
+TEST_F(HookTest, FrameBytesBehindTheHeadWaitAndArriveInOrderAfterTheAccept) {  // EC-H28
+    open_hook();
+    const auto first = client_frame(Opcode::Text, true, "one");
+    send_bytes(request_text + std::string{wsrv::as_chars(wsrv::ByteView{first})});
+    EXPECT_EQ(script.texts.size(), 0U) << "nothing is delivered before the decision";
+    const auto second = client_frame(Opcode::Text, true, "two");
+    transport->feed(wsrv::ByteView{second});
+    conn->on_event(PollEvents::Read);  // a stray event: the bytes must stay in the kernel
+    EXPECT_EQ(transport->unread(), second.size());
+    decide(accept_verdict());
+    EXPECT_EQ(script.texts, std::vector<std::string>{"one"});
+    readable();
+    EXPECT_EQ(script.texts, (std::vector<std::string>{"one", "two"}));
+}
+
+TEST_F(HookTest, ReadingStopsMidLoopWhenTheHeadCompletesAndNoLaterByteIsLost) {  // EC-H28
+    scratch.resize(128);  // the head and the frames behind it arrive over several reads
+    open_hook();
+    const auto first = client_frame(Opcode::Text, true, "one");
+    const auto second = client_frame(Opcode::Text, true, std::string(300, 'x'));
+    send_bytes(request_text + std::string{wsrv::as_chars(wsrv::ByteView{first})} +
+               std::string{wsrv::as_chars(wsrv::ByteView{second})});
+    EXPECT_GT(transport->unread(), 0U) << "the loop must not read on after the head is complete";
+    decide(accept_verdict());
+    readable();
+    ASSERT_EQ(script.texts.size(), 2U) << "nothing may be read and thrown away while waiting";
+    EXPECT_EQ(script.texts[0], "one");
+    EXPECT_EQ(script.texts[1], std::string(300, 'x'));
+}
+
+TEST_F(HookTest, TheApplicationMayChooseAnotherOfferedSubprotocol) {
+    request_text.insert(request_text.find("\r\n\r\n") + 2, "Sec-WebSocket-Protocol: chat, v2\r\n");
+    open_hook();
+    send_request();
+    ASSERT_EQ(decider.requests.size(), 1U);
+    EXPECT_EQ(decider.requests[0].subprotocol, "chat") << "the server's own preference";
+    EXPECT_EQ(decider.requests[0].offered_subprotocols, (std::vector<std::string>{"chat", "v2"}));
+    decide(accept_verdict("v2"));
+    const std::string response = transport->written_text();
+    EXPECT_NE(response.find("Sec-WebSocket-Protocol: v2\r\n"), std::string::npos);
+    EXPECT_EQ(response.find("Sec-WebSocket-Protocol: chat"), std::string::npos);
+    EXPECT_NE(response.find("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
+              std::string::npos);
+}
+
+TEST_F(HookTest, ARefusalIsAnsweredWithItsStatusThenTheConnectionCloses) {
+    open_hook();
+    send_request();
+    decide(reject_verdict(401));
+    const std::string response = transport->written_text();
+    EXPECT_EQ(response.rfind("HTTP/1.1 401 ", 0), 0U);
+    EXPECT_NE(response.find("Connection: close"), std::string::npos);
+    EXPECT_EQ(response.find("Retry-After"), std::string::npos) << "only 429 and 503 carry it";
+    EXPECT_TRUE(conn->finished());
+    EXPECT_EQ(script.created, 0) << "the application's handler never existed";
+    EXPECT_EQ(gate.waiting(), 0U);
+}
+
+TEST_F(HookTest, A429And503CarryRetryAfter) {
+    open_hook();
+    send_request();
+    decide(reject_verdict(429));
+    EXPECT_NE(transport->written_text().find("Retry-After: 5\r\n"), std::string::npos);
+}
+
+TEST_F(HookTest, NoDecisionInTimeFailsClosedWith503) {  // EC-H29
+    config.handshake_decision_timeout = 500ms;
+    open_hook();
+    send_request();
+    host.advance(400ms, 50ms);
+    EXPECT_FALSE(conn->finished());
+    host.advance(200ms, 50ms);
+    EXPECT_TRUE(conn->finished());
+    const std::string response = transport->written_text();
+    EXPECT_EQ(response.rfind("HTTP/1.1 503 ", 0), 0U);
+    EXPECT_NE(response.find("Retry-After: 5\r\n"), std::string::npos);
+    EXPECT_EQ(script.created, 0);
+    EXPECT_EQ(script.opened, 0);
+    EXPECT_EQ(script.closed, 0) << "on_close is owed only after on_open";
+    EXPECT_EQ(gate.waiting(), 0U);
+}
+
+TEST_F(HookTest, ALateOrRepeatedDecisionChangesNothing) {  // EC-H30
+    open_hook();
+    send_request();
+    decide(accept_verdict());
+    const std::string written = transport->written_text();
+    decide(reject_verdict(403));  // after the accept
+    decide(accept_verdict());     // twice
+    EXPECT_EQ(transport->written_text(), written);
+    EXPECT_EQ(script.opened, 1);
+    EXPECT_FALSE(conn->finished());
+
+    FakeTransport* second_transport = nullptr;
+    auto timed_out = make(second_transport, &gate);
+    second_transport->feed(request_text);
+    timed_out->on_event(PollEvents::Read);
+    host.advance(config.handshake_decision_timeout + 100ms, 100ms);
+    ASSERT_TRUE(timed_out->finished());
+    const std::string refusal = second_transport->written_text();
+    timed_out->decide(accept_verdict());  // after the timeout
+    EXPECT_EQ(second_transport->written_text(), refusal);
+}
+
+TEST_F(HookTest, APeerThatLeavesWhileWaitingEndsQuietlyAndFreesTheSlot) {  // EC-H33, EC-H21
+    open_hook();
+    send_request();
+    conn->on_event(PollEvents::Hangup);
+    EXPECT_TRUE(conn->finished());
+    EXPECT_TRUE(transport->written.empty());
+    EXPECT_EQ(script.created, 0);
+    EXPECT_EQ(script.closed, 0);
+    EXPECT_EQ(gate.waiting(), 0U);
+    EXPECT_EQ(host.pending_timers(), 0U);
+    decide(accept_verdict());  // the application answers a connection that is gone
+    EXPECT_TRUE(transport->written.empty());
+}
+
+TEST_F(HookTest, ShutdownWhileWaitingAnswers503) {  // EC-H32
+    open_hook();
+    send_request();
+    conn->begin_shutdown();
+    EXPECT_EQ(transport->written_text().rfind("HTTP/1.1 503 ", 0), 0U);
+    EXPECT_TRUE(conn->finished());
+    EXPECT_EQ(gate.waiting(), 0U);
+}
+
+TEST_F(HookTest, AbortAndDestructionWhileWaitingFreeTheSlotExactlyOnce) {  // EC-H32
+    open_hook();
+    send_request();
+    EXPECT_EQ(gate.waiting(), 1U);
+    conn->abort();
+    EXPECT_TRUE(conn->finished());
+    EXPECT_EQ(gate.waiting(), 0U);
+    conn.reset();
+    EXPECT_EQ(gate.waiting(), 0U);
+
+    open_hook();
+    send_request();
+    EXPECT_EQ(gate.waiting(), 1U);
+    conn.reset();  // a server torn down with the client still waiting
+    EXPECT_EQ(gate.waiting(), 0U);
+}
+
+TEST_F(HookTest, AnUpgradeOverTheBoundIsRefusedAtOnceWithoutAskingTheApplication) {  // EC-H31
+    wsrv::PendingGate one{1};
+    FakeTransport* first_transport = nullptr;
+    FakeTransport* second_transport = nullptr;
+    auto first = make(first_transport, &one);
+    auto second = make(second_transport, &one);
+    first_transport->feed(request_text);
+    first->on_event(PollEvents::Read);
+    second_transport->feed(request_text);
+    second->on_event(PollEvents::Read);
+    EXPECT_EQ(decider.requests.size(), 1U) << "only the first was asked";
+    EXPECT_FALSE(first->finished());
+    EXPECT_TRUE(second->finished());
+    EXPECT_EQ(second_transport->written_text().rfind("HTTP/1.1 503 ", 0), 0U);
+    first->decide(accept_verdict());
+    EXPECT_EQ(one.waiting(), 0U);
+}
+
+TEST_F(HookTest, ADeciderThatCannotTakeTheRequestMeansRefusalNeverAcceptance) {  // fail closed
+    decider.refuse = true;
+    open_hook();
+    send_request();
+    EXPECT_TRUE(conn->finished());
+    EXPECT_EQ(transport->written_text().rfind("HTTP/1.1 503 ", 0), 0U);
+    EXPECT_EQ(script.opened, 0);
+    EXPECT_EQ(gate.waiting(), 0U);
+}
+
+TEST_F(HookTest, AHookWithoutAGateFailsClosed) {
+    FakeTransport* t = nullptr;
+    auto connection = make(t, nullptr);
+    t->feed(request_text);
+    connection->on_event(PollEvents::Read);
+    EXPECT_TRUE(connection->finished());
+    EXPECT_EQ(t->written_text().rfind("HTTP/1.1 503 ", 0), 0U);
+    EXPECT_TRUE(decider.requests.empty());
+}
+
+TEST_F(HookTest, AForwardedHeaderOverTheCapIsRefusedWith431) {  // EC-H34
+    config.handshake_forward_headers = {"Cookie"};
+    request_text.insert(request_text.find("\r\n\r\n") + 2,
+                        "Cookie: " + std::string(wsrv::kMaxForwardedValueBytes + 1, 'a') + "\r\n");
+    config.http.max_total_bytes = 16 * 1024;
+    open_hook();
+    send_request();
+    EXPECT_TRUE(conn->finished());
+    EXPECT_EQ(transport->written_text().rfind("HTTP/1.1 431 ", 0), 0U);
+    EXPECT_TRUE(decider.requests.empty());
+    EXPECT_EQ(gate.waiting(), 0U);
+}
+
+TEST_F(HookTest, ARefusedHandshakeNeverReachesTheApplication) {
+    request_text.replace(request_text.find("Version: 13"), 11, "Version: 12");
+    open_hook();
+    send_request();
+    EXPECT_TRUE(decider.requests.empty());
+    EXPECT_EQ(transport->written_text().rfind("HTTP/1.1 426 ", 0), 0U);
+    EXPECT_EQ(gate.waiting(), 0U);
+}
+
+TEST_F(HookTest, WithoutADeciderNothingChanges) {  // the hook is opt-in
+    open();                                        // the plain fixture: no decider, no gate
+    send_bytes(kRequest);
+    EXPECT_EQ(transport->written_text().rfind(kResponseStart, 0), 0U);
+    EXPECT_EQ(script.opened, 1);
 }
 
 }  // namespace

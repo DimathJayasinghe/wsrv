@@ -10,6 +10,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace wsrv {
 
@@ -44,6 +46,15 @@ struct ServerConfig {
     std::chrono::milliseconds write_stall_timeout{30000};  ///< queued output and no byte accepted
     std::chrono::milliseconds shutdown_grace{10000};       ///< graceful shutdown deadline (FR-S5)
 
+    // The asynchronous handshake decision (ADR-0018). Used only when a decider is injected.
+    /// How long a valid upgrade waits for the application before it is refused with 503.
+    std::chrono::milliseconds handshake_decision_timeout{3000};
+    /// How many upgrades may wait for the application at once, in the whole server.
+    std::size_t max_pending_handshakes = 256;
+    /// Request headers copied to the application with the handshake (compared case-insensitively).
+    /// Cookie and Authorization are secrets: they are forwarded only if listed here.
+    std::vector<std::string> handshake_forward_headers;
+
     SlowConsumerPolicy slow_consumer = SlowConsumerPolicy::Close;
     ReadBudget read;
 };
@@ -52,6 +63,9 @@ struct ServerConfig {
 inline constexpr std::size_t kMaxConfiguredConnections = std::size_t{1} << 20;
 inline constexpr std::size_t kMaxConfiguredThreads = 256;
 inline constexpr std::size_t kMaxConfiguredReadBytes = std::size_t{16} << 20;
+inline constexpr std::chrono::milliseconds kMinDecisionTimeout{100};
+inline constexpr std::chrono::milliseconds kMaxDecisionTimeout{60000};
+inline constexpr std::size_t kMaxForwardedHeaderNames = 64;
 
 /// Check a ServerConfig, including its SessionConfig and HttpLimits. Durations within
 /// (0, 24 h] for the three server timers (each is a mandatory defence: handshake timeout T2,
@@ -60,5 +74,9 @@ inline constexpr std::size_t kMaxConfiguredReadBytes = std::size_t{16} << 20;
 /// @return Error{InvalidConfig} whose context names the offending field. The HandshakeConfig is
 /// not checked here: HandshakeNegotiator validates it when it is constructed.
 [[nodiscard]] Result<void> validate(const ServerConfig& config);
+
+/// The number of upgrades that may wait for the application at once: `max_pending_handshakes`,
+/// but never more than `max_connections` (ADR-0018 section 4).
+[[nodiscard]] std::size_t effective_max_pending_handshakes(const ServerConfig& config) noexcept;
 
 }  // namespace wsrv

@@ -20,6 +20,9 @@ constexpr std::size_t kMaxBatch = 256;
     if (has(interest, PollEvents::Read)) {
         bits |= EPOLLIN | EPOLLRDHUP;
     }
+    if (has(interest, PollEvents::Hangup)) {
+        bits |= EPOLLRDHUP;  // "tell me if the peer closes", without asking for its data
+    }
     if (has(interest, PollEvents::Write)) {
         bits |= EPOLLOUT;
     }

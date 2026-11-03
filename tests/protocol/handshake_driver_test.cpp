@@ -56,6 +56,23 @@ TEST_F(HandshakeDriverTest, AValidUpgradeIsAcceptedWithTheExactResponse) {
     EXPECT_EQ(outcome.subprotocol, "chat");
 }
 
+TEST_F(HandshakeDriverTest,
+       AnAcceptedOutcomeKeepsTheKeyAndTheRequestForALaterDecision) {  // ADR-0018
+    const wsrv::HandshakeOutcome outcome = feed(kRequest);
+    ASSERT_EQ(outcome.step, HandshakeStep::Accepted);
+    EXPECT_EQ(outcome.accept_key, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+    EXPECT_EQ(driver.request().target, "/chat");
+    EXPECT_EQ(driver.request().values("Origin").size(), 1U);
+}
+
+TEST_F(HandshakeDriverTest, ARejectedOutcomeCarriesNoAcceptKey) {
+    std::string request{kRequest};
+    request.replace(request.find("Version: 13"), 11, "Version: 12");
+    const wsrv::HandshakeOutcome outcome = feed(request);
+    ASSERT_EQ(outcome.step, HandshakeStep::Rejected);
+    EXPECT_TRUE(outcome.accept_key.empty());
+}
+
 TEST_F(HandshakeDriverTest, TheRequestMayArriveOneByteAtATime) {  // EC-H17, FR-F1 spirit
     wsrv::HandshakeOutcome outcome;
     for (std::size_t i = 0; i < kRequest.size(); ++i) {

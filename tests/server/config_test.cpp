@@ -45,6 +45,52 @@ TEST(ServerConfig, TheDefaultsAreValid) {
     EXPECT_TRUE(validate(ServerConfig{}).has_value());
 }
 
+TEST(ServerConfig, TheHandshakeHookDefaultsAreFailClosedAndBounded) {  // ADR-0018
+    const ServerConfig config;
+    EXPECT_EQ(config.handshake_decision_timeout, 3000ms);
+    EXPECT_EQ(config.max_pending_handshakes, 256U);
+    EXPECT_TRUE(config.handshake_forward_headers.empty()) << "secrets are forwarded only if listed";
+}
+
+TEST(ServerConfig, TheDecisionTimeoutMustBeBetween100MsAnd60Seconds) {
+    ServerConfig config;
+    config.handshake_decision_timeout = 99ms;
+    EXPECT_EQ(complaint(config), "handshake_decision_timeout must be in [100 ms, 60 s] (ADR-0018)");
+    config.handshake_decision_timeout = 60001ms;
+    EXPECT_NE(complaint(config), "");
+    config.handshake_decision_timeout = 100ms;
+    EXPECT_EQ(complaint(config), "");
+    config.handshake_decision_timeout = 60000ms;
+    EXPECT_EQ(complaint(config), "");
+}
+
+TEST(ServerConfig, PendingHandshakesNeedAPositiveBoundThatNeverExceedsTheConnectionCap) {
+    ServerConfig config;
+    config.max_pending_handshakes = 0;
+    EXPECT_EQ(complaint(config), "max_pending_handshakes must be in (0, 1048576] (ADR-0018)");
+    config.max_pending_handshakes = wsrv::kMaxConfiguredConnections + 1;
+    EXPECT_NE(complaint(config), "");
+    // A small server is valid with the default: the effective bound is clamped, not refused.
+    config.max_pending_handshakes = 256;
+    config.max_connections = 10;
+    EXPECT_EQ(complaint(config), "");
+    EXPECT_EQ(wsrv::effective_max_pending_handshakes(config), 10U);
+    config.max_connections = 1000;
+    EXPECT_EQ(wsrv::effective_max_pending_handshakes(config), 256U);
+}
+
+TEST(ServerConfig, ForwardedHeaderNamesMustBeHeaderTokens) {
+    ServerConfig config;
+    config.handshake_forward_headers = {"Cookie", "X-Session"};
+    EXPECT_EQ(complaint(config), "");
+    config.handshake_forward_headers = {"Bad Name"};
+    EXPECT_EQ(complaint(config), "handshake_forward_headers has a name that is not a header token");
+    config.handshake_forward_headers = {""};
+    EXPECT_NE(complaint(config), "");
+    config.handshake_forward_headers.assign(65, "X-A");
+    EXPECT_NE(complaint(config), "") << "the list itself is bounded";
+}
+
 TEST(ServerConfig, ARejectedValueNamesItsField) {
     ServerConfig config;
     config.max_connections = 0;

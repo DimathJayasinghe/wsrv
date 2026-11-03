@@ -13,7 +13,9 @@
 #include "server/connection.hpp"
 #include "server/connection_table.hpp"
 #include "server/handler.hpp"
+#include "server/handshake_decider.hpp"
 #include "server/loop_host.hpp"
+#include "server/pending_gate.hpp"
 #include "server/session_handle.hpp"
 
 #include <atomic>
@@ -32,8 +34,10 @@ struct ShardShared {
     IHandlerFactory& factory;               // create() may be called from several loops at once
     ISyscalls& sys;
     const IClock& clock;
-    ILogger& logger;                 // must be thread-safe once threads > 1
-    std::atomic<std::size_t>& live;  // connections alive in all shards (the global cap)
+    ILogger& logger;                       // must be thread-safe once threads > 1
+    std::atomic<std::size_t>& live;        // connections alive in all shards (the global cap)
+    IHandshakeDecider* decider = nullptr;  // null = valid upgrades are accepted at once
+    PendingGate* pending = nullptr;        // the bound on upgrades waiting for the decider
 };
 
 /// Everything that belongs to one loop thread: the loop, the connections it serves and what they

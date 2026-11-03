@@ -62,3 +62,15 @@ Built-in token validation (option 3), per-IP rate limiting of failed attempts (M
 - A new connection phase and a timer: one more state in `Connection` to test and fuzz (the handshake fuzz target gains a decider that answers late).
 - Operators who list `Cookie` or `Authorization` accept that those secrets pass through the host process; the default forwards nothing.
 - Fail-closed means an unresponsive application makes new connections fail with 503; that is the intended signal, not a bug.
+
+## Amendments
+
+### Amendment 1 (2026-11-03, slice 1 design review): what the code pass settled
+1. **Bytes behind the request head.** The read buffer is shared by all connections of a loop, so bytes that arrive in the same read as the head cannot stay there while the application thinks. They are copied into an owned buffer (at most one read, 16 KiB) and fed to the session right after the 101. Section 4's "holds only its response string and a timer" is therefore "plus at most 16 KiB of pipelined bytes": worst case `max_pending_handshakes` x 16 KiB (4 MiB at the default). Bytes that arrive later stay in the kernel (reading is off).
+2. **Reading off is not "paused reads".** `pause_reads()` belongs to the application's session. The waiting phase drops Read interest on its own flag; `RDHUP` stays registered so a client that leaves is noticed at once, not at the timeout. On accept the registration is changed for real (Read added back), because an edge-triggered registration only reports data again after a mask change.
+3. **The decision is not a session command.** It enters the loop through its own table method and acts only in `AwaitingDecision`; in any other state it is dropped silently (late, duplicate, unknown id). The synchronous errors of section 3 (`INVALID_ARGUMENT` for a subprotocol the client did not offer, a status outside the allowed set) are produced on the caller's thread, where `PendingHandle` holds a copy of the offered subprotocols. `NO_SUCH_CONN` for a connection that is gone comes from the host's own bookkeeping (slice 2), not from the core.
+4. **Accepting with another subprotocol** re-renders the 101, so the handshake outcome now carries the accept key.
+5. **`max_pending_handshakes` is global** (one atomic shared by all loops, like the connection cap), released through an RAII slot exactly once on every exit.
+6. **`Retry-After` is 5 seconds** for 429 and 503, a constant for now (not configurable).
+7. **Shutdown while waiting** answers 503 (section 3 says shutdown rejects), instead of the silent drop used for a handshake that is still being read.
+8. **"Never above `max_connections`" is a clamp, not a refusal.** The default (256) is larger than many small servers' `max_connections`, so validation only requires `0 < max_pending_handshakes <= 1048576` and the effective bound is `min(max_pending_handshakes, max_connections)`.

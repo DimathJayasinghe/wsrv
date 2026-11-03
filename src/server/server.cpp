@@ -14,7 +14,7 @@
 namespace wsrv {
 
 Server::Server(Key /*unused*/, ServerConfig config, const ServerDeps& deps)
-    : config_{std::move(config)}, factory_{*deps.factory},
+    : config_{std::move(config)}, factory_{*deps.factory}, decider_{deps.decider},
       sys_{deps.sys != nullptr ? *deps.sys : static_cast<ISyscalls&>(own_sys_)},
       clock_{deps.clock != nullptr ? *deps.clock : static_cast<const IClock&>(own_clock_)},
       logger_{deps.logger != nullptr ? *deps.logger : static_cast<ILogger&>(own_logger_)} {}
@@ -45,8 +45,16 @@ Result<std::unique_ptr<Server>> Server::create(ServerConfig config, const Server
 Result<void> Server::init() {
     try {
         negotiator_ = std::make_unique<HandshakeNegotiator>(config_.handshake);
-        shared_ = std::make_unique<ShardShared>(
-            ShardShared{config_, *negotiator_, factory_, sys_, clock_, logger_, live_});
+        pending_ = std::make_unique<PendingGate>(effective_max_pending_handshakes(config_));
+        shared_ = std::make_unique<ShardShared>(ShardShared{config_,
+                                                            *negotiator_,
+                                                            factory_,
+                                                            sys_,
+                                                            clock_,
+                                                            logger_,
+                                                            live_,
+                                                            decider_,
+                                                            pending_.get()});
     } catch (const std::invalid_argument&) {
         return fail(ErrorCode::InvalidConfig, "server: invalid handshake configuration");
     } catch (const std::bad_alloc&) {

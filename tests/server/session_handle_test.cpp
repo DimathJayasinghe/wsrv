@@ -80,6 +80,7 @@ public:
             command(*found->second);
         }
     }
+    void decide(ConnectionId /*id*/, const wsrv::HandshakeVerdict& /*verdict*/) override {}
     std::map<ConnectionId, wsrv::Session*> sessions;
 };
 

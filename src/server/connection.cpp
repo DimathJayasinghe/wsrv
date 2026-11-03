@@ -68,6 +68,10 @@ void Connection::on_event(PollEvents events) noexcept {
         return;
     }
     try {
+        if (phase_ == Phase::AwaitingDecision) {
+            on_waiting_event(events);
+            return;
+        }
         const bool dead_peer = has(events, PollEvents::Hangup) || has(events, PollEvents::Error);
         if (dead_peer) {
             reads_paused_ = false;  // a dead peer cannot be slowed down: drain it and see the end
@@ -91,6 +95,9 @@ void Connection::on_event(PollEvents events) noexcept {
 void Connection::begin_shutdown() {
     if (phase_ == Phase::Handshaking) {
         finish(std::nullopt);
+    } else if (phase_ == Phase::AwaitingDecision) {
+        refuse(503);  // EC-H32: the client was told "valid, wait"; it gets a real answer
+        settle();
     } else if (phase_ == Phase::Established) {
         close(CloseCode::GoingAway, "server shutting down");  // EC-C18
         settle();
@@ -110,7 +117,8 @@ void Connection::on_readable() {
     const ReadBudget& budget = ctx_.config.read;
     std::size_t reads = 0;
     std::size_t bytes = 0;
-    while (phase_ != Phase::Finished && !transport_dead_ && !reads_paused_) {
+    while (phase_ != Phase::Finished && phase_ != Phase::AwaitingDecision && !transport_dead_ &&
+           !reads_paused_) {
         if (reads >= budget.max_reads_per_event || bytes >= budget.max_bytes_per_event) {
             if (const Result<void> again = ctx_.host.rewatch(watch_, interest_); !again) {
                 transport_failed(again.error());
@@ -153,9 +161,15 @@ void Connection::on_handshake_bytes(MutableByteView chunk) {
         head_out_ = std::move(outcome.response);
         close_after_head_ = true;
         return;
-    case HandshakeStep::Accepted:
-        establish(outcome, chunk.subspan(std::min(outcome.consumed, chunk.size())));
+    case HandshakeStep::Accepted: {
+        const MutableByteView behind = chunk.subspan(std::min(outcome.consumed, chunk.size()));
+        if (ctx_.decider != nullptr) {
+            await_decision(outcome, behind);
+        } else {
+            establish(outcome, behind);
+        }
         return;
+    }
     }
 }
 
@@ -182,6 +196,110 @@ void Connection::establish(HandshakeOutcome& outcome, MutableByteView leftover) 
         return;
     }
     feed_session(leftover);
+}
+
+// ---- the asynchronous handshake decision (ADR-0018) ---------------------------------------------
+
+/// The upgrade is valid, but only the application knows whether this client may come in. Park it:
+/// keep what is needed to finish later, stop reading (the client's next bytes stay in the kernel,
+/// not in our memory) and ask. Every way out of this function that is not "asked" refuses with a
+/// real HTTP answer: the hook never accepts by default.
+void Connection::await_decision(HandshakeOutcome& outcome, ByteView leftover) {
+    disarm(handshake_timer_);
+    std::optional<PendingSlot> slot =
+        ctx_.pending != nullptr ? ctx_.pending->try_enter() : std::optional<PendingSlot>{};
+    if (!slot) {
+        log(LogLevel::Warn, "too many upgrades waiting for a decision, refusing");  // EC-H31
+        refuse(503);
+        return;
+    }
+    std::optional<HandshakeRequest> request =
+        make_handshake_request(HandshakeFacts{id_, peer_, driver_.request(), outcome.subprotocol},
+                               ctx_.config.handshake_forward_headers);
+    if (!request) {
+        log(LogLevel::Info, "handshake header over the forwarding cap, refusing");  // EC-H34
+        refuse(431);
+        return;
+    }
+    auto offered = std::make_shared<const std::vector<std::string>>(request->offered_subprotocols);
+    pending_.emplace(PendingUpgrade{std::move(outcome),
+                                    std::vector<std::byte>(leftover.begin(), leftover.end()),
+                                    std::move(slot)});
+    phase_ = Phase::AwaitingDecision;
+    apply_interest();  // Read off, Hangup on: a client that leaves is noticed at once
+    if (phase_ == Phase::Finished) {
+        return;  // the registration could not be changed and the connection was dropped
+    }
+    if (!arm(handshake_timer_,
+             ctx_.config.handshake_decision_timeout,
+             &Connection::on_decision_timeout)) {
+        drop_transport();
+        return;
+    }
+    // From here the decision may arrive at any time, so the state above is complete before asking.
+    if (const Result<void> asked =
+            ctx_.decider->request(std::move(*request), PendingHandle{ctx_.link, id_, offered});
+        !asked) {
+        log(LogLevel::Warn, "nobody can decide the handshake, refusing");  // fail closed
+        refuse(503);
+    }
+}
+
+/// While waiting only the death of the peer matters: nothing is read and nothing is owed.
+void Connection::on_waiting_event(PollEvents events) {
+    if (has(events, PollEvents::Hangup) || has(events, PollEvents::Error)) {
+        finish(std::nullopt);  // EC-H33: no 101 was sent, no handler exists
+    }
+}
+
+void Connection::decide(const HandshakeVerdict& verdict) {
+    if (phase_ != Phase::AwaitingDecision || !pending_) {
+        return;  // EC-H30: late, repeated or for a connection that has moved on
+    }
+    if (verdict.accept) {
+        accept_pending(verdict);
+    } else {
+        refuse(is_decision_status(verdict.status) ? verdict.status : 403);
+    }
+    settle();  // a decision is not inside a callback: write the 101 or the refusal now
+}
+
+void Connection::accept_pending(const HandshakeVerdict& verdict) {
+    if (!pending_) {
+        return;  // decide() checked; this keeps the function safe on its own
+    }
+    HandshakeOutcome outcome = std::move(pending_->outcome);
+    std::vector<std::byte> leftover = std::move(pending_->leftover);
+    pending_.reset();  // the place among the waiting upgrades is free from now on
+    disarm(handshake_timer_);
+    if (verdict.subprotocol && *verdict.subprotocol != outcome.subprotocol) {
+        outcome.subprotocol = *verdict.subprotocol;
+        outcome.response = render_response(
+            HandshakeDecision{HandshakeAccept{outcome.accept_key, outcome.subprotocol, {}, {}}});
+    }
+    establish(outcome, MutableByteView{leftover});
+}
+
+void Connection::refuse(int status) {
+    disarm(handshake_timer_);
+    pending_.reset();
+    phase_ =
+        Phase::Handshaking;  // the driver is finished: later bytes are ignored, as for any refusal
+    HandshakeReject reject{status, {}, false};
+    if (status == 429 || status == 503) {
+        reject.headers.push_back(HttpHeader{"Retry-After", std::to_string(kRetryAfterSeconds)});
+    }
+    head_out_ = render_response(HandshakeDecision{std::move(reject)});
+    close_after_head_ = true;
+}
+
+void Connection::on_decision_timeout() {
+    handshake_timer_ = TimerHandle{};
+    if (phase_ == Phase::AwaitingDecision) {
+        log(LogLevel::Warn, "handshake decision timed out, refusing");  // EC-H29
+        refuse(503);
+        settle();
+    }
 }
 
 void Connection::feed_session(MutableByteView chunk) {
@@ -357,7 +475,10 @@ void Connection::set_write_blocked(bool blocked) {
 /// kernel report a writable socket again.
 void Connection::apply_interest() {
     const bool want_write = write_blocked_ || writable_owed_;
-    const PollEvents reading = reads_paused_ ? PollEvents::None : PollEvents::Read;
+    PollEvents reading = reads_paused_ ? PollEvents::None : PollEvents::Read;
+    if (phase_ == Phase::AwaitingDecision) {
+        reading = PollEvents::Hangup;  // not Read: unread bytes stay in the kernel, a FIN is seen
+    }
     const PollEvents wanted = want_write ? (reading | PollEvents::Write) : reading;
     if (wanted == interest_) {
         return;
@@ -581,6 +702,7 @@ void Connection::release() noexcept {
     disarm(handshake_timer_);
     disarm(tick_timer_);
     disarm(stall_timer_);
+    pending_.reset();  // frees the place among the waiting upgrades, whatever ended the wait
     if (watching_) {
         ctx_.host.unwatch(watch_);
         watching_ = false;
