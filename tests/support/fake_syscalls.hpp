@@ -23,6 +23,11 @@ enum class Call : std::size_t {
     Shutdown,
     SetSockOpt,
     GetSockName,
+    Connect,
+    StatPath,
+    ChmodPath,
+    UnlinkPath,
+    EffectiveUid,
     EpollCreate1,
     EpollCtl,
     EpollWait,
@@ -119,6 +124,37 @@ public:
             return *injected;
         }
         return real_.getsockname(fd, addr, len);
+    }
+    SysResult connect(int fd, const sockaddr* addr, socklen_t len) override {
+        if (const auto injected = scripted(Call::Connect)) {
+            return *injected;
+        }
+        return real_.connect(fd, addr, len);
+    }
+    SysResult stat_path(const char* path, bool follow_links, FileInfo& info) override {
+        if (const auto injected = scripted(Call::StatPath)) {
+            return *injected;
+        }
+        return real_.stat_path(path, follow_links, info);
+    }
+    SysResult chmod_path(const char* path, std::uint32_t mode) override {
+        if (const auto injected = scripted(Call::ChmodPath)) {
+            return *injected;
+        }
+        return real_.chmod_path(path, mode);
+    }
+    SysResult unlink_path(const char* path) override {
+        if (const auto injected = scripted(Call::UnlinkPath)) {
+            return *injected;
+        }
+        return real_.unlink_path(path);
+    }
+    /// A scripted `succeed(Call::EffectiveUid, uid)` makes the next call report that uid.
+    std::uint32_t effective_uid() noexcept override {
+        if (const auto injected = scripted(Call::EffectiveUid)) {
+            return static_cast<std::uint32_t>(injected->value);
+        }
+        return real_.effective_uid();
     }
     SysResult epoll_create1(int flags) override {
         if (const auto injected = scripted(Call::EpollCreate1)) {

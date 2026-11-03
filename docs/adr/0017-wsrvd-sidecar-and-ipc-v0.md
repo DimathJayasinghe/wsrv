@@ -37,10 +37,18 @@ Every frame: `u32 length` (big-endian, bytes after this field), `u8 type`, `u8 f
 
 ### 4. Local security
 - The socket path is configured explicitly; the daemon creates it with mode `0600` (owner only), refuses a path whose parent directory is group- or world-writable, removes only a socket file that it owns and that no process answers on, and never follows a symlink at that path.
-- After accept, `SO_PEERCRED` is read; the peer uid must equal the daemon's uid or one listed in `ipc_allow_uid`.
+- After accept, `SO_PEERCRED` is read; the peer uid must equal the daemon's uid (`ipc_allow_uid` was dropped, see 4a).
 - `HELLO` carries a shared token (setting `ipc_token`, compared in constant time) as a second factor for deployments that share a uid between services. No token configured is allowed only with the uid check on; this is logged at startup.
 - The daemon never executes anything it receives and never interprets payloads.
 - Signals: `wsrvd` is a program, so unlike the library it installs `SIGINT/SIGTERM` handlers through the existing `SignalWatcher` and shuts down gracefully (`wsrv_server_stop` semantics). Fork rules for the library are unchanged; `wsrvd` itself never forks after threads start.
+
+### 4a. Amendment (2026-11-02, project owner, in chat): three clarifications found while designing slice 2
+- **No `ipc_allow_uid` in v0.** On Linux `connect()` to a pathname socket needs write permission on the socket file, so with mode `0600` only the owning uid can ever connect and a list of extra uids could never work. The socket stays `0600`; the `SO_PEERCRED` check stays as defence in depth (peer uid must equal the daemon's uid). Sharing the socket between uids is a later, separate decision (a configurable mode or group) and would be additive.
+- **A refused `HELLO` is answered with `STATUS` with request id 0** (`Hello` carries no id). Id 0 is reserved: clients number commands from 1, and the daemon (slice 3) answers a command with id 0 as `WSRV_ERR_INVALID_ARGUMENT`, so a status with id 0 can only mean "about the handshake". The codec itself does not judge ids. `wsrv.h` is not changed: a wrong version or a wrong token maps to `WSRV_ERR_INVALID_ARGUMENT`, a second consumer to `WSRV_ERR_BACKPRESSURE` ("the single slot is full, try later"). The connection is closed after the status.
+- **`HELLO` deadline.** A peer that connects and never sends `HELLO` would hold the single consumer slot forever, so the daemon closes an IPC connection that has not completed `HELLO` within `ipc_hello_timeout_ms` (default 5000). Before `HELLO` is accepted the decoder is bounded to the largest legal `HELLO` frame, not to `ipc_max_frame`, so an unauthenticated peer cannot make the daemon gather a large body.
+
+### 4b. Portability (owner requirement, 2026-11-02)
+The library is meant to run on Linux, macOS and Windows. Per PROJECT_PLAN and ADR-0004 only Linux is built in v1 (macOS `KqueuePoller` and Windows are M13). The rule for all new code until then: OS-specific calls live only in `net/` behind `ISyscalls`, and anything that differs per OS is behind a small interface (here: peer credentials, which are `SO_PEERCRED` on Linux, `LOCAL_PEERCRED`/`getpeereid` on macOS and a named-pipe or token check on Windows). `src/ipc/` is already free of OS headers. No new Linux-only code appears outside `net/`.
 
 ### 5. Out of scope for v0
 Publish-only clients for FPM (`publish`/`subscribe` need the M10 broker; the frame types are reserved and absent), multiple application connections, TCP transport, TLS on the IPC link, at-least-once delivery, the handshake authentication hook (same blocker as ADR-0016 section 7), and the PHP client (M12).

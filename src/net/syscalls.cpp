@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <sys/eventfd.h>
 #include <sys/signalfd.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace wsrv {
@@ -61,6 +62,35 @@ SysResult LinuxSyscalls::setsockopt(int fd, SockOpt option, const void* value, s
 
 SysResult LinuxSyscalls::getsockname(int fd, sockaddr* addr, socklen_t* len) {
     return captured(::getsockname(fd, addr, len));
+}
+
+SysResult LinuxSyscalls::connect(int fd, const sockaddr* addr, socklen_t len) {
+    return captured(::connect(fd, addr, len));
+}
+
+SysResult LinuxSyscalls::stat_path(const char* path, bool follow_links, FileInfo& info) {
+    struct stat raw {};
+    const int rc = follow_links ? ::stat(path, &raw) : ::lstat(path, &raw);
+    const SysResult result = captured(rc);
+    if (result.err == 0) {
+        info.mode = static_cast<std::uint32_t>(raw.st_mode);
+        info.uid = static_cast<std::uint32_t>(raw.st_uid);
+        info.device = static_cast<std::uint64_t>(raw.st_dev);
+        info.inode = static_cast<std::uint64_t>(raw.st_ino);
+    }
+    return result;
+}
+
+SysResult LinuxSyscalls::chmod_path(const char* path, std::uint32_t mode) {
+    return captured(::chmod(path, static_cast<mode_t>(mode)));
+}
+
+SysResult LinuxSyscalls::unlink_path(const char* path) {
+    return captured(::unlink(path));
+}
+
+std::uint32_t LinuxSyscalls::effective_uid() noexcept {
+    return static_cast<std::uint32_t>(::geteuid());
 }
 
 SysResult LinuxSyscalls::epoll_create1(int flags) {
