@@ -71,9 +71,42 @@ TEST(DaemonConfig, TheTokenFileIsRecordedNotRead) {
 
 TEST(DaemonConfig, AnExplicitFrameLimitIsUsed) {
     DaemonConfig config = with_socket();
-    ASSERT_TRUE(config.set("ipc_max_frame", "1048576").has_value());
+    ASSERT_TRUE(config.set("ipc_max_frame", "2097152").has_value());
     ASSERT_TRUE(config.finish().has_value());
-    EXPECT_EQ(config.max_frame(), 1048576U);
+    EXPECT_EQ(config.max_frame(), 2097152U);
+}
+
+TEST(DaemonConfig, AnExplicitFrameLimitMustHoldTheBiggestMessagePlusItsFrameFields) {
+    // An EVENT frame is 6 header bytes + 12 body fields + the payload. A smaller limit would let
+    // the WebSocket side accept a message the daemon can never forward, a path ADR-0017 does not
+    // define; so the daemon refuses to start instead.
+    constexpr std::size_t kOverhead = wsrv::ipc::kFrameHeaderSize + 12U;
+    DaemonConfig small = with_socket();
+    ASSERT_TRUE(small.set("max_message_size", "65536").has_value());
+    ASSERT_TRUE(small.set("ipc_max_frame", std::to_string(65536U + kOverhead - 1U)).has_value());
+    const auto refused = small.finish();
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, ErrorCode::InvalidConfig);
+
+    DaemonConfig exact = with_socket();
+    ASSERT_TRUE(exact.set("max_message_size", "65536").has_value());
+    ASSERT_TRUE(exact.set("ipc_max_frame", std::to_string(65536U + kOverhead)).has_value());
+    EXPECT_TRUE(exact.finish().has_value());
+}
+
+TEST(DaemonConfig, TheStallTimeoutIsBounded) {
+    for (const char* bad : {"0", "99", "600001", "-1", "abc", ""}) {
+        DaemonConfig config = with_socket();
+        EXPECT_FALSE(config.set("ipc_stall_ms", bad).has_value()) << bad;
+    }
+    DaemonConfig defaults = with_socket();
+    ASSERT_TRUE(defaults.finish().has_value());
+    EXPECT_EQ(defaults.stall_timeout(), 10000ms);
+
+    DaemonConfig config = with_socket();
+    ASSERT_TRUE(config.set("ipc_stall_ms", "100").has_value());
+    ASSERT_TRUE(config.finish().has_value());
+    EXPECT_EQ(config.stall_timeout(), 100ms);
 }
 
 TEST(DaemonConfig, TheFrameLimitHasASaneMinimumAndTheHardCeiling) {

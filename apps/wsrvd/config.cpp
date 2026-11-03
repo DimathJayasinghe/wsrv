@@ -79,6 +79,16 @@ Result<void> DaemonConfig::set(std::string_view key, std::string_view value) {
         hello_timeout_ = std::chrono::milliseconds{static_cast<std::int64_t>(*number)};
         return {};
     }
+    if (key == "ipc_stall_ms") {
+        const auto number = parse_number(value);
+        if (!number || *number < static_cast<std::uint64_t>(kMinStallTimeout.count()) ||
+            *number > static_cast<std::uint64_t>(kMaxStallTimeout.count())) {
+            return fail(ErrorCode::InvalidConfig,
+                        "config: ipc_stall_ms must be a number from 100 to 600000");
+        }
+        stall_timeout_ = std::chrono::milliseconds{static_cast<std::int64_t>(*number)};
+        return {};
+    }
     return embedded_.set(key, value);
 }
 
@@ -119,14 +129,21 @@ Result<void> DaemonConfig::finish() {
     if (socket_path_.empty()) {
         return fail(ErrorCode::InvalidConfig, "config: ipc_socket is required");
     }
+    const std::size_t message = embedded_.server().session.assembler.max_message_size;
     if (explicit_max_frame_ != 0) {
+        // The biggest message the WebSocket side accepts must fit one EVENT frame: otherwise the
+        // daemon would receive messages it can never forward. Refuse at startup, not at runtime.
+        // (message <= ceiling is not assumed: compare without adding.)
+        if (explicit_max_frame_ < kEventOverhead || message > explicit_max_frame_ - kEventOverhead) {
+            return fail(ErrorCode::InvalidConfig,
+                        "config: ipc_max_frame must be at least max_message_size + 18 bytes");
+        }
         max_frame_ =
             static_cast<std::uint32_t>(explicit_max_frame_);  // checked against the ceiling
         return {};
     }
     // Default: the biggest message plus headroom for the frame's own fields, so any message the
     // WebSocket side accepts fits in one IPC frame. Checked: a size near the ceiling must not wrap.
-    const std::size_t message = embedded_.server().session.assembler.max_message_size;
     if (message > ipc::kMaxFrameCeiling - kDefaultFrameHeadroom) {
         return fail(ErrorCode::InvalidConfig,
                     "config: max_message_size is too large to forward in one IPC frame");
