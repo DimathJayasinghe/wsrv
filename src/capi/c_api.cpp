@@ -141,6 +141,8 @@ const char* wsrv_status_name(int status) {
         return "WSRV_ERR_IO";
     case WSRV_ERR_INTERNAL:
         return "WSRV_ERR_INTERNAL";
+    default:
+        break;  // a number this library does not know: a newer one may have added it
     }
     return "WSRV_ERR_UNKNOWN";
 }
