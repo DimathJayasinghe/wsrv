@@ -39,7 +39,8 @@ struct IpcServerConfig {
 ///     WSRV_ERR_BACKPRESSURE) and is closed: the single consumer slot is full (ADR-0017 4a).
 ///  3. HELLO must arrive within hello_timeout, in a frame no larger than the biggest legal HELLO.
 ///     Wrong version, wrong token or any other first frame: one STATUS(request 0), then close.
-///  4. After HELLO_OK the decoder is widened to max_frame. Events flow out (the pump), commands flow
+///  4. After HELLO_OK the decoder is widened to max_frame. Events flow out (the pump), commands
+///  flow
 ///     in and each is answered with a STATUS (Relay). PING is answered with PONG. Any frame type
 ///     only the daemon may send, and a second HELLO, close the connection.
 ///  5. While no application is connected the daemon takes nothing from the backend: events wait in

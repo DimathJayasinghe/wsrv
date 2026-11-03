@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
-#include "ipc/message.hpp"
-
 #include <cstddef>
 #include <optional>
 #include <string_view>
 #include <unordered_set>
 
+#include "ipc/message.hpp"
 #include "wsrvd/backend.hpp"
 
 namespace wsrv::wsrvd {

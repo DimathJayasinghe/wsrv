@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "wsrvd/relay.hpp"
 
-#include "capi/c_status.hpp"
 #include "wsrv/wsrv.h"
 
 #include <string_view>
+
+#include "capi/c_status.hpp"
 
 namespace wsrv::wsrvd {
 
@@ -54,7 +55,8 @@ void Relay::close_stale(std::uint16_t code, std::string_view reason) {
     }
 }
 
-std::optional<std::uint8_t> Relay::refuse(std::uint32_t request, std::uint64_t conn) const noexcept {
+std::optional<std::uint8_t> Relay::refuse(std::uint32_t request,
+                                          std::uint64_t conn) const noexcept {
     if (request == 0) {
         return code_of(WSRV_ERR_INVALID_ARGUMENT);  // 0 means "the handshake" (ADR-0017 4a)
     }

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <cstddef>
+
 #include "capi/host_event.hpp"
 #include "ipc/message.hpp"
-
-#include <cstddef>
 
 namespace wsrv::wsrvd {
 

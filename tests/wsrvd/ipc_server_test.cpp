@@ -3,7 +3,6 @@
 
 #include "base/byte_buffer.hpp"
 #include "base/clock.hpp"
-#include "capi/embedded_server.hpp"
 #include "support/fake_backend.hpp"
 #include "support/fake_syscalls.hpp"
 #include "support/tcp_client.hpp"
@@ -32,6 +31,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "capi/embedded_server.hpp"
 #include "ipc/frame_decoder.hpp"
 #include "ipc/message.hpp"
 #include "wsrvd/embedded_backend.hpp"
@@ -81,33 +81,34 @@ public:
     RunningServer(FakeSyscalls& sys, wsrv::wsrvd::IBackend& backend, IpcServerConfig config) {
         std::promise<std::optional<ErrorCode>> started;
         auto started_future = started.get_future();
-        thread_ = std::thread([this, &sys, &backend, config = std::move(config), &started]() mutable {
-            const SteadyClock clock;
-            auto loop = EventLoop::create(sys, clock);
-            if (!loop) {
-                started.set_value(loop.error().code);
-                return;
-            }
-            auto server = IpcServer::create(**loop, sys, backend, std::move(config));
-            if (!server) {
-                started.set_value(server.error().code);
-                return;
-            }
-            {
-                const std::lock_guard<std::mutex> lock{mutex_};
-                loop_ = loop->get();
-            }
-            started.set_value(std::nullopt);
-            const wsrv::Result<void> ran = (*loop)->run();
-            static_cast<void>(ran);
-            {
-                // stop() calls the loop while holding this lock, so once we hold it no other
-                // thread is inside the loop and none can start: only then may it be destroyed.
-                const std::lock_guard<std::mutex> lock{mutex_};
-                loop_ = nullptr;
-            }
-            server->reset();  // before the loop, as the daemon does
-        });
+        thread_ =
+            std::thread([this, &sys, &backend, config = std::move(config), &started]() mutable {
+                const SteadyClock clock;
+                auto loop = EventLoop::create(sys, clock);
+                if (!loop) {
+                    started.set_value(loop.error().code);
+                    return;
+                }
+                auto server = IpcServer::create(**loop, sys, backend, std::move(config));
+                if (!server) {
+                    started.set_value(server.error().code);
+                    return;
+                }
+                {
+                    const std::lock_guard<std::mutex> lock{mutex_};
+                    loop_ = loop->get();
+                }
+                started.set_value(std::nullopt);
+                const wsrv::Result<void> ran = (*loop)->run();
+                static_cast<void>(ran);
+                {
+                    // stop() calls the loop while holding this lock, so once we hold it no other
+                    // thread is inside the loop and none can start: only then may it be destroyed.
+                    const std::lock_guard<std::mutex> lock{mutex_};
+                    loop_ = nullptr;
+                }
+                server->reset();  // before the loop, as the daemon does
+            });
         failure_ = started_future.get();
     }
     RunningServer(const RunningServer&) = delete;
@@ -557,7 +558,8 @@ ipc::SendData text_command(std::uint32_t request, std::uint64_t conn, const std:
     command.request = request;
     command.conn = conn;
     command.text = true;
-    command.data = ByteView{reinterpret_cast<const std::byte*>(text.data()), text.size()};  // NOLINT
+    command.data =
+        ByteView{reinterpret_cast<const std::byte*>(text.data()), text.size()};  // NOLINT
     return command;
 }
 
@@ -847,9 +849,7 @@ TEST_F(IpcServerTest, AnApplicationThatKnewNoConnectionsLeavesNothingToClose) {
     IpcServerConfig c = config();
     c.restart_grace = 100ms;
     const RunningServer server{sys, backend, c};
-    {
-        const auto app = connect_ready(path());
-    }
+    { const auto app = connect_ready(path()); }
     std::this_thread::sleep_for(600ms);
     EXPECT_TRUE(backend.commands().empty());
 }

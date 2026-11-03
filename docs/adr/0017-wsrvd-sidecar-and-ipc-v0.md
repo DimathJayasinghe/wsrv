@@ -50,6 +50,14 @@ Every frame: `u32 length` (big-endian, bytes after this field), `u8 type`, `u8 f
 ### 4b. Portability (owner requirement, 2026-11-02)
 The library is meant to run on Linux, macOS and Windows. Per PROJECT_PLAN and ADR-0004 only Linux is built in v1 (macOS `KqueuePoller` and Windows are M13). The rule for all new code until then: OS-specific calls live only in `net/` behind `ISyscalls`, and anything that differs per OS is behind a small interface (here: peer credentials, which are `SO_PEERCRED` on Linux, `LOCAL_PEERCRED`/`getpeereid` on macOS and a named-pipe or token check on Windows). `src/ipc/` is already free of OS headers. No new Linux-only code appears outside `net/`.
 
+### 4c. Amendment (2026-11-03, project owner, in chat: "go with the recommended decisions"): pump, disconnect and stall, found while building slice 3
+- **No application connected: hold, do not refuse.** `EmbeddedServer` has no way to pause accepting, and adding one would be a structural change to `server/`. Instead the daemon takes no events while nobody is connected. WebSocket handshakes complete, and clients wait behind the existing event-queue high-water pause until an application arrives, which then receives everything in order. Nothing is lost. (A true pause-accept remains possible later with its own ADR.)
+- **Application disconnects:** the connections it had been told about become *stale*. Their further events are discarded (the only discard in the daemon) and commands for them get `NO_SUCH_CONN`; after `shutdown_grace_ms` they are closed with 1012. Connections it never saw are served by the next application. Delivery is at most once across a disconnect.
+- **Stall:** `ipc_stall_ms` defaults to 10000 (range 100 to 600000). The clock starts when a write blocks with data pending, restarts on any byte of progress, and is cancelled when the buffer is empty. On expiry the link is closed and the stale connections are closed with 1001 immediately (no grace).
+- **Backpressure in both directions:** above high water (one max frame of unsent output) the daemon stops polling the backend and also stops reading commands, so answers cannot grow the buffer. The stall timer is the only kill path for a slow application.
+- **Frame limit:** an explicit `ipc_max_frame` smaller than `max_message_size` + 18 bytes is refused at startup, so no message the WebSocket side accepts can be unforwardable at runtime.
+- Request id 0 is answered `INVALID_ARGUMENT` and never executed (as announced in 4a).
+
 ### 5. Out of scope for v0
 Publish-only clients for FPM (`publish`/`subscribe` need the M10 broker; the frame types are reserved and absent), multiple application connections, TCP transport, TLS on the IPC link, at-least-once delivery, the handshake authentication hook (same blocker as ADR-0016 section 7), and the PHP client (M12).
 

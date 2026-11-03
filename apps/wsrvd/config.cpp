@@ -134,7 +134,8 @@ Result<void> DaemonConfig::finish() {
         // The biggest message the WebSocket side accepts must fit one EVENT frame: otherwise the
         // daemon would receive messages it can never forward. Refuse at startup, not at runtime.
         // (message <= ceiling is not assumed: compare without adding.)
-        if (explicit_max_frame_ < kEventOverhead || message > explicit_max_frame_ - kEventOverhead) {
+        if (explicit_max_frame_ < kEventOverhead ||
+            message > explicit_max_frame_ - kEventOverhead) {
             return fail(ErrorCode::InvalidConfig,
                         "config: ipc_max_frame must be at least max_message_size + 18 bytes");
         }

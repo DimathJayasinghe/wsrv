@@ -5,7 +5,6 @@
 // real event_fd semantics, real pending() count), so a backpressure test can prove that events
 // stayed queued rather than being dropped. Commands are recorded under a mutex: the loop thread
 // writes them and the test thread reads them.
-#include "capi/event_queue.hpp"
 #include "net/syscalls.hpp"
 
 #include <gtest/gtest.h>
@@ -20,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "capi/event_queue.hpp"
 #include "wsrvd/backend.hpp"
 
 namespace wsrv::testing {

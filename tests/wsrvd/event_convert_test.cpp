@@ -5,7 +5,6 @@
 #include "wsrvd/event_convert.hpp"
 
 #include "base/byte_buffer.hpp"
-#include "ipc/message.hpp"
 
 #include <gtest/gtest.h>
 
@@ -13,6 +12,8 @@
 #include <cstddef>
 #include <string_view>
 #include <variant>
+
+#include "ipc/message.hpp"
 
 namespace {
 
@@ -57,10 +58,8 @@ TEST(EventConvert, KindsKeepTheirWireNumbers) {
 }
 
 TEST(EventConvert, EveryNonCloseShapeEncodes) {
-    constexpr std::array types{HostEventType::Open,
-                               HostEventType::Text,
-                               HostEventType::Binary,
-                               HostEventType::Error};
+    constexpr std::array types{
+        HostEventType::Open, HostEventType::Text, HostEventType::Binary, HostEventType::Error};
     for (const HostEventType type : types) {
         ByteBuffer storage{kMaxFrame};
         const Event out = round_trip(host_event(type, "abc"), storage);
@@ -90,7 +89,8 @@ TEST(EventConvert, CloseKeepsCodeCleanFlagAndReason) {
 }
 
 TEST(EventConvert, ACloseReasonAtTheCoreLimitStillFits) {
-    HostEvent event = host_event(HostEventType::Close, std::string(wsrv::ipc::kMaxCloseReason, 'r'));
+    HostEvent event =
+        host_event(HostEventType::Close, std::string(wsrv::ipc::kMaxCloseReason, 'r'));
     event.close_code = 1000;
     event.clean = true;
     ByteBuffer storage{kMaxFrame};
@@ -102,10 +102,9 @@ TEST(EventConvert, FrameSizeIsPayloadPlusTheFixedOverhead) {
     EXPECT_EQ(wsrv::wsrvd::encoded_event_size(host_event(HostEventType::Text, "abcd")),
               wsrv::ipc::kFrameHeaderSize + wsrv::wsrvd::kEventBodyOverhead + 4U);
     ByteBuffer storage{kMaxFrame};
-    ASSERT_TRUE(wsrv::ipc::encode(to_ipc_event(host_event(HostEventType::Text, "abcd")),
-                                  kMaxFrame,
-                                  storage)
-                    .has_value());
+    ASSERT_TRUE(
+        wsrv::ipc::encode(to_ipc_event(host_event(HostEventType::Text, "abcd")), kMaxFrame, storage)
+            .has_value());
     EXPECT_EQ(storage.view().size(),
               wsrv::wsrvd::encoded_event_size(host_event(HostEventType::Text, "abcd")));
 }

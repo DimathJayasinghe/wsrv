@@ -2,7 +2,6 @@
 #pragma once
 
 #include "base/error.hpp"
-#include "ipc/message.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -10,6 +9,7 @@
 #include <string_view>
 
 #include "capi/embedded_config.hpp"
+#include "ipc/message.hpp"
 
 namespace wsrv::wsrvd {
 

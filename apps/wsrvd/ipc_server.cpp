@@ -24,7 +24,7 @@ namespace {
 
 constexpr int kBacklog = 4;  // one consumer: a handful of waiting connects is plenty
 constexpr std::size_t kMaxAcceptsPerEvent = 16;
-constexpr std::size_t kMaxReadsPerEvent = 16;  // fairness budget (EC-N07, EC-N08)
+constexpr std::size_t kMaxReadsPerEvent = 16;   // fairness budget (EC-N07, EC-N08)
 constexpr std::size_t kMaxEventsPerFill = 256;  // events encoded before the buffer is flushed
 constexpr std::size_t kMaxPumpRounds = 16;      // fill+flush rounds before the loop gets a turn
 constexpr std::chrono::milliseconds kAcceptRetry{100};

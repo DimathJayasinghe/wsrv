@@ -14,16 +14,16 @@ namespace {
 
 [[nodiscard]] ipc::EventKind kind_of(HostEventType type) noexcept {
     switch (type) {
-        case HostEventType::Open:
-            return ipc::EventKind::Open;
-        case HostEventType::Text:
-            return ipc::EventKind::Text;
-        case HostEventType::Binary:
-            return ipc::EventKind::Binary;
-        case HostEventType::Close:
-            return ipc::EventKind::Close;
-        case HostEventType::Error:
-            return ipc::EventKind::Error;
+    case HostEventType::Open:
+        return ipc::EventKind::Open;
+    case HostEventType::Text:
+        return ipc::EventKind::Text;
+    case HostEventType::Binary:
+        return ipc::EventKind::Binary;
+    case HostEventType::Close:
+        return ipc::EventKind::Close;
+    case HostEventType::Error:
+        return ipc::EventKind::Error;
     }
     return ipc::EventKind::Error;  // unreachable for a valid enum; the encoder judges the rest
 }

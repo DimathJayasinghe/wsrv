@@ -12,10 +12,10 @@
 
 namespace {
 
+using wsrv::ByteView;
 using wsrv::ConnectionId;
 using wsrv::ErrorCode;
 using wsrv::HostEventType;
-using wsrv::ByteView;
 using wsrv::testing::FakeBackend;
 using wsrv::testing::RecordedCommand;
 using wsrv::wsrvd::Relay;
@@ -24,8 +24,8 @@ ByteView bytes(std::string_view text) {
     return ByteView{reinterpret_cast<const std::byte*>(text.data()), text.size()};  // NOLINT
 }
 
-wsrv::ipc::SendData send(std::uint32_t request, ConnectionId conn, std::string_view text,
-                         bool is_text = true) {
+wsrv::ipc::SendData
+send(std::uint32_t request, ConnectionId conn, std::string_view text, bool is_text = true) {
     wsrv::ipc::SendData command;
     command.request = request;
     command.conn = conn;
@@ -34,8 +34,10 @@ wsrv::ipc::SendData send(std::uint32_t request, ConnectionId conn, std::string_v
     return command;
 }
 
-wsrv::ipc::CloseCommand close_command(std::uint32_t request, ConnectionId conn,
-                                      std::uint16_t code = 1000, std::string_view reason = {}) {
+wsrv::ipc::CloseCommand close_command(std::uint32_t request,
+                                      ConnectionId conn,
+                                      std::uint16_t code = 1000,
+                                      std::string_view reason = {}) {
     wsrv::ipc::CloseCommand command;
     command.request = request;
     command.conn = conn;
