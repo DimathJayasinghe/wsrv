@@ -2,9 +2,10 @@
 #pragma once
 
 #include "net/transport_wrapper.hpp"
-#include "tls/server_context.hpp"
 
 #include <memory>
+
+#include "tls/server_context.hpp"
 
 namespace wsrv {
 

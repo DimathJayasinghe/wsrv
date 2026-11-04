@@ -14,7 +14,8 @@
 namespace wsrv {
 
 Server::Server(Key /*unused*/, ServerConfig config, const ServerDeps& deps)
-    : config_{std::move(config)}, factory_{*deps.factory}, decider_{deps.decider}, wrapper_{deps.transport_wrapper},
+    : config_{std::move(config)}, factory_{*deps.factory}, decider_{deps.decider},
+      wrapper_{deps.transport_wrapper},
       sys_{deps.sys != nullptr ? *deps.sys : static_cast<ISyscalls&>(own_sys_)},
       clock_{deps.clock != nullptr ? *deps.clock : static_cast<const IClock&>(own_clock_)},
       logger_{deps.logger != nullptr ? *deps.logger : static_cast<ILogger&>(own_logger_)} {}

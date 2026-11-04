@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // What the daemon does on SIGHUP (ADR-0019 section 6): re-read the TLS files and say what happened.
-#include "capi/embedded_server.hpp"
+#include "wsrvd/reload.hpp"
+
 #include "support/tls_client.hpp"
 #include "support/tls_fixtures.hpp"
 
@@ -9,7 +10,7 @@
 #include <filesystem>
 #include <string>
 
-#include "wsrvd/reload.hpp"
+#include "capi/embedded_server.hpp"
 
 namespace {
 
@@ -20,7 +21,8 @@ using wsrv::test::TlsClient;
 using wsrv::wsrvd::reload_tls_on_hangup;
 
 namespace fs = std::filesystem;
-constexpr fs::perms kPublic = fs::perms::owner_read | fs::perms::owner_write | fs::perms::group_read;
+constexpr fs::perms kPublic =
+    fs::perms::owner_read | fs::perms::owner_write | fs::perms::group_read;
 constexpr fs::perms kPrivate = fs::perms::owner_read | fs::perms::owner_write;
 
 TEST(Reload, WithoutTlsThereIsNothingToReloadAndTheDaemonSaysSo) {

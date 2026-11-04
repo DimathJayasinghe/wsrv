@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // TLS through the embedded server (ADR-0019 sections 7 and 8): the config keys turn on wss://, a
 // bad setup fails closed at start, and reload_tls() swaps the certificate for new connections.
-#include "capi/embedded_server.hpp"
 #include "support/tls_client.hpp"
 #include "support/tls_fixtures.hpp"
 
@@ -11,6 +10,8 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+
+#include "capi/embedded_server.hpp"
 
 namespace {
 

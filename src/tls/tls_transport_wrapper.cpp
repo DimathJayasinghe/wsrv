@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "tls/tls_transport_wrapper.hpp"
 
-#include "tls/tls_transport.hpp"
-
 #include <utility>
+
+#include "tls/tls_transport.hpp"
 
 namespace wsrv {
 

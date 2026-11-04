@@ -285,7 +285,9 @@ wsrv_status wsrv_server_reload_tls(wsrv_server* server, wsrv_error* error) {
         if (!reloaded) {
             const wsrv_status status = wsrv::to_c_status(reloaded.error().code);
             const std::string detail = server->impl->tls_detail();
-            fill(error, status, detail.empty() ? std::string_view{reloaded.error().context} : detail);
+            fill(error,
+                 status,
+                 detail.empty() ? std::string_view{reloaded.error().context} : detail);
             return status;
         }
         return ok(error);
