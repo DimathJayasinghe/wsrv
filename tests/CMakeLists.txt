@@ -24,6 +24,9 @@ wsrv_add_test(NAME net_acceptor_test SOURCES net/acceptor_test.cpp LINK wsrv::ne
 wsrv_add_test(NAME net_loopback_test SOURCES net/loopback_test.cpp LINK wsrv::net)
 
 if(WSRV_ENABLE_TLS)
+    wsrv_add_test(NAME tls_sni_test SOURCES tls/sni_test.cpp LINK wsrv::tls)
+    wsrv_add_test(NAME tls_server_context_sni_test SOURCES tls/server_context_sni_test.cpp
+                  LINK wsrv::tls OpenSSL::SSL OpenSSL::Crypto)
     wsrv_add_test(NAME tls_server_context_test SOURCES tls/server_context_test.cpp
                   LINK wsrv::tls OpenSSL::SSL OpenSSL::Crypto)
     wsrv_add_test(NAME tls_transport_test SOURCES tls/tls_transport_test.cpp

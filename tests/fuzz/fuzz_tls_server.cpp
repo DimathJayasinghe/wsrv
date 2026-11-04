@@ -63,7 +63,10 @@ private:
     std::size_t* written_total_;
 };
 
-/// One certificate for the whole run (generating one per input would dominate the time).
+/// One certificate for the whole run (generating one per input would dominate the time). It also
+/// serves two SNI entries, so the server-name callback (ADR-0019 section 7) sees hostile names:
+/// the seeds ask for "localhost", and a mutated name lands on the exact entry, the wildcard
+/// ("*.localhost.test") or neither.
 struct Server {
     wsrv::test::TempDir dir;
     wsrv::NullLogger logger;
@@ -77,6 +80,9 @@ struct Server {
             dir.write("chain.pem", pem.certificate, fs::perms::owner_read | fs::perms::owner_write);
         config.private_key_file =
             dir.write("key.pem", pem.key, fs::perms::owner_read | fs::perms::owner_write);
+        config.sni.push_back({"localhost", config.certificate_chain_file, config.private_key_file});
+        config.sni.push_back(
+            {"*.localhost.test", config.certificate_chain_file, config.private_key_file});
         auto loaded = wsrv::TlsServerContext::load(config, logger);
         WSRV_ASSERT(loaded.has_value());
         context = std::move(*loaded);

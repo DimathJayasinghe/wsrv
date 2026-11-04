@@ -12,6 +12,7 @@
 #include <string>
 
 #include "capi/embedded_server.hpp"
+#include "tls/server_context.hpp"
 
 namespace {
 
@@ -51,6 +52,14 @@ EmbeddedConfig tls_config(const Certificate& certificate) {
     EXPECT_TRUE(config.set("tls_cert", certificate.chain).has_value());
     EXPECT_TRUE(config.set("tls_key", certificate.key).has_value());
     return config;
+}
+
+// The embedded config bounds its list on its own (it cannot include tls/); keep both limits equal.
+static_assert(wsrv::kMaxTlsSniSettings == wsrv::kMaxSniEntries);
+
+/// "name=cert:key" for the tls_sni setting.
+std::string sni_setting(const std::string& name, const Certificate& certificate) {
+    return name + "=" + certificate.chain + ":" + certificate.key;
 }
 
 std::unique_ptr<EmbeddedServer> created(const EmbeddedConfig& config) {
@@ -164,6 +173,63 @@ TEST(EmbeddedTls, ReloadOnAServerWithoutTlsIsAnError) {
     const auto reloaded = server->reload_tls();
     ASSERT_FALSE(reloaded.has_value());
     EXPECT_EQ(reloaded.error().code, ErrorCode::InvalidArgument);
+}
+
+TEST(EmbeddedTls, SniChoosesTheCertificateByNameAndFallsBackToTheDefault) {
+    const Certificate fallback{"default.example"};
+    const Certificate app{"app.example.com"};
+    const Certificate wild{"wild.example.com"};
+    EmbeddedConfig config = tls_config(fallback);
+    ASSERT_TRUE(config.set("tls_sni", sni_setting("app.example.com", app)).has_value());
+    ASSERT_TRUE(config.set("tls_sni", sni_setting("*.example.org", wild)).has_value());
+    const auto server = created(config);
+    ASSERT_TRUE(server->start().has_value());
+
+    const auto served_for = [&](const std::string& name) {
+        TlsClient client{server->port(), {.server_name = name}};
+        return client.peer_common_name();
+    };
+    EXPECT_EQ(served_for("app.example.com"), "app.example.com");
+    EXPECT_EQ(served_for("x.example.org"), "wild.example.com");
+    EXPECT_EQ(served_for("unknown.example"), "default.example");
+    EXPECT_EQ(served_for("localhost"), "default.example");
+}
+
+TEST(EmbeddedTls, SniWithoutADefaultCertificateFailsClosed) {
+    const Certificate app{"app.example.com"};
+    EmbeddedConfig config;
+    ASSERT_TRUE(config.set("tls_sni", sni_setting("app.example.com", app)).has_value());
+    const auto server = created(config);
+    const auto started = server->start();
+    ASSERT_FALSE(started.has_value());
+    EXPECT_EQ(started.error().code, ErrorCode::InvalidConfig);
+    EXPECT_NE(server->start_error().find("tls_cert"), std::string::npos) << server->start_error();
+}
+
+TEST(EmbeddedTls, AnUnusableSniFileFailsAtStartNamingTheFile) {
+    const Certificate fallback;
+    EmbeddedConfig config = tls_config(fallback);
+    ASSERT_TRUE(
+        config.set("tls_sni", "app.example.com=/nonexistent/sni-cert.pem:/nonexistent/k.pem")
+            .has_value());
+    const auto server = created(config);
+    ASSERT_FALSE(server->start().has_value());
+    EXPECT_NE(server->start_error().find("sni-cert.pem"), std::string::npos)
+        << server->start_error();
+}
+
+TEST(EmbeddedTls, ReloadAlsoRereadsTheSniFiles) {
+    const Certificate fallback;
+    Certificate app{"before.example.com"};
+    EmbeddedConfig config = tls_config(fallback);
+    ASSERT_TRUE(config.set("tls_sni", sni_setting("app.example.com", app)).has_value());
+    const auto server = created(config);
+    ASSERT_TRUE(server->start().has_value());
+
+    app.write("after.example.com");
+    ASSERT_TRUE(server->reload_tls().has_value());
+    TlsClient client{server->port(), {.server_name = "app.example.com"}};
+    EXPECT_EQ(client.peer_common_name(), "after.example.com");
 }
 
 }  // namespace

@@ -105,6 +105,13 @@ WSRV_API void wsrv_config_free(wsrv_config *config); /* NULL is fine */
  *                        missing or unusable file, only one of the two keys, or a build without
  *                        TLS makes the start fail with WSRV_ERR_INVALID_CONFIG and the reason in
  *                        `error`. It never falls back to plain text.
+ *   tls_sni              "name=cert_file:key_file"; repeatable, at most 64. Serve that certificate
+ *                        to clients that ask for `name` (case-blind) in the TLS server_name
+ *                        extension; name is a host name or one leading wildcard label
+ *                        ("*.example.com": exactly one label, never "*.com"). Exact names win over
+ *                        wildcards. Clients that send no name, an unknown name or a malformed one
+ *                        get the tls_cert certificate (never an error). Needs tls_cert and tls_key.
+ *                        The paths must not contain ':'. Reloaded with the rest.
  * Any thread, but not concurrently with another call on the same config. */
 WSRV_API wsrv_status wsrv_config_set(wsrv_config *config,
                                      const char *key,

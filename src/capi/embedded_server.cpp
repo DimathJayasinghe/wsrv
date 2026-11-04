@@ -144,14 +144,23 @@ Result<void> EmbeddedServer::prepare_tls() {
     }
     // Asking for TLS and not getting it must never turn into serving plain text.
     if (config_.tls_cert().empty() || config_.tls_key().empty()) {
-        start_error_ = config_.tls_cert().empty() ? "tls_key is set but tls_cert is not"
-                                                  : "tls_cert is set but tls_key is not";
+        if (config_.tls_cert().empty() && config_.tls_key().empty()) {
+            start_error_ =
+                "tls_sni is set but the default certificate is not: set tls_cert and tls_key";
+        } else {
+            start_error_ = config_.tls_cert().empty() ? "tls_key is set but tls_cert is not"
+                                                      : "tls_cert is set but tls_key is not";
+        }
         return fail(ErrorCode::InvalidConfig, "embedded server: incomplete TLS settings");
     }
 #if defined(WSRV_HAS_TLS)
     try {
         auto state = std::make_unique<TlsState>();
-        const TlsConfig tls{config_.tls_cert(), config_.tls_key()};
+        TlsConfig tls{config_.tls_cert(), config_.tls_key(), {}};
+        tls.sni.reserve(config_.tls_sni().size());
+        for (const TlsSniSetting& setting : config_.tls_sni()) {
+            tls.sni.push_back({setting.name, setting.certificate, setting.key});
+        }
         auto context = TlsServerContext::load(tls, state->logger);
         if (!context) {
             const std::string detail = state->logger.last();

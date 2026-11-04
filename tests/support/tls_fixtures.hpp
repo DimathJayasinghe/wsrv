@@ -198,6 +198,7 @@ struct ClientOptions {
     std::string cipher_list = {};        // TLS 1.2 and below; empty = OpenSSL default
     std::vector<std::string> alpn = {};  // empty = no ALPN extension
     bool allow_weak_security = false;    // security level 0: lets a client speak TLS 1.0, CBC, ...
+    std::string server_name = {};        // SNI host name to send; empty = no SNI extension
 };
 
 struct HandshakeOutcome {
@@ -252,6 +253,13 @@ inline HandshakeOutcome handshake_in_memory(SSL_CTX* server_ctx,
     const SslPtr client{SSL_new(client_ctx.get())};
     if (!server || !client) {
         throw tls_fixture_error("SSL_new failed");
+    }
+    if (!options.server_name.empty()) {
+        // SSL_set_tlsext_host_name is a macro with a C-style cast; call SSL_ctrl directly.
+        SSL_ctrl(client.get(),
+                 SSL_CTRL_SET_TLSEXT_HOSTNAME,
+                 TLSEXT_NAMETYPE_host_name,
+                 const_cast<char*>(options.server_name.c_str()));
     }
     if (!options.alpn.empty()) {
         std::vector<unsigned char> wire;

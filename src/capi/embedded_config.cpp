@@ -82,6 +82,7 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
         KeyEntry{"max_pending_handshakes", &EmbeddedConfig::set_max_pending_handshakes},
         KeyEntry{"tls_cert", &EmbeddedConfig::set_tls_cert},
         KeyEntry{"tls_key", &EmbeddedConfig::set_tls_key},
+        KeyEntry{"tls_sni", &EmbeddedConfig::add_tls_sni},
     };
     for (const KeyEntry& entry : kKeys) {
         if (entry.name == key) {
@@ -252,6 +253,36 @@ Result<void> EmbeddedConfig::set_tls_key(std::string_view value) {
         return fail(ErrorCode::InvalidConfig, "config: tls_key needs a file path");
     }
     tls_key_ = std::string{value};
+    return {};
+}
+
+Result<void> EmbeddedConfig::add_tls_sni(std::string_view value) {
+    constexpr std::string_view kShape = "config: tls_sni needs name=cert_file:key_file";
+    // name=cert:key. The first '=' ends the name; the one ':' splits the two paths, so a path with
+    // a colon in it is refused rather than guessed at.
+    const std::size_t equals = value.find('=');
+    if (equals == std::string_view::npos) {
+        return fail(ErrorCode::InvalidConfig, kShape);
+    }
+    const std::string_view name = value.substr(0, equals);
+    const std::string_view paths = value.substr(equals + 1);
+    const std::size_t colon = paths.find(':');
+    if (colon == std::string_view::npos || paths.find(':', colon + 1) != std::string_view::npos) {
+        return fail(ErrorCode::InvalidConfig, kShape);
+    }
+    const std::string_view certificate = paths.substr(0, colon);
+    const std::string_view key = paths.substr(colon + 1);
+    if (name.empty() || certificate.empty() || key.empty()) {
+        return fail(ErrorCode::InvalidConfig, kShape);
+    }
+    if (tls_sni_.size() >= kMaxTlsSniSettings) {
+        return fail(ErrorCode::InvalidConfig, "config: too many tls_sni settings");
+    }
+    try {
+        tls_sni_.push_back({std::string{name}, std::string{certificate}, std::string{key}});
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "config: out of memory");
+    }
     return {};
 }
 
