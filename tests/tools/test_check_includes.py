@@ -63,12 +63,12 @@ class CheckIncludes(unittest.TestCase):
     def test_unknown_module_directory_is_an_error(self):
         r = run(FIXTURES / "bad_unknown_module")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("unknown module 'tls'", r.stdout)
+        self.assertIn("unknown module 'nosuch'", r.stdout)
 
     def test_include_of_unknown_module_is_an_error(self):
         r = run(FIXTURES / "bad_unknown_include")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("protocol includes unknown module 'tls'", r.stdout)
+        self.assertIn("protocol includes unknown module 'nosuch'", r.stdout)
 
     def test_other_header_suffixes_are_scanned(self):
         r = run(FIXTURES / "bad_suffix")
@@ -81,6 +81,23 @@ class CheckIncludes(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("a.hpp:4: wsrvd must not include server", r.stdout)
         self.assertNotIn("a.hpp:5", r.stdout)
+
+    def test_tls_may_use_openssl_and_net(self):
+        # good/src/tls/good.hpp includes <openssl/ssl.h> and net: allowed (ADR-0019).
+        r = run(FIXTURES / "good")
+        self.assertNotIn("tls must not include", r.stdout)
+        self.assertNotIn("openssl", r.stdout)
+
+    def test_openssl_outside_tls_is_rejected(self):
+        # Only the tls module may include OpenSSL: everything else sees TLS through interfaces.
+        r = run(FIXTURES / "bad_openssl")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("a.hpp:4: server must not include <openssl/ssl.h> (only tls may, ADR-0019)", r.stdout)
+
+    def test_tls_must_not_reach_into_the_server(self):
+        r = run(FIXTURES / "bad_tls_deps")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("a.hpp:4: tls must not include server", r.stdout)
 
     def test_missing_root_is_a_usage_error(self):
         r = run(FIXTURES / "does_not_exist")

@@ -95,3 +95,11 @@ A configuration may carry a default certificate plus up to 64 name entries (exac
 − `ITransport` grows a method (default implemented, so `PlainTransport` and test fakes are unaffected).
 − One mode per listener until M10 adds multiple listeners.
 - Not covered here (follow-ups): client certificates (mTLS), OCSP stapling, session resumption with rotating ticket keys, kernel TLS offload, and TLS for outbound connections (the project has no client mode).
+
+### Amendment 1 (2026-11-04, slice 2: the context)
+1. **Key file permissions: "others" only.** Section 5 said "group/world-readable". Refusing group-readable would break the Debian `ssl-cert` convention (mode 0640) and many container secret mounts, so only a key file that "others" can access (any `o` bit) is refused. Group access is the operator's call.
+2. **The reload swap uses a mutex, not an atomic pointer.** Section 6 said "an atomic pointer exchange". `std::atomic<std::shared_ptr>` is missing from libc++ 18 (a CI compiler) and the free `std::atomic_load` overloads are deprecated, so `current()` and `reload()` share a mutex that is held only for a pointer copy. It is taken once per accepted connection (in `wrap`), never inside connection or protocol code, so the "no locks in connection code" rule stands.
+3. **ALPN moves to slice 2.** The policy is a callback on the context, so it is built and tested with the context (section 10 listed it under slice 6).
+4. **Passphrase-protected keys are refused.** OpenSSL would prompt on the terminal; the context installs a password callback that supplies none, so such a key fails to load with "cannot read the private key". Operators who need a passphrase terminate TLS in front (a follow-up if wanted).
+5. **Validation order:** certificate chain, then validity dates, then the key (readable, permissions, matches the leaf). The leaf is the first certificate of the chain file.
+6. **`ErrorCode::TlsFailure` is added in slice 3**, with its first user (the transport); slice 2 reports configuration problems as `InvalidConfig`.

@@ -23,6 +23,11 @@ wsrv_add_test(NAME net_unix_listener_test SOURCES net/unix_listener_test.cpp LIN
 wsrv_add_test(NAME net_acceptor_test SOURCES net/acceptor_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_loopback_test SOURCES net/loopback_test.cpp LINK wsrv::net)
 
+if(WSRV_ENABLE_TLS)
+    wsrv_add_test(NAME tls_server_context_test SOURCES tls/server_context_test.cpp
+                  LINK wsrv::tls OpenSSL::SSL OpenSSL::Crypto)
+endif()
+
 wsrv_add_test(NAME server_connection_test SOURCES server/connection_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_server_test SOURCES server/server_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME integration_server_test SOURCES integration/server_integration_test.cpp LINK wsrv::server)
@@ -116,11 +121,18 @@ endif()
 
 # Architecture guard: the real link graph must equal the allowed graph (docs/ARCHITECTURE.md 2.1).
 include(WsrvModuleGraph)
-wsrv_write_module_graph("${CMAKE_BINARY_DIR}/module_graph.actual"
-    MODULES base crypto http protocol extensions net server capi ipc wsrvd)
+set(_graph_modules base crypto http protocol extensions net server capi ipc wsrvd)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/module_graph.expected" _graph_expected)
+if(WSRV_ENABLE_TLS)
+    list(APPEND _graph_modules tls)
+    string(APPEND _graph_expected "tls: base net\n")   # the optional module comes last (ADR-0019)
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/module_graph.expected")
+file(WRITE "${CMAKE_BINARY_DIR}/module_graph.expected" "${_graph_expected}")
+wsrv_write_module_graph("${CMAKE_BINARY_DIR}/module_graph.actual" MODULES ${_graph_modules})
 add_test(NAME module_graph
     COMMAND ${CMAKE_COMMAND} -E compare_files
-            "${CMAKE_CURRENT_SOURCE_DIR}/module_graph.expected"
+            "${CMAKE_BINARY_DIR}/module_graph.expected"
             "${CMAKE_BINARY_DIR}/module_graph.actual")
 add_subdirectory(sanitizer_selftest)
 add_subdirectory(tools)
