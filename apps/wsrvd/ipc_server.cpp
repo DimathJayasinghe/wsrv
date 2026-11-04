@@ -36,6 +36,7 @@ constexpr std::uint16_t kCloseServiceRestart = 1012;
 /// The smallest command is 18 bytes and its STATUS 11, and a PING is 6 bytes and its PONG 6, so
 /// one 16 KiB read can produce at most this much (the read loop checks the high-water mark first).
 constexpr std::size_t kAnswerReserve = 16384;
+constexpr int kStatusUnavailable = 503;
 
 }  // namespace
 
@@ -235,6 +236,7 @@ private:
             // one.
             decoder_ = std::make_unique<ipc::FrameDecoder>(server_.config_.max_frame);
             send(outcome.reply);
+            server_.open_intake(true);  // someone can answer now
             // Events that queued up before this application connected are waiting; the edge that
             // announced them was spent while nobody was ready to take them.
             pump();
@@ -244,6 +246,10 @@ private:
             send(server_.relay_.execute(*data));
         } else if (const auto* close_command = std::get_if<ipc::CloseCommand>(&message)) {
             send(server_.relay_.execute(*close_command));
+        } else if (const auto* accept = std::get_if<ipc::HandshakeAccept>(&message)) {
+            send(server_.relay_.execute(*accept));
+        } else if (const auto* reject = std::get_if<ipc::HandshakeReject>(&message)) {
+            send(server_.relay_.execute(*reject));
         } else if (std::holds_alternative<ipc::Ping>(message)) {
             send(ipc::Pong{});
         } else {
@@ -274,6 +280,12 @@ private:
             // a frame below high water, so this cannot fail; if it ever does, the link is closed
             // rather than silently losing an event.
             if (!ipc::encode(to_ipc_event(*event), server_.config_.max_frame, out_)) {
+                if (event->type == HostEventType::Handshake) {
+                    // The question grew with what the CLIENT sent (headers, path), so it may not
+                    // fit a frame. That is no reason to cut the application off: refuse the upgrade.
+                    server_.refuse_oversized(*event);
+                    continue;
+                }
                 close();
                 return Fill::Empty;
             }
@@ -410,6 +422,7 @@ IpcServer::create(EventLoop& loop, ISyscalls& sys, IBackend& backend, IpcServerC
     }
     auto server = std::make_unique<IpcServer>(
         Key{}, loop, sys, backend, std::move(config), std::move(*listener));
+    server->open_intake(false);  // until an application says HELLO, nobody can answer
     const Result<WatchHandle> watch = loop.watch(server->listener_.fd(), PollEvents::Read, *server);
     if (!watch) {
         return std::unexpected{watch.error()};
@@ -430,8 +443,8 @@ IpcServer::IpcServer(Key /*unused*/,
                      IBackend& backend,
                      IpcServerConfig config,
                      UnixListener listener)
-    : loop_{loop}, sys_{sys}, config_{std::move(config)},
-      handshake_{config_.token, config_.max_frame}, relay_{backend},
+    : loop_{loop}, sys_{sys}, backend_{backend}, config_{std::move(config)},
+      handshake_{config_.token, config_.max_frame, config_.handshake_hook}, relay_{backend},
       listener_{std::move(listener)} {}
 
 IpcServer::~IpcServer() {
@@ -467,7 +480,19 @@ void IpcServer::on_backend_events() noexcept {
     }
 }
 
+void IpcServer::open_intake(bool open) noexcept {
+    if (config_.handshake_hook) {
+        backend_.set_handshake_intake(open);
+    }
+}
+
+void IpcServer::refuse_oversized(const HostEvent& question) noexcept {
+    // 503: the server cannot ask. A failure means the server already ended the wait.
+    static_cast<void>(backend_.reject_handshake(question.conn, kStatusUnavailable).has_value());
+}
+
 void IpcServer::application_lost(bool stalled) noexcept {
+    open_intake(false);  // first: no new question may go to an application that is gone
     relay_.detach();
     if (relay_.stale_count() == 0) {
         return;  // it knew no connection: nothing to close

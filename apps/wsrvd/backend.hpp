@@ -41,6 +41,18 @@ public:
     [[nodiscard]] virtual Result<void> send_binary(ConnectionId conn, ByteView data) = 0;
     [[nodiscard]] virtual Result<void>
     close(ConnectionId conn, std::uint16_t code, std::string_view reason) = 0;
+
+    /// Answer a HostEventType::Handshake question (ADR-0018). ErrorCode::Closing: no such question
+    /// (answered, over, or never asked); InvalidArgument: a name or status the core refuses (the
+    /// question stays open).
+    [[nodiscard]] virtual Result<void>
+    accept_handshake(ConnectionId conn, std::optional<std::string_view> subprotocol) = 0;
+    [[nodiscard]] virtual Result<void> reject_handshake(ConnectionId conn, int status) = 0;
+
+    /// Whether questions may be asked at all. The daemon closes it while no application can
+    /// answer, so upgrades get 503 at once instead of waiting for a timeout (ADR-0018 amendment 3).
+    /// Closing it also refuses the questions already waiting.
+    virtual void set_handshake_intake(bool open) noexcept = 0;
 };
 
 }  // namespace wsrv::wsrvd

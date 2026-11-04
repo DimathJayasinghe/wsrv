@@ -100,4 +100,16 @@ TEST(Handshake, TheBeforeHelloFrameLimitFitsTheLargestLegalHelloExactly) {
     EXPECT_EQ(out.size() - 4, wsrv::wsrvd::kHelloMaxFrame);
 }
 
+TEST(Handshake, WhenTheDaemonAsksQuestionsAnOlderClientIsRefusedTheSameWay) {  // ADR-0018
+    const Handshake handshake{"", 1000, true};
+    Hello old = hello("");
+    old.minor = wsrv::ipc::kHandshakeHookMinor - 1;  // cannot read a Handshake event
+    expect_refused(handshake.on_first_message(Message{old}));
+    Hello current = hello("");
+    current.minor = wsrv::ipc::kHandshakeHookMinor;
+    EXPECT_TRUE(handshake.on_first_message(Message{current}).accepted);
+    const Handshake quiet{"", 1000};  // hook off: an old client has nothing to be asked
+    EXPECT_TRUE(quiet.on_first_message(Message{old}).accepted);
+}
+
 }  // namespace

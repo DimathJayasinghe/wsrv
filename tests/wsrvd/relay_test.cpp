@@ -190,4 +190,50 @@ TEST_F(RelayTest, StaleConnectionsAreClosedWithTheGivenCodeAndNobodyElse) {
     }
 }
 
+// ---- handshake answers (ADR-0018) --------------------------------------------------------------
+
+TEST_F(RelayTest, HandshakeAnswersGoToTheBackendWithoutAnOpenConnection) {
+    // The question is about a connection that does not exist yet: no Open has been seen.
+    wsrv::ipc::HandshakeAccept accept;
+    accept.request = 3;
+    accept.conn = 8;
+    accept.subprotocol = bytes("chat");
+    EXPECT_EQ(relay_.execute(accept).status, status(WSRV_OK));
+    wsrv::ipc::HandshakeReject reject;
+    reject.request = 4;
+    reject.conn = 9;
+    reject.status = 403;
+    const auto answer = relay_.execute(reject);
+    EXPECT_EQ(answer.request, 4U);
+    EXPECT_EQ(answer.status, status(WSRV_OK));
+    const auto commands = backend_.commands();
+    ASSERT_EQ(commands.size(), 2U);
+    EXPECT_EQ(commands[0].kind, RecordedCommand::Kind::Accept);
+    EXPECT_EQ(commands[0].conn, 8U);
+    EXPECT_EQ(commands[0].data, "chat");
+    EXPECT_EQ(commands[1].kind, RecordedCommand::Kind::Reject);
+    EXPECT_EQ(commands[1].conn, 9U);
+    EXPECT_EQ(commands[1].code, 403U);
+}
+
+TEST_F(RelayTest, HandshakeAnswersFollowTheSameRulesAsOtherCommands) {
+    wsrv::ipc::HandshakeAccept accept;
+    accept.conn = 8;
+    EXPECT_EQ(relay_.execute(accept).status, status(WSRV_ERR_INVALID_ARGUMENT)) << "request 0";
+    wsrv::ipc::HandshakeReject reject;
+    reject.conn = 8;
+    reject.status = 403;
+    EXPECT_EQ(relay_.execute(reject).status, status(WSRV_ERR_INVALID_ARGUMENT)) << "request 0";
+    EXPECT_TRUE(backend_.commands().empty()) << "a command with id 0 must not run";
+
+    accept.request = 1;
+    reject.request = 2;
+    backend_.fail_commands_with(ErrorCode::Closing);  // the question is over (late, or answered)
+    EXPECT_EQ(relay_.execute(accept).status, status(WSRV_ERR_NO_SUCH_CONN));
+    backend_.fail_commands_with(ErrorCode::InvalidArgument);  // a status or name the core refuses
+    EXPECT_EQ(relay_.execute(reject).status, status(WSRV_ERR_INVALID_ARGUMENT));
+    backend_.fail_commands_with(ErrorCode::BufferFull);
+    EXPECT_EQ(relay_.execute(accept).status, status(WSRV_ERR_BACKPRESSURE));
+}
+
 }  // namespace

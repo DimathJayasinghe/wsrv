@@ -112,7 +112,7 @@ wsrvd --ipc-socket=/run/wsrv/ipc.sock --ipc-token-file=/etc/wsrv/ipc.token \
 ```
 - The socket directory must not be group- or world-writable and must belong to the service user or root. The daemon creates the socket with mode `0600` and refuses to follow a symlink at that path.
 - The token file must be mode `0600` and owned by the service user. There is **no** command-line or config-file value for the token (it would show in `ps` and `/proc`). Without a token only the peer-uid check protects the socket, and the daemon warns at start-up.
-- `--config=FILE` reads `key = value` lines; later arguments override earlier ones. Keys: `ipc_socket`, `ipc_token_file`, `ipc_max_frame`, `ipc_hello_timeout_ms`, `ipc_stall_ms`, plus every embedded-server key (`listen_host`, `listen_port`, `threads`, `allow_origin`, `allow_missing_origin`, `max_message_size`, `max_connections`, `shutdown_grace_ms`, ...).
+- `--config=FILE` reads `key = value` lines; later arguments override earlier ones. Keys: `ipc_socket`, `ipc_token_file`, `ipc_max_frame`, `ipc_hello_timeout_ms`, `ipc_stall_ms`, the handshake-hook keys below, plus every embedded-server key (`listen_host`, `listen_port`, `threads`, `allow_origin`, `allow_missing_origin`, `max_message_size`, `max_connections`, `shutdown_grace_ms`, ...).
 - The daemon prints `ipc socket ... ready` and `websocket server listening on port N` on stderr when it is ready.
 
 ### Signals and exit codes
@@ -127,11 +127,28 @@ wsrvd --ipc-socket=/run/wsrv/ipc.sock --ipc-token-file=/etc/wsrv/ipc.token \
 - The embedded library (`libwsrv.so`) refuses calls from a forked child of the process that created the server (`WSRV_ERR_WRONG_PROCESS`): threads do not survive `fork()`. Create the server after the fork.
 - An application connects with one process per daemon. Do not share the IPC connection across a fork.
 
+### Authenticating connections (the handshake hook)
+By default `wsrvd` accepts every upgrade that passes its own checks (Origin, version, syntax). To let your application decide, from the cookie or token the browser sent, turn the hook on:
+
+```
+handshake_hook = true
+handshake_forward_header = Cookie        # repeatable; Cookie/Authorization are sent only if listed
+handshake_decision_timeout_ms = 3000     # how long the application has to answer (default 3000)
+max_pending_handshakes = 256             # upgrades waiting at once (default 256); more get 503
+```
+
+The application receives each upgrade as a Handshake event (`docs/IPC_PROTOCOL.md` section 9) and answers accept or reject. Things to know:
+- **It fails closed.** No answer in time, no application connected, an application that disconnects mid-question, or shutdown: the browser gets `503 Retry-After: 5`, never a connection.
+- Applications must speak IPC minor 2; the daemon refuses an older one rather than leave browsers waiting. The PHP client in `bindings/php` does.
+- Anything you list in `handshake_forward_header` passes through the application process. The default forwards nothing.
+- `handshake_decision_timeout_ms` is the longest a browser waits for its `101`. Keep it short; a slow login check belongs in the application's own cache.
+- Without an application the daemon no longer "holds" browsers behind backpressure (see the table below): with the hook on, they are refused at once.
+
 ### What happens when things go wrong
 | Situation | Behaviour |
 |---|---|
-| No application connected | New WebSocket clients complete the handshake and wait; events queue (bounded) and the queue's own limits pause the clients. The first application receives everything in order. |
-| Application disconnects | Connections it knew are closed with 1012 after `shutdown_grace_ms`; its later events for them are discarded; connections it never saw wait for the next application. |
+| No application connected | New WebSocket clients complete the handshake and wait (with `handshake_hook` on they get `503` at once instead); events queue (bounded) and the queue's own limits pause the clients. The first application receives everything in order. |
+| Application disconnects | (With `handshake_hook`, upgrades it had not answered get `503` at once.) Connections it knew are closed with 1012 after `shutdown_grace_ms`; its later events for them are discarded; connections it never saw wait for the next application. |
 | Application stops reading for `ipc_stall_ms` | The IPC link is closed and its connections are closed with 1001 at once. |
 | Application sends garbage | The IPC link is closed with no reply. |
 | Second application connects | Refused with `STATUS(0, BACKPRESSURE)`; the first is unaffected. |

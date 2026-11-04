@@ -25,11 +25,11 @@
 namespace wsrv::testing {
 
 struct RecordedCommand {
-    enum class Kind : std::uint8_t { Text, Binary, Close };
+    enum class Kind : std::uint8_t { Text, Binary, Close, Accept, Reject };
     Kind kind = Kind::Text;
     ConnectionId conn = 0;
-    std::string data;  // payload, or the close reason
-    std::uint16_t code = 0;
+    std::string data;        // payload, the close reason, or the chosen subprotocol (Accept)
+    std::uint16_t code = 0;  // close code, or the HTTP status (Reject)
 };
 
 class FakeBackend final : public wsrvd::IBackend {
@@ -68,6 +68,11 @@ public:
         const std::lock_guard lock{mutex_};
         return commands_;
     }
+    /// Every set_handshake_intake(open) call, oldest first.
+    [[nodiscard]] std::vector<bool> intake_calls() const {
+        const std::lock_guard lock{mutex_};
+        return intake_;
+    }
     [[nodiscard]] std::size_t polls() const {
         const std::lock_guard lock{mutex_};
         return polls_;
@@ -97,6 +102,17 @@ public:
     Result<void> close(ConnectionId conn, std::uint16_t code, std::string_view reason) override {
         return record(RecordedCommand::Kind::Close, conn, reason, code);
     }
+    Result<void> accept_handshake(ConnectionId conn,
+                                  std::optional<std::string_view> subprotocol) override {
+        return record(RecordedCommand::Kind::Accept, conn, subprotocol.value_or(""), 0);
+    }
+    Result<void> reject_handshake(ConnectionId conn, int status) override {
+        return record(RecordedCommand::Kind::Reject, conn, {}, static_cast<std::uint16_t>(status));
+    }
+    void set_handshake_intake(bool open) noexcept override {
+        const std::lock_guard lock{mutex_};
+        intake_.push_back(open);
+    }
 
 private:
     Result<void> record(RecordedCommand::Kind kind,
@@ -116,6 +132,7 @@ private:
     mutable std::mutex mutex_;
     std::vector<RecordedCommand> commands_;
     std::optional<ErrorCode> command_result_;
+    std::vector<bool> intake_;
     std::size_t polls_ = 0;
 };
 

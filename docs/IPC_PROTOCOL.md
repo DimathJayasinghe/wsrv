@@ -1,4 +1,4 @@
-# IPC protocol v0 (`wsrvd`)
+# IPC protocol v0.2 (`wsrvd`)
 
 The wire contract between the `wsrvd` sidecar and ONE application (ADR-0017). Any language that can open a Unix socket can implement a client in a few hundred lines. The reference implementation of the codec is `src/ipc/` (sans-I/O, fuzzed); the behaviour described here is implemented in `apps/wsrvd/`.
 
@@ -37,18 +37,20 @@ u8  flags     reserved; MUST be 0
 | 7 | `PONG` | daemon to app | empty |
 | 8 | `EVENT` | daemon to app | `u8 kind, u64 conn, u16 close_code, u8 clean, data` |
 | 9 | `STATUS` | daemon to app | `u32 request, u8 status` |
+| 10 | `HANDSHAKE_ACCEPT` | app to daemon | `u32 request, u64 conn, subprotocol` (empty = none; at most 256 bytes) (0.2) |
+| 11 | `HANDSHAKE_REJECT` | app to daemon | `u32 request, u64 conn, u16 http_status` (0.2) |
 
 `conn` is never 0. Sending a daemon-only type (2, 7, 8, 9) is a protocol error, as is a second `HELLO`.
 
 ### `EVENT`
-`kind`: 1 Open (data = peer address `host:port`), 2 Text (a whole, valid UTF-8 message), 3 Binary, 4 Close (data = close reason, at most 123 bytes), 5 Error (data = a short error name; best effort).
+`kind`: 1 Open (data = peer address `host:port`), 2 Text (a whole, valid UTF-8 message), 3 Binary, 4 Close (data = close reason, at most 123 bytes), 5 Error (data = a short error name; best effort), 6 Handshake (0.2, only when the daemon runs with `handshake_hook`; see section 9).
 `close_code` and `clean` are meaningful only for Close and are 0 / 0 otherwise. `close_code` may be 1005 or 1006 (reported by the core, never sent on the wire); `clean` is true if the closing handshake completed.
-Per connection the order is always Open, then messages, then exactly one Close.
+Per connection the order is always Open, then messages, then exactly one Close. A Handshake event comes before the Open of the same `conn` if the upgrade is accepted; a refused upgrade produces neither an Open nor a Close.
 
 ### `STATUS`
-Answers every command (`SEND_*`, `CLOSE`) with the command's `request` id. `status` uses the values of `wsrv_status` in `include/wsrv/wsrv.h` (0 OK, 2 INVALID_ARGUMENT, 5 NO_SUCH_CONN, 6 BACKPRESSURE, 7 INVALID_UTF8, ...). **OK means accepted for sending, not delivered** (ADR-0016 section 5).
+Answers every command (`SEND_*`, `CLOSE`, `HANDSHAKE_ACCEPT`, `HANDSHAKE_REJECT`) with the command's `request` id. `status` uses the values of `wsrv_status` in `include/wsrv/wsrv.h` (0 OK, 2 INVALID_ARGUMENT, 5 NO_SUCH_CONN, 6 BACKPRESSURE, 7 INVALID_UTF8, ...). **OK means accepted for sending, not delivered** (ADR-0016 section 5).
 - `request` is chosen by the application; number commands from 1. **Request id 0 is reserved**: a command with id 0 is refused with `INVALID_ARGUMENT` and not executed, and a `STATUS` with request 0 can only be about the handshake.
-- A command for a connection the application was not told about, or that has ended, gets `NO_SUCH_CONN`.
+- A command for a connection the application was not told about, or that has ended, gets `NO_SUCH_CONN`. (Handshake answers have their own rule, section 9.)
 
 ## 4. Session
 1. The application connects and sends `HELLO` within `ipc_hello_timeout_ms` (default 5000).
@@ -68,8 +70,42 @@ Answers every command (`SEND_*`, `CLOSE`) with the command's `request` id. `stat
 - Delivery is at most once across a disconnect: events already written to a dying link are lost with it.
 
 ## 7. Versioning
-Major version in `HELLO` must equal the daemon's (currently 0); minors are additive. Version 0 is not frozen: until 1.0, the frame set may change between minors with an ADR.
+Major version in `HELLO` must equal the daemon's (currently 0); minors are additive. `HELLO_OK` carries the daemon's own minor (currently 2). Version 0 is not frozen: until 1.0, the frame set may change between minors with an ADR.
+
+Minor 2 added the handshake hook. A daemon started **with** `handshake_hook` refuses (like any other bad `HELLO`: `STATUS(request 0, INVALID_ARGUMENT)`) an application whose `HELLO` says minor below 2, because that application could not read a Handshake event and every browser would wait for a 503. Without `handshake_hook` an older minor is fine.
 
 ## 8. Reference clients
 - PHP: `bindings/php` (`Wsrv\Client`, `Wsrv\Worker`).
 - C++ (tests): `tests/support/ipc_client.hpp`, a blocking client with a receive timeout. It speaks the protocol through the same `ipc/` codec the daemon uses; copy it as the starting point for a test of your own application against a real `wsrvd`.
+
+## 9. The handshake hook (0.2, ADR-0018)
+Off by default. With `handshake_hook = true` (plus `handshake_forward_header`, `handshake_decision_timeout_ms`, `max_pending_handshakes`; see `docs/OPERATIONS.md`), no upgrade is accepted until the application says so. This is how an application authenticates a WebSocket connection with the cookie or token the browser sent.
+
+1. A browser's upgrade passes the daemon's own checks (syntax, Origin, version). The daemon then sends the application an `EVENT` of kind 6 with `conn` = **the id the connection will have if accepted**, and sends the browser nothing yet.
+2. The application answers **once** within `handshake_decision_timeout_ms` (default 3000): `HANDSHAKE_ACCEPT` (optionally with one of the subprotocols the client offered) or `HANDSHAKE_REJECT` with an HTTP status. Each answer is itself answered with a `STATUS`:
+   - `OK`: handed to the connection's loop (as for every command, not "delivered").
+   - `NO_SUCH_CONN`: no such question is open: already answered, the daemon gave up (timeout, the browser left, shutdown), or never asked. Late and repeated answers are harmless.
+   - `INVALID_ARGUMENT`: request id 0, a subprotocol the client did not offer, or a status outside 400, 401, 403, 404, 429, 500, 503. The question stays open; answer again.
+3. Accept: the browser gets `101` and the application then receives the usual `Open` with the same `conn`. Reject: the browser gets that status with a fixed reason text (nothing the application sends reaches the browser); 429 and 503 carry `Retry-After: 5`.
+4. **Fail closed.** No answer in time, a full queue, shutdown, or no application connected means `503`, never an accepted connection.
+
+`HANDSHAKE_ACCEPT` and `HANDSHAKE_REJECT` are not checked against "connections the application was told about" (the connection does not exist yet); the daemon asks the WebSocket server, which knows which questions are open.
+
+### The Handshake event body
+`data` is one blob, all integers big-endian, and every string is `u32 length` + that many bytes (not NUL-terminated; any byte value except what HTTP itself forbids):
+
+```
+string peer          "host:port"
+string path          request target up to '?'
+string query         after '?', raw (not percent-decoded); empty if none
+string origin        the Origin header (it already passed allow_origin); empty if none
+string host          the Host header
+string subprotocol   what the server's own rules chose; may be empty
+u16 offered_count,  then that many strings: every subprotocol the client offered
+u16 header_count,   then that many (name string, value string): the listed forward headers
+```
+The blob ends exactly after the last header: trailing bytes mean a corrupt event. Headers are only those listed in `handshake_forward_header`, in request order, **every** value of a repeated header as its own entry, with the name spelled as configured (`Cookie` and `Authorization` are never sent unless listed). A value over 4 KiB, or more than 16 KiB in total, makes the daemon refuse the upgrade with 431 itself.
+
+### While nobody can answer
+The daemon asks questions only while an application is connected. With none (before the first, or after one left), every upgrade is refused with `503` **at once**, and when an application disconnects the questions it had not answered are refused with `503` too. This replaces the "held behind backpressure" behaviour of section 6, which still applies to daemons without the hook. If a question would not fit one frame (the client made it big), the daemon refuses that upgrade with `503` and the link stays up.
+

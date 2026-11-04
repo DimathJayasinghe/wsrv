@@ -24,6 +24,7 @@ HostEvent make_event(HostEventType type, ConnectionId conn, std::string_view tex
 }
 
 constexpr std::string_view kNoSuchConnection = "capi: unknown or finished connection";
+constexpr int kStatusUnavailable = 503;
 constexpr std::string_view kNoSuchHandshake = "capi: no upgrade is waiting for that id";
 
 }  // namespace
@@ -184,6 +185,9 @@ Result<void> HostBridge::request(HandshakeRequest request, PendingHandle handle)
         event.conn = request.id;
         event.data = encode_handshake(format_endpoint(request.peer), request);
         const std::lock_guard lock{mutex_};
+        if (!intake_open_) {
+            return fail(ErrorCode::Closing, "capi: no host is listening for handshakes");
+        }
         asked_.insert_or_assign(request.id, std::move(handle));  // before the push: see on_open
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::ResourceExhausted, "capi: out of memory");
@@ -194,6 +198,22 @@ Result<void> HostBridge::request(HandshakeRequest request, PendingHandle handle)
         return std::unexpected{pushed.error()};
     }
     return {};
+}
+
+void HostBridge::set_handshake_intake(bool open) {
+    std::unordered_map<ConnectionId, PendingHandle> refused;
+    {
+        const std::lock_guard lock{mutex_};
+        intake_open_ = open;
+        if (!open) {
+            refused.swap(asked_);  // under the same lock as request(): nothing slips in after
+        }
+    }
+    for (const auto& [id, handle] : refused) {
+        // 503: the application that was asked is gone. A failure means the server already ended
+        // the wait itself, which is just as final.
+        static_cast<void>(handle.reject(kStatusUnavailable).has_value());
+    }
 }
 
 void HostBridge::withdrawn(ConnectionId id) noexcept {

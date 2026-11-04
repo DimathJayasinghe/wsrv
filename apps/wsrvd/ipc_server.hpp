@@ -28,6 +28,10 @@ struct IpcServerConfig {
     /// After an application disconnects, how long its connections may wait for a replacement
     /// before they are closed with 1012. (main passes the server's shutdown_grace.)
     std::chrono::milliseconds restart_grace{10000};
+    /// The WebSocket server asks the application about every upgrade (ADR-0018). The daemon then
+    /// requires protocol minor 2 in HELLO and keeps the backend's intake open only while an
+    /// application is connected, so a browser never waits for an answer nobody can give.
+    bool handshake_hook = false;
 };
 
 /// The IPC side of the daemon (ADR-0017): a Unix socket that ONE application connects to.
@@ -43,6 +47,9 @@ struct IpcServerConfig {
 ///  flow
 ///     in and each is answered with a STATUS (Relay). PING is answered with PONG. Any frame type
 ///     only the daemon may send, and a second HELLO, close the connection.
+///     With handshake_hook, a Handshake event (kind 6) asks the application about an upgrade and
+///     HANDSHAKE_ACCEPT / HANDSHAKE_REJECT answer it. An event too big for a frame is refused with
+///     503 instead of closing the link: its size is the client's doing, not the application's.
 ///  5. While no application is connected the daemon takes nothing from the backend: events wait in
 ///     its queue, whose limits pause the WebSocket clients (they are held, not refused). When an
 ///     application disconnects, the connections it knew are closed with 1012 after restart_grace
@@ -97,6 +104,10 @@ private:
     };
 
     void on_backend_events() noexcept;
+    /// Open or close the backend's door for handshake questions (a no-op without the hook).
+    void open_intake(bool open) noexcept;
+    /// A question that cannot be put to the application: answer the browser 503.
+    void refuse_oversized(const HostEvent& question) noexcept;
     /// The application that had completed HELLO is gone (`stalled`: we cut it off because it
     /// stopped reading). Decide what happens to the connections it knew.
     void application_lost(bool stalled) noexcept;
@@ -112,6 +123,7 @@ private:
 
     EventLoop& loop_;
     ISyscalls& sys_;
+    IBackend& backend_;
     IpcServerConfig config_;
     Handshake handshake_;
     Relay relay_;

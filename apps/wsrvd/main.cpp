@@ -35,6 +35,7 @@ wsrv::wsrvd::IpcServerConfig ipc_config(const wsrv::wsrvd::Startup& startup) {
     ipc.hello_timeout = startup.config.hello_timeout();
     ipc.stall_timeout = startup.config.stall_timeout();
     ipc.restart_grace = startup.config.embedded().server().shutdown_grace;
+    ipc.handshake_hook = startup.config.embedded().handshake_hook();
     return ipc;
 }
 

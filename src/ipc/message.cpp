@@ -12,17 +12,19 @@ namespace wsrv::ipc {
 
 namespace {
 
-constexpr std::size_t kHelloFixed = 6;   // major, minor, token length
-constexpr std::size_t kHelloOkSize = 8;  // major, minor, max frame
-constexpr std::size_t kSendFixed = 12;   // request, connection
-constexpr std::size_t kCloseFixed = 14;  // request, connection, code
-constexpr std::size_t kEventFixed = 12;  // kind, connection, close code, clean
-constexpr std::size_t kStatusSize = 5;   // request, status
+constexpr std::size_t kHelloFixed = 6;    // major, minor, token length
+constexpr std::size_t kHelloOkSize = 8;   // major, minor, max frame
+constexpr std::size_t kSendFixed = 12;    // request, connection
+constexpr std::size_t kCloseFixed = 14;   // request, connection, code
+constexpr std::size_t kEventFixed = 12;   // kind, connection, close code, clean
+constexpr std::size_t kStatusSize = 5;    // request, status
+constexpr std::size_t kAcceptFixed = 12;  // request, connection
+constexpr std::size_t kRejectSize = 14;   // request, connection, status
 
 [[nodiscard]] bool known_kind(EventKind kind) noexcept {
     const auto raw = static_cast<std::uint8_t>(kind);
     return raw >= static_cast<std::uint8_t>(EventKind::Open) &&
-           raw <= static_cast<std::uint8_t>(EventKind::Error);
+           raw <= static_cast<std::uint8_t>(EventKind::Handshake);
 }
 
 /// The shape every Event must have, on both sides of the wire: a real connection, a known kind, and
@@ -70,48 +72,61 @@ struct Encoded {
     std::size_t body_size;
 };
 
-/// Type and body size of `message`, or InvalidArgument when no peer could parse it.
+/// Type and body size of a message, or InvalidArgument when no peer could parse it.
+struct Describer {
+    Result<Encoded> operator()(const Hello& m) const {
+        if (m.token.size() > kMaxTokenSize) {
+            return fail(ErrorCode::InvalidArgument, "ipc: token too long");
+        }
+        return Encoded{FrameType::Hello, kHelloFixed + m.token.size()};
+    }
+    Result<Encoded> operator()(const HelloOk& /*m*/) const {
+        return Encoded{FrameType::HelloOk, kHelloOkSize};
+    }
+    Result<Encoded> operator()(const SendData& m) const {
+        if (m.conn == 0) {
+            return fail(ErrorCode::InvalidArgument, "ipc: connection id 0");
+        }
+        return Encoded{m.text ? FrameType::SendText : FrameType::SendBinary,
+                       kSendFixed + m.data.size()};
+    }
+    Result<Encoded> operator()(const CloseCommand& m) const {
+        if (m.conn == 0 || m.reason.size() > kMaxCloseReason) {
+            return fail(ErrorCode::InvalidArgument, "ipc: bad close command");
+        }
+        return Encoded{FrameType::Close, kCloseFixed + m.reason.size()};
+    }
+    Result<Encoded> operator()(const Ping& /*m*/) const {
+        return Encoded{FrameType::Ping, 0};
+    }
+    Result<Encoded> operator()(const Pong& /*m*/) const {
+        return Encoded{FrameType::Pong, 0};
+    }
+    Result<Encoded> operator()(const Event& m) const {
+        if (!event_fields_consistent(m.kind, m.conn, m.close_code, m.clean)) {
+            return fail(ErrorCode::InvalidArgument, "ipc: inconsistent event");
+        }
+        return Encoded{FrameType::Event, kEventFixed + m.data.size()};
+    }
+    Result<Encoded> operator()(const Status& /*m*/) const {
+        return Encoded{FrameType::Status, kStatusSize};
+    }
+    Result<Encoded> operator()(const HandshakeAccept& m) const {
+        if (m.conn == 0 || m.subprotocol.size() > kMaxSubprotocol) {
+            return fail(ErrorCode::InvalidArgument, "ipc: bad handshake accept");
+        }
+        return Encoded{FrameType::HandshakeAccept, kAcceptFixed + m.subprotocol.size()};
+    }
+    Result<Encoded> operator()(const HandshakeReject& m) const {
+        if (m.conn == 0) {
+            return fail(ErrorCode::InvalidArgument, "ipc: connection id 0");
+        }
+        return Encoded{FrameType::HandshakeReject, kRejectSize};
+    }
+};
+
 [[nodiscard]] Result<Encoded> describe(const Message& message) {
-    struct Visitor {
-        Result<Encoded> operator()(const Hello& m) const {
-            if (m.token.size() > kMaxTokenSize) {
-                return fail(ErrorCode::InvalidArgument, "ipc: token too long");
-            }
-            return Encoded{FrameType::Hello, kHelloFixed + m.token.size()};
-        }
-        Result<Encoded> operator()(const HelloOk& /*m*/) const {
-            return Encoded{FrameType::HelloOk, kHelloOkSize};
-        }
-        Result<Encoded> operator()(const SendData& m) const {
-            if (m.conn == 0) {
-                return fail(ErrorCode::InvalidArgument, "ipc: connection id 0");
-            }
-            return Encoded{m.text ? FrameType::SendText : FrameType::SendBinary,
-                           kSendFixed + m.data.size()};
-        }
-        Result<Encoded> operator()(const CloseCommand& m) const {
-            if (m.conn == 0 || m.reason.size() > kMaxCloseReason) {
-                return fail(ErrorCode::InvalidArgument, "ipc: bad close command");
-            }
-            return Encoded{FrameType::Close, kCloseFixed + m.reason.size()};
-        }
-        Result<Encoded> operator()(const Ping& /*m*/) const {
-            return Encoded{FrameType::Ping, 0};
-        }
-        Result<Encoded> operator()(const Pong& /*m*/) const {
-            return Encoded{FrameType::Pong, 0};
-        }
-        Result<Encoded> operator()(const Event& m) const {
-            if (!event_fields_consistent(m.kind, m.conn, m.close_code, m.clean)) {
-                return fail(ErrorCode::InvalidArgument, "ipc: inconsistent event");
-            }
-            return Encoded{FrameType::Event, kEventFixed + m.data.size()};
-        }
-        Result<Encoded> operator()(const Status& /*m*/) const {
-            return Encoded{FrameType::Status, kStatusSize};
-        }
-    };
-    return std::visit(Visitor{}, message);
+    return std::visit(Describer{}, message);
 }
 
 void write_body(Writer& w, const Message& message) {
@@ -151,6 +166,16 @@ void write_body(Writer& w, const Message& message) {
         void operator()(const Status& m) const {
             w.u32(m.request);
             w.u8(m.status);
+        }
+        void operator()(const HandshakeAccept& m) const {
+            w.u32(m.request);
+            w.u64(m.conn);
+            w.bytes(m.subprotocol);
+        }
+        void operator()(const HandshakeReject& m) const {
+            w.u32(m.request);
+            w.u64(m.conn);
+            w.u16(m.status);
         }
     };
     std::visit(Visitor{w}, message);
@@ -224,6 +249,8 @@ std::optional<FrameType> frame_type_from(std::uint8_t raw) noexcept {
     case FrameType::Pong:
     case FrameType::Event:
     case FrameType::Status:
+    case FrameType::HandshakeAccept:
+    case FrameType::HandshakeReject:
         return static_cast<FrameType>(raw);
     }
     return std::nullopt;
@@ -341,6 +368,34 @@ Result<Message> parse_status(Reader& r) {
     return m;
 }
 
+Result<Message> parse_handshake_accept(Reader& r) {
+    if (r.remaining() < kAcceptFixed) {
+        return invalid("ipc: handshake accept too short");
+    }
+    HandshakeAccept m;
+    m.request = r.u32();
+    m.conn = r.u64();
+    if (m.conn == 0 || r.remaining() > kMaxSubprotocol) {
+        return invalid("ipc: handshake accept fields");
+    }
+    m.subprotocol = r.take_rest();
+    return m;
+}
+
+Result<Message> parse_handshake_reject(Reader& r) {
+    if (r.remaining() != kRejectSize) {
+        return invalid("ipc: handshake reject size");
+    }
+    HandshakeReject m;
+    m.request = r.u32();
+    m.conn = r.u64();
+    m.status = r.u16();
+    if (m.conn == 0) {
+        return invalid("ipc: connection id 0");
+    }
+    return m;
+}
+
 }  // namespace
 
 Result<Message> parse_message(FrameType type, ByteView body) {
@@ -366,6 +421,10 @@ Result<Message> parse_message(FrameType type, ByteView body) {
         return parse_event(r);
     case FrameType::Status:
         return parse_status(r);
+    case FrameType::HandshakeAccept:
+        return parse_handshake_accept(r);
+    case FrameType::HandshakeReject:
+        return parse_handshake_reject(r);
     }
     return invalid("ipc: unknown frame type");
 }
