@@ -23,6 +23,9 @@ wsrv_add_test(NAME net_unix_listener_test SOURCES net/unix_listener_test.cpp LIN
 wsrv_add_test(NAME net_acceptor_test SOURCES net/acceptor_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_loopback_test SOURCES net/loopback_test.cpp LINK wsrv::net)
 
+if(WSRV_ENABLE_DEFLATE)
+    wsrv_add_test(NAME extensions_zlib_codec_test SOURCES extensions/zlib_codec_test.cpp LINK wsrv::extensions)
+endif()
 if(WSRV_ENABLE_TLS)
     wsrv_add_test(NAME tls_sni_test SOURCES tls/sni_test.cpp LINK wsrv::tls)
     wsrv_add_test(NAME tls_server_context_sni_test SOURCES tls/server_context_sni_test.cpp
