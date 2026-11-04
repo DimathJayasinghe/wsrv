@@ -10,7 +10,7 @@
 | Ninja | 1.11 | Default generator |
 | clang-format / clang-tidy | 17+ | Pinned version in CI image |
 | cppcheck | 2.13+ | Secondary analysis |
-| OpenSSL | 3.0+ | Only with `WSRV_ENABLE_TLS=ON` |
+| OpenSSL | 3.0+ | Only with `WSRV_ENABLE_TLS=ON` (the default from M8, ADR-0019; `OFF` builds the zero-dependency core) |
 | zlib | 1.3+ | Only with `WSRV_ENABLE_DEFLATE=ON` |
 | Docker | any | Autobahn runner |
 | Python | 3.11 | Helper scripts only (not runtime) |
@@ -49,7 +49,7 @@ tools/            scripts (lint, include-graph check, banned-function scan)
 - One target per module. Linking declares the allowed-dependency graph from ARCHITECTURE §2.1 and the `module_graph` test diffs it against `tests/module_graph.expected` (it sees PUBLIC, INTERFACE and PRIVATE links). All modules share the `src/` include root, so a stray `#include` is **not** a build error; `tools/check_includes.py` (`check-includes`) is the primary guard and also rejects OS headers in the sans-I/O modules. (Per-module include roots would make it a hard error; revisit if the checker proves insufficient.)
 - `wsrv::wsrv` alias is the only installable library target; `install()` + `find_package(wsrv)` config files; semantic versioning.
 - No globbing for sources (explicit lists) so CI detects missing files.
-- Options (all default OFF unless stated): `WSRV_BUILD_TESTS` (ON for top-level), `WSRV_BUILD_EXAMPLES`, `WSRV_ENABLE_TLS`, `WSRV_ENABLE_DEFLATE`, `WSRV_BUILD_FUZZERS`, `WSRV_BUILD_BENCH`, `WSRV_WARNINGS_AS_ERRORS` (ON), `WSRV_SANITIZER` (none|asan-ubsan|tsan|msan).
+- Options (all default OFF unless stated): `WSRV_BUILD_TESTS` (ON for top-level), `WSRV_BUILD_EXAMPLES`, `WSRV_ENABLE_TLS` (ON from M8: TLS is built in, ADR-0019), `WSRV_ENABLE_DEFLATE`, `WSRV_BUILD_FUZZERS`, `WSRV_BUILD_BENCH`, `WSRV_WARNINGS_AS_ERRORS` (ON), `WSRV_SANITIZER` (none|asan-ubsan|tsan|msan).
 - Out-of-source builds only; reproducible: no timestamps, `-ffile-prefix-map`.
 - Dependencies for tests fetched via `FetchContent` with pinned tag **and** hash, or vendored under `third_party/` with license file; never floating `main`.
 
