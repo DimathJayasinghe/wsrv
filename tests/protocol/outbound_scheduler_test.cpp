@@ -44,6 +44,34 @@ std::vector<std::byte> drain(OutboundScheduler& s, std::size_t step = 0) {
     }
 }
 
+TEST(OutboundScheduler, ACompressedMessageCarriesRsv1OnItsFirstFrameOnly) {  // EC-D02
+    OutboundScheduler s{config(4)};
+    const std::string payload(10, 'x');
+    ASSERT_TRUE(s.enqueue_message(Opcode::Binary, bytes_of(payload), true).has_value());
+    ASSERT_TRUE(s.enqueue_message(Opcode::Text, bytes_of("plain")).has_value());
+    const auto parsed = parse_server_output(drain(s));
+    ASSERT_TRUE(parsed.ok);
+    ASSERT_EQ(parsed.frames.size(), 5U);  // 4 + 4 + 2 bytes, then "plain" in 4 + 1
+    EXPECT_TRUE(parsed.frames[0].rsv1);
+    EXPECT_FALSE(parsed.frames[1].rsv1);
+    EXPECT_FALSE(parsed.frames[2].rsv1);
+    EXPECT_FALSE(parsed.frames[3].rsv1);  // the next message is not compressed
+    EXPECT_FALSE(parsed.frames[4].rsv1);
+}
+
+TEST(OutboundScheduler, CanEnqueueAnswersWhatEnqueueWouldAnswerWithoutQueueingAnything) {
+    OutboundScheduler s{config(64, 100)};
+    EXPECT_TRUE(s.can_enqueue(50).has_value());
+    EXPECT_EQ(s.can_enqueue(100).error().code, ErrorCode::BufferFull);  // can never fit
+    ASSERT_TRUE(s.enqueue_message(Opcode::Binary, bytes_of(std::string(60, 'a'))).has_value());
+    EXPECT_EQ(s.can_enqueue(50).error().code, ErrorCode::Backpressure);  // fits only when empty
+    EXPECT_TRUE(s.can_enqueue(8).has_value());
+    ASSERT_TRUE(s.begin_stream(Opcode::Binary).has_value());
+    EXPECT_EQ(s.can_enqueue(1).error().code, ErrorCode::MessageInProgress);
+    s.queue_close(std::nullopt, "");
+    EXPECT_EQ(s.can_enqueue(1).error().code, ErrorCode::Closing);
+}
+
 TEST(OutboundScheduler, ASmallMessageIsOneUnmaskedFinFrame) {
     OutboundScheduler s{config()};
     ASSERT_TRUE(s.enqueue_message(Opcode::Text, bytes_of("Hello")).has_value());

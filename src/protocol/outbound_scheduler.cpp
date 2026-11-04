@@ -26,9 +26,7 @@ OutboundScheduler::OutboundScheduler(OutboundConfig config)
     WSRV_ASSERT(config.max_frame_payload < (std::size_t{1} << 40));  // keeps wire_bound() exact
 }
 
-Result<void> OutboundScheduler::enqueue_message(Opcode text_or_binary, ByteView payload) {
-    const bool is_data_opcode = text_or_binary == Opcode::Text || text_or_binary == Opcode::Binary;
-    WSRV_ASSERT(is_data_opcode);
+Result<void> OutboundScheduler::can_enqueue(std::size_t size) const {
     if (close_queued_) {
         return fail(ErrorCode::Closing, "outbound: closing");
     }
@@ -36,15 +34,25 @@ Result<void> OutboundScheduler::enqueue_message(Opcode text_or_binary, ByteView 
         return fail(ErrorCode::MessageInProgress, "outbound: a streamed message is open");
     }
     const std::size_t limit = config_.max_queued_bytes;
-    if (limit < kMessageOverhead || payload.size() > limit - kMessageOverhead) {
+    if (limit < kMessageOverhead || size > limit - kMessageOverhead) {
         return fail(ErrorCode::BufferFull, "outbound: message can never fit the queue");
     }
-    const std::size_t cost = payload.size() + kMessageOverhead;
-    if (cost > limit - queued_) {
+    if (size + kMessageOverhead > limit - queued_) {
         return fail(ErrorCode::Backpressure, "outbound: queue full");
     }
+    return {};
+}
+
+Result<void>
+OutboundScheduler::enqueue_message(Opcode text_or_binary, ByteView payload, bool compressed) {
+    const bool is_data_opcode = text_or_binary == Opcode::Text || text_or_binary == Opcode::Binary;
+    WSRV_ASSERT(is_data_opcode);
+    if (const Result<void> room = can_enqueue(payload.size()); !room) {
+        return room;
+    }
+    const std::size_t cost = payload.size() + kMessageOverhead;
     try {
-        messages_.push_back(Queued{text_or_binary, payload.size()});
+        messages_.push_back(Queued{text_or_binary, payload.size(), false, compressed});
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::ResourceExhausted, "outbound: out of memory");
     }
@@ -183,9 +191,10 @@ void OutboundScheduler::queue_close(std::optional<std::uint16_t> code, std::stri
 
 /// The wire buffer is sized for exactly this (wire_bound), so the only way an append can fail is
 /// the allocator running dry. Then the half-written frame is dropped and the scheduler is failed.
-bool OutboundScheduler::append_frame(Opcode opcode, bool fin, ByteView payload) {
+bool OutboundScheduler::append_frame(Opcode opcode, bool fin, ByteView payload, bool rsv1) {
     FrameHeader header;
     header.fin = fin;
+    header.rsv1 = rsv1;
     header.opcode = opcode;
     header.payload_length = payload.size();
     std::array<std::byte, kMaxHeaderSize> head{};
@@ -224,8 +233,10 @@ void OutboundScheduler::append_next_fragment() {
     const std::size_t remaining = front.length - front_offset_;
     const std::size_t take = std::min(remaining, config_.max_frame_payload);
     const bool last = !front.open && take == remaining;
-    if (!append_frame(
-            front_started_ ? Opcode::Continuation : front.opcode, last, data_.view().first(take))) {
+    if (!append_frame(front_started_ ? Opcode::Continuation : front.opcode,
+                      last,
+                      data_.view().first(take),
+                      !front_started_ && front.compressed)) {  // RSV1 on the first frame only
         return;
     }
     front_started_ = true;
