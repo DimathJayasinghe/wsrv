@@ -80,6 +80,12 @@ public:
         }
     }
 
+    /// TLS 1.3: ask the peer to change its keys too (the next write carries the request).
+    bool key_update_request() {
+        ERR_clear_error();
+        return SSL_key_update(ssl_.get(), SSL_KEY_UPDATE_REQUESTED) == 1;
+    }
+
     /// Send close_notify.
     void shutdown() {
         ERR_clear_error();

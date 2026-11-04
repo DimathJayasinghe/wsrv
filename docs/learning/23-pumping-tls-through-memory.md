@@ -28,7 +28,7 @@ Why this and not "hand OpenSSL the descriptor"? The transport never blocks (it o
 Both are `virtual … { return false; }` on `ITransport`: plain transports and test fakes are unchanged.
 
 ## 4. Bounds
-Every buffer has a limit and an outcome. Ciphertext waiting for the socket: 64 KiB, beyond that `write` says `WouldBlock`. One `read()` call takes at most 64 chunks from the socket, then yields (and says `buffered_input()`), so one hostile client cannot hold the loop. Plaintext per `write`: one TLS record (16 KiB).
+Every buffer has a limit and an outcome. Ciphertext waiting for the socket: 64 KiB, beyond that `write` says `WouldBlock`. One `read()` call takes at most 64 chunks from the socket, then yields (and says `buffered_input()`), so one hostile client cannot hold the loop. Plaintext per `write`: one TLS record (16 KiB). The output cap also guards the *read* side: in TLS 1.3 a peer can send a KeyUpdate request, which obliges us to answer with a KeyUpdate of our own. A peer that sends thousands and never reads our answers would make our output queue grow; past 128 KiB the stream is cut (`TlsFailure`). Any input that makes you produce output needs the same kind of bound as the output you produce yourself.
 
 ## 5. What the tests prove
 | Test | Proves |

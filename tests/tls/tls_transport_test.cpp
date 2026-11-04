@@ -381,6 +381,25 @@ TEST(TlsTransport, RenegotiationIsRefused) {
     EXPECT_TRUE(rig.received.empty());
 }
 
+TEST(TlsTransport, APeerThatForcesAnswersAndNeverReadsThemIsCutOff) {
+    // The output cap must also hold on the read path: every KeyUpdate request makes the server
+    // queue a KeyUpdate of its own. A peer that sends thousands and reads none must not make the
+    // queue grow without bound (it fails the stream instead).
+    Rig rig;
+    ASSERT_TRUE(rig.handshake());
+    rig.fake->set_write_capacity(0);  // the peer's socket never drains
+    std::size_t rounds = 0;
+    for (;
+         rounds < 40000 && (rig.last.has_value() || rig.last.error().code == ErrorCode::WouldBlock);
+         ++rounds) {
+        ASSERT_TRUE(rig.client().key_update_request());
+        rig.client().write("k");
+        rig.send_to_server(rig.client().take_output());
+    }
+    ASSERT_LT(rounds, 40000U) << "the queue of unsent answers was never bounded";
+    EXPECT_EQ(error_of(rig.last), ErrorCode::TlsFailure);
+}
+
 // ---- shutdown and close -------------------------------------------------------------------------
 
 TEST(TlsTransport, ShutdownWriteSendsCloseNotifyThenTheFin) {

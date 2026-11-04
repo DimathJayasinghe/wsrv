@@ -25,6 +25,11 @@ constexpr std::size_t kRecordPlaintext = 16384;
 // Ciphertext OpenSSL has produced that the inner transport has not taken. write() stops accepting
 // when this is exceeded, so a peer that does not read cannot make us buffer without bound (T3).
 constexpr std::size_t kMaxPendingOutput = std::size_t{64} * 1024;
+// The same bound for the read path, where only the peer can make us produce output (answers to its
+// KeyUpdate requests, alerts, handshake flights). Higher than the write bound because a busy
+// writer legitimately sits near that one; a peer that gets past it is not reading at all, and the
+// stream is cut instead of queueing without limit (T3).
+constexpr std::size_t kMaxPendingOutputOnRead = 2 * kMaxPendingOutput;
 // A single call to read() takes at most this many ciphertext chunks from the descriptor. Beyond
 // it the call yields with buffered_input() true, so one flooding peer cannot hold the loop.
 constexpr int kMaxFillsPerCall = 64;
@@ -34,6 +39,7 @@ constexpr std::string_view kClosed = "tls: use of a closed transport";
 constexpr std::string_view kHandshakeFailed = "tls: the handshake failed";
 constexpr std::string_view kBadRecord = "tls: a record could not be processed";
 constexpr std::string_view kNoProgress = "tls: no progress";
+constexpr std::string_view kPeerNotReading = "tls: the peer does not read our output";
 constexpr std::string_view kCutShort = "tls: the connection ended without close_notify";
 
 /// What OpenSSL asked for after an operation that did not complete.
@@ -78,6 +84,7 @@ private:
     Result<void> fail_stream(std::string_view context);
     Result<void> note_flush_error(const Result<void>& flushed);
 
+    Result<void> bound_output();
     Result<void> serve_input(int& fills);
     template <typename Op>
     Result<Outcome> drive(Op&& op);
@@ -181,11 +188,22 @@ Result<void> TlsTransport::State::fail_stream(std::string_view context) {
     return std::unexpected{*sticky_};
 }
 
+/// Cut the stream if the peer made us queue more than the read-path bound and still takes nothing.
+Result<void> TlsTransport::State::bound_output() {
+    if (BIO_ctrl_pending(to_peer_) > kMaxPendingOutputOnRead) {
+        return fail_stream(kPeerNotReading);
+    }
+    return {};
+}
+
 /// OpenSSL needs more ciphertext: first send what is waiting (it may be what the peer is waiting
 /// for), then take one chunk from the descriptor. `fills` counts chunks in this call.
 Result<void> TlsTransport::State::serve_input(int& fills) {
     if (const Result<void> pushed = note_flush_error(flush()); !pushed) {
         return pushed;
+    }
+    if (const Result<void> bounded = bound_output(); !bounded) {
+        return bounded;
     }
     if (++fills > kMaxFillsPerCall) {
         yielded_ = true;  // data may remain in the kernel: tell the connection to come back
@@ -270,6 +288,9 @@ Result<std::size_t> TlsTransport::State::read(MutableByteView out) {
     }
     // KeyUpdate and alerts may have queued output; a blocked socket is reported by wants_write().
     static_cast<void>(note_flush_error(flush()).has_value());
+    if (const Result<void> bounded = bound_output(); !bounded) {
+        return std::unexpected{bounded.error()};
+    }
     if (*done == Outcome::PeerClosed) {
         peer_closed_ = true;
         return std::size_t{0};
