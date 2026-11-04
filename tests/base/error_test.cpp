@@ -14,16 +14,27 @@ using wsrv::ErrorCategory;
 using wsrv::ErrorCode;
 using wsrv::Result;
 
-constexpr std::array kAllCodes{ErrorCode::InvalidArgument,   ErrorCode::OutOfRange,
-                               ErrorCode::Overflow,          ErrorCode::BufferFull,
-                               ErrorCode::InvalidBase64,     ErrorCode::InvalidUtf8,
-                               ErrorCode::RandomUnavailable, ErrorCode::ResourceExhausted,
-                               ErrorCode::Closing,           ErrorCode::Backpressure,
-                               ErrorCode::InvalidConfig,     ErrorCode::WouldBlock,
-                               ErrorCode::ConnectionClosed,  ErrorCode::FdLimit,
-                               ErrorCode::AddressInUse,      ErrorCode::Io,
-                               ErrorCode::MessageInProgress, ErrorCode::WrongProcess,
-                               ErrorCode::InvalidFrame,      ErrorCode::TlsFailure};
+constexpr std::array kAllCodes{ErrorCode::InvalidArgument,
+                               ErrorCode::OutOfRange,
+                               ErrorCode::Overflow,
+                               ErrorCode::BufferFull,
+                               ErrorCode::InvalidBase64,
+                               ErrorCode::InvalidUtf8,
+                               ErrorCode::RandomUnavailable,
+                               ErrorCode::ResourceExhausted,
+                               ErrorCode::Closing,
+                               ErrorCode::Backpressure,
+                               ErrorCode::InvalidConfig,
+                               ErrorCode::WouldBlock,
+                               ErrorCode::ConnectionClosed,
+                               ErrorCode::FdLimit,
+                               ErrorCode::AddressInUse,
+                               ErrorCode::Io,
+                               ErrorCode::MessageInProgress,
+                               ErrorCode::WrongProcess,
+                               ErrorCode::InvalidFrame,
+                               ErrorCode::TlsFailure,
+                               ErrorCode::InvalidCompressedData};
 
 TEST(Error, EveryCodeHasANonEmptyDistinctName) {
     std::set<std::string_view> names;
@@ -48,6 +59,7 @@ TEST(Error, CategoriesMatchTheErrorModel) {
     EXPECT_EQ(wsrv::category(ErrorCode::InvalidConfig), ErrorCategory::Config);
     EXPECT_EQ(wsrv::category(ErrorCode::InvalidFrame), ErrorCategory::Protocol);
     EXPECT_EQ(wsrv::category(ErrorCode::TlsFailure), ErrorCategory::Tls);
+    EXPECT_EQ(wsrv::category(ErrorCode::InvalidCompressedData), ErrorCategory::Protocol);
 }
 
 TEST(Error, FailBuildsAnErrorResultCarryingCodeAndContext) {

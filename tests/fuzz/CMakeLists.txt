@@ -36,6 +36,11 @@ wsrv_add_fuzzer(fuzz_session fuzz_session.cpp wsrv::protocol)
 wsrv_add_fuzzer(fuzz_ipc_frame fuzz_ipc_frame.cpp wsrv::ipc)
 wsrv_add_fuzzer(fuzz_handshake_blob fuzz_handshake_blob.cpp wsrv::capi)
 
+# permessage-deflate inflater (ADR-0020): zlib behind IMessageInflater, fed hostile bytes.
+if(WSRV_ENABLE_DEFLATE)
+    wsrv_add_fuzzer(fuzz_inflate fuzz_inflate.cpp wsrv::extensions)
+endif()
+
 # TLS server side (ADR-0019): a real OpenSSL server behind TlsTransport, fed hostile bytes. It builds a
 # certificate in-process with the test fixtures (tests/support/tls_fixtures.hpp).
 if(WSRV_ENABLE_TLS)

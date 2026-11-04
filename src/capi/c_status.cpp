@@ -30,7 +30,8 @@ wsrv_status to_c_status(ErrorCode code) noexcept {
     case ErrorCode::WouldBlock:
         return WSRV_ERR_IO;
     case ErrorCode::OutOfRange:
-    case ErrorCode::InvalidFrame:  // IPC only; no C API call parses frames
+    case ErrorCode::InvalidFrame:           // IPC only; no C API call parses frames
+    case ErrorCode::InvalidCompressedData:  // a connection-level failure (close 1007)
     case ErrorCode::Overflow:
     case ErrorCode::InvalidBase64:
     case ErrorCode::RandomUnavailable:
