@@ -44,6 +44,7 @@ jobs:
       - name: Toolchain
         run: |
           command -v ccache >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ccache; }
+          dpkg -s libssl-dev >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libssl-dev; }   # TLS (ADR-0019)
           g++ --version | head -1
           cmake --version | head -1
           ninja --version
@@ -83,7 +84,7 @@ jobs:
       - name: Install libc++
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends libc++-18-dev libc++abi-18-dev libclang-rt-18-dev ccache
+          sudo apt-get install -y -qq --no-install-recommends libc++-18-dev libc++abi-18-dev libclang-rt-18-dev ccache libssl-dev
           clang++-18 --version | head -1
           php --version | head -1   # the PHP binding tests (bindings/php) must run here too, not be skipped
       - name: dev-clang (ASan+UBSan)
@@ -124,7 +125,7 @@ jobs:
       - name: Install libc++ and clang-tidy
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends libc++-18-dev libc++abi-18-dev clang-tidy-18
+          sudo apt-get install -y -qq --no-install-recommends libc++-18-dev libc++abi-18-dev clang-tidy-18 libssl-dev
           clang-tidy-18 --version | head -2
       - name: clang-tidy
         run: |

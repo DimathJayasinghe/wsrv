@@ -7,7 +7,9 @@ Rules (both include forms, "..." and <...>, are checked):
      Relative includes ("../net/x.hpp") are resolved before checking.
   2. The sans-I/O layers (base, crypto, http, protocol) must not include OS / network / threading-runtime
      headers (ADR-0002).
-  3. Every directory under src/ must be a known module, and project includes must name a known module.
+  3. <openssl/...> may be included only by the tls module (ADR-0019): everything else sees TLS through
+     interfaces.
+  4. Every directory under src/ must be a known module, and project includes must name a known module.
 
 Project headers are included as "<module>/<file>.hpp" (include root: src/). A header whose first path
 component is a module name and whose suffix is not ".h" is a project header (so <net/if.h> is the OS one).
@@ -26,6 +28,8 @@ ALLOWED = {
     "protocol": {"base", "crypto", "http"},
     "extensions": {"base", "protocol"},
     "net": {"base"},
+    # OpenSSL TLS transport (ADR-0019): the only module that may include <openssl/...>.
+    "tls": {"base", "net"},
     "server": {"base", "http", "protocol", "net", "extensions"},
     "capi": {"base", "net", "server"},
     "ipc": {"base"},
@@ -75,6 +79,8 @@ def file_violations(path: pathlib.Path, module: str, where_file: pathlib.Path, s
                 yield f"{where}: {module} must not include {other}"
         elif module in SANS_IO and OS_HEADER.match(header):
             yield f"{where}: {module} must not include <{header}> (sans-I/O layer, ADR-0002)"
+        elif module != "tls" and header.startswith("openssl/"):
+            yield f"{where}: {module} must not include <{header}> (only tls may, ADR-0019)"
 
 
 def violations(root: pathlib.Path):
