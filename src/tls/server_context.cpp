@@ -289,9 +289,8 @@ Result<std::shared_ptr<const TlsMaterial>> build(const TlsConfig& config, ILogge
         SSL_CTX_ctrl(material->ctx.get(), SSL_CTRL_SET_TLSEXT_SERVERNAME_ARG, 0, material.get());
         // OpenSSL's callback slot is a generic function pointer; this one cast is the API's shape.
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-        SSL_CTX_callback_ctrl(material->ctx.get(),
-                              SSL_CTRL_SET_TLSEXT_SERVERNAME_CB,
-                              reinterpret_cast<void (*)()>(&select_certificate));
+        const auto slot = reinterpret_cast<void (*)()>(&select_certificate);
+        SSL_CTX_callback_ctrl(material->ctx.get(), SSL_CTRL_SET_TLSEXT_SERVERNAME_CB, slot);
     }
     return std::shared_ptr<const TlsMaterial>{std::move(material)};
 }
