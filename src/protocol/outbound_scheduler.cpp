@@ -138,12 +138,15 @@ void OutboundScheduler::queue_pong(ByteView payload) {
         return;
     }
     if (pongs_.size() < kMaxQueuedPongs) {
+        bool room = true;
         try {
             pongs_.emplace_back();
+        } catch (const std::bad_alloc&) {
+            room = false;  // no memory for another entry: coalesce into the last one, as below
+        }
+        if (room) {
             fill(pongs_.back(), payload);
             return;
-        } catch (const std::bad_alloc&) {
-            // No room for another entry: answer the newest Ping in place of the last, as below.
         }
     }
     if (!pongs_.empty()) {
