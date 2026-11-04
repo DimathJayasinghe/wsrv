@@ -39,7 +39,8 @@ DeflatePolicy relaxed() {  // no server-side restrictions beyond the protocol ma
 }
 
 TEST(PermessageDeflate, ABareOfferIsAcceptedUnderThePolicyDefaults) {
-    EXPECT_EQ(answer(pmd()), "permessage-deflate; server_no_context_takeover; server_max_window_bits=12");
+    EXPECT_EQ(answer(pmd()),
+              "permessage-deflate; server_no_context_takeover; server_max_window_bits=12");
 }
 
 TEST(PermessageDeflate, ARelaxedPolicyAnswersWithNothingExtra) {
@@ -47,9 +48,9 @@ TEST(PermessageDeflate, ARelaxedPolicyAnswersWithNothingExtra) {
 }
 
 TEST(PermessageDeflate, TheAgreedParametersAreReturnedForTheCodec) {
-    const std::vector<ExtensionOffer> offers{
-        pmd({{"client_no_context_takeover", ""}, {"server_max_window_bits", "10"},
-             {"client_max_window_bits", "11"}})};
+    const std::vector<ExtensionOffer> offers{pmd({{"client_no_context_takeover", ""},
+                                                  {"server_max_window_bits", "10"},
+                                                  {"client_max_window_bits", "11"}})};
     const auto agreement = negotiate_permessage_deflate(offers, DeflatePolicy{});
     ASSERT_TRUE(agreement.has_value());
     EXPECT_TRUE(agreement->params.server_no_context_takeover);  // from the policy
@@ -58,7 +59,8 @@ TEST(PermessageDeflate, TheAgreedParametersAreReturnedForTheCodec) {
     EXPECT_EQ(agreement->params.client_window_bits, 11);
 }
 
-TEST(PermessageDeflate, ServerNoContextTakeoverIsIncludedWheneverTheClientAsksEvenIfPolicyAllowsTakeover) {
+TEST(PermessageDeflate,
+     ServerNoContextTakeoverIsIncludedWheneverTheClientAsksEvenIfPolicyAllowsTakeover) {
     EXPECT_EQ(answer(pmd({{"server_no_context_takeover", ""}}), relaxed()),
               "permessage-deflate; server_no_context_takeover");
 }
@@ -127,8 +129,8 @@ TEST(PermessageDeflate, AnUnknownParameterDeclinesTheOfferNotTheConnection) {  /
 
 TEST(PermessageDeflate, OfferOrderIsKeptAndTheFirstAcceptableOneWins) {
     const std::vector<ExtensionOffer> offers{
-        pmd({{"server_max_window_bits", "99"}}),   // unacceptable
-        pmd({{"server_max_window_bits", "10"}}),   // this one
+        pmd({{"server_max_window_bits", "99"}}),  // unacceptable
+        pmd({{"server_max_window_bits", "10"}}),  // this one
         pmd({{"server_max_window_bits", "11"}})};
     const auto agreement = negotiate_permessage_deflate(offers, relaxed());
     ASSERT_TRUE(agreement.has_value());
@@ -142,7 +144,8 @@ TEST(PermessageDeflate, OtherExtensionsAreIgnoredAndNeverEchoed) {
     EXPECT_EQ(agreement->response, "permessage-deflate");
     EXPECT_FALSE(negotiate_permessage_deflate(std::vector<ExtensionOffer>{offer("foo")}, relaxed())
                      .has_value());
-    EXPECT_FALSE(negotiate_permessage_deflate(std::vector<ExtensionOffer>{}, relaxed()).has_value());
+    EXPECT_FALSE(
+        negotiate_permessage_deflate(std::vector<ExtensionOffer>{}, relaxed()).has_value());
 }
 
 TEST(PermessageDeflate, AnExtensionNameIsMatchedExactly) {

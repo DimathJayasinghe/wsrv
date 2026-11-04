@@ -36,8 +36,9 @@ inline constexpr std::size_t kMaxSubprotocolOffers = 32;
 
 /// Facts the rules collect for the final decision.
 struct HandshakeContext {
-    std::string subprotocol;                       // chosen by the built-in rule; empty = none
-    std::vector<ExtensionOffer> extension_offers;  // valid offers, in order (informational: negotiation uses them)
+    std::string subprotocol;  // chosen by the built-in rule; empty = none
+    std::vector<ExtensionOffer>
+        extension_offers;  // valid offers, in order (informational: negotiation uses them)
     /// Application data set by user rules (user id, claims...), handed to the application with the
     /// accepted connection and never sent to the peer. This is the ONLY part of the context user
     /// rules may change: if a rule alters `subprotocol` or `extension_offers` the handshake fails
@@ -91,7 +92,7 @@ struct HandshakeAccept {
     std::string accept_key;   // value of Sec-WebSocket-Accept
     std::string subprotocol;  // empty = none selected
     std::vector<ExtensionOffer> extension_offers;
-    std::optional<DeflateAgreement> deflate;  // set when permessage-deflate was agreed
+    std::optional<DeflateAgreement> deflate;         // set when permessage-deflate was agreed
     std::map<std::string, std::string> annotations;  // from user rules; for the application only
 };
 

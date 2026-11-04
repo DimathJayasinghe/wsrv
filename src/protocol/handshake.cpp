@@ -52,7 +52,8 @@ void validate_config(const HandshakeConfig& config) {
         throw std::invalid_argument("HandshakeConfig: user rule must not be null");
     }
     if (config.permessage_deflate && !valid(*config.permessage_deflate)) {
-        throw std::invalid_argument("HandshakeConfig: permessage-deflate window bits must be 9..15");
+        throw std::invalid_argument(
+            "HandshakeConfig: permessage-deflate window bits must be 9..15");
     }
     for (std::size_t i = 0; i < config.subprotocols.size(); ++i) {
         const std::string& name = config.subprotocols[i];
@@ -122,7 +123,8 @@ HandshakeDecision HandshakeNegotiator::negotiate(const HttpRequest& request) con
     const std::string_view key = request.values("Sec-WebSocket-Key").front();
     std::optional<DeflateAgreement> deflate;
     if (config_.permessage_deflate) {  // RFC 7692: pure choice over the offers, never an error
-        deflate = negotiate_permessage_deflate(context.extension_offers, *config_.permessage_deflate);
+        deflate =
+            negotiate_permessage_deflate(context.extension_offers, *config_.permessage_deflate);
     }
     return HandshakeAccept{compute_accept_key(key),
                            std::move(context.subprotocol),

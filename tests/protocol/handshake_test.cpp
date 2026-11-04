@@ -313,9 +313,10 @@ TEST(Handshake, PermessageDeflateIsAnsweredWhenConfiguredAndOffered) {  // EC-D0
     EXPECT_TRUE(accept.deflate->params.server_no_context_takeover);
     const auto text = wsrv::serialize(wsrv::to_response(decision));
     ASSERT_TRUE(text.has_value());
-    EXPECT_NE(text->find("Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; "
-                         "server_max_window_bits=12\r\n"),
-              std::string::npos);
+    EXPECT_NE(
+        text->find("Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; "
+                   "server_max_window_bits=12\r\n"),
+        std::string::npos);
     EXPECT_EQ(text->find("x-unknown"), std::string::npos);
 }
 
@@ -325,7 +326,8 @@ TEST(Handshake, NoDeflateAnswerWhenTheClientDidNotOfferItOrNoOfferIsAcceptable) 
     for (const char* offers : {"x-unknown", "permessage-deflate; bogus"}) {
         const HandshakeDecision decision = HandshakeNegotiator{config}.negotiate(
             with(valid_request(), "Sec-WebSocket-Extensions", offers));
-        ASSERT_TRUE(std::holds_alternative<HandshakeAccept>(decision)) << offers;  // never a refusal
+        ASSERT_TRUE(std::holds_alternative<HandshakeAccept>(decision))
+            << offers;  // never a refusal
         EXPECT_FALSE(std::get<HandshakeAccept>(decision).deflate.has_value()) << offers;
         const auto text = wsrv::serialize(wsrv::to_response(decision));
         ASSERT_TRUE(text.has_value());
