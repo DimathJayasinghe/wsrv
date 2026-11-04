@@ -38,8 +38,8 @@ int smaller(int a, int b) noexcept {
     return a < b ? a : b;
 }
 
-std::string render_answer(const DeflateParams& params, bool server_window_offered,
-                          bool client_window_offered) {
+std::string
+render_answer(const DeflateParams& params, bool server_window_offered, bool client_window_offered) {
     std::string out{kExtensionName};
     // The server's own restrictions are announced even when the client did not ask for them
     // (section 7.1.1.1 allows server_no_context_takeover in a response regardless).
@@ -111,7 +111,8 @@ std::optional<DeflateAgreement> accept_offer(const ExtensionOffer& offer,
             return std::nullopt;  // unknown parameter: this offer cannot be accepted (section 5.2)
         }
     }
-    return DeflateAgreement{params, render_answer(params, server_window_offered, client_window_offered)};
+    return DeflateAgreement{params,
+                            render_answer(params, server_window_offered, client_window_offered)};
 }
 
 }  // namespace

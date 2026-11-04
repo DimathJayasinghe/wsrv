@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "protocol/extension_offer.hpp"
+
 #include <optional>
 #include <span>
 #include <string>
-
-#include "protocol/extension_offer.hpp"
 
 namespace wsrv {
 
@@ -31,7 +31,9 @@ struct DeflateParams {
     bool server_no_context_takeover = false;
     bool client_no_context_takeover = false;
     int server_window_bits = kMaxDeflateWindowBits;  ///< the server's compressor window
-    int client_window_bits = kMaxDeflateWindowBits;  ///< the client's compressor window (our inflater always uses 15, which decodes any window)
+    int client_window_bits =
+        kMaxDeflateWindowBits;  ///< the client's compressor window (our inflater always uses 15,
+                                ///< which decodes any window)
 
     friend bool operator==(const DeflateParams&, const DeflateParams&) = default;
 };
