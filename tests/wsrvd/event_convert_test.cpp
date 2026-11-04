@@ -57,9 +57,20 @@ TEST(EventConvert, KindsKeepTheirWireNumbers) {
               EventKind::Open);
 }
 
+TEST(EventConvert, AHandshakeQuestionKeepsItsOwnKindAndCarriesTheBlobUntouched) {  // ADR-0018
+    ByteBuffer storage{kMaxFrame};
+    const Event out = round_trip(host_event(HostEventType::Handshake, "blob-bytes"), storage);
+    EXPECT_EQ(out.kind, EventKind::Handshake);
+    EXPECT_EQ(static_cast<std::uint8_t>(out.kind), 6U) << "the wire number is part of the protocol";
+    EXPECT_EQ(out.data.size(), 10U);
+}
+
 TEST(EventConvert, EveryNonCloseShapeEncodes) {
-    constexpr std::array types{
-        HostEventType::Open, HostEventType::Text, HostEventType::Binary, HostEventType::Error};
+    constexpr std::array types{HostEventType::Open,
+                               HostEventType::Text,
+                               HostEventType::Binary,
+                               HostEventType::Error,
+                               HostEventType::Handshake};
     for (const HostEventType type : types) {
         ByteBuffer storage{kMaxFrame};
         const Event out = round_trip(host_event(type, "abc"), storage);

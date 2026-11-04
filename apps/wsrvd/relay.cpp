@@ -84,4 +84,24 @@ ipc::Status Relay::execute(const ipc::CloseCommand& command) {
     return ipc::Status{.request = command.request, .status = code_of(result)};
 }
 
+ipc::Status Relay::execute(const ipc::HandshakeAccept& command) {
+    if (command.request == 0) {
+        return ipc::Status{.request = 0, .status = code_of(WSRV_ERR_INVALID_ARGUMENT)};
+    }
+    std::optional<std::string_view> chosen;
+    if (!command.subprotocol.empty()) {
+        chosen = as_chars(command.subprotocol);
+    }
+    const Result<void> result = backend_.accept_handshake(command.conn, chosen);
+    return ipc::Status{.request = command.request, .status = code_of(result)};
+}
+
+ipc::Status Relay::execute(const ipc::HandshakeReject& command) {
+    if (command.request == 0) {
+        return ipc::Status{.request = 0, .status = code_of(WSRV_ERR_INVALID_ARGUMENT)};
+    }
+    const Result<void> result = backend_.reject_handshake(command.conn, command.status);
+    return ipc::Status{.request = command.request, .status = code_of(result)};
+}
+
 }  // namespace wsrv::wsrvd

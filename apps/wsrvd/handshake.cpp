@@ -26,13 +26,16 @@ namespace {
 
 }  // namespace
 
-Handshake::Handshake(std::string token, std::uint32_t max_frame)
-    : token_{std::move(token)}, max_frame_{max_frame} {}
+Handshake::Handshake(std::string token, std::uint32_t max_frame, bool asks_questions)
+    : token_{std::move(token)}, max_frame_{max_frame}, asks_questions_{asks_questions} {}
 
 Handshake::Outcome Handshake::on_first_message(const ipc::Message& first) const {
     const auto* hello = std::get_if<ipc::Hello>(&first);
     if (hello == nullptr || hello->major != ipc::kVersionMajor) {
         return refused();
+    }
+    if (asks_questions_ && hello->minor < ipc::kHandshakeHookMinor) {
+        return refused();  // the same answer as every other refusal: nothing to probe apart
     }
     if (!token_.empty() && !constant_time_equal(hello->token, as_bytes(token_))) {
         return refused();

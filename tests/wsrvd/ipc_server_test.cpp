@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -33,6 +34,7 @@
 #include <unistd.h>
 
 #include "capi/embedded_server.hpp"
+#include "capi/handshake_blob.hpp"
 #include "ipc/frame_decoder.hpp"
 #include "ipc/message.hpp"
 #include "wsrvd/embedded_backend.hpp"
@@ -867,6 +869,204 @@ TEST_F(IpcServerTest, StoppingWithAConnectedApplicationClosesItsConnection) {
     ASSERT_EQ(client.receive()->kind, Reply::Kind::HelloOk);
     server.reset();
     EXPECT_TRUE(client.closed_by_server());
+}
+
+// ---- the handshake hook (ADR-0018) ------------------------------------------------------------
+
+bool wait_until(const std::function<bool()>& condition) {
+    for (int i = 0; i < 300; ++i) {
+        if (condition()) {
+            return true;
+        }
+        std::this_thread::sleep_for(10ms);
+    }
+    return false;
+}
+
+struct HookIpcTest : public IpcServerTest {
+    [[nodiscard]] IpcServerConfig hook_config() const {
+        IpcServerConfig c = config();
+        c.handshake_hook = true;
+        return c;
+    }
+};
+
+TEST_F(HookIpcTest, TheIntakeStartsClosedOpensWithTheApplicationAndClosesWhenItLeaves) {
+    const RunningServer server{sys, backend, hook_config()};
+    EXPECT_EQ(backend.intake_calls(), (std::vector<bool>{false})) << "nobody is there to answer";
+    {
+        const auto client = connect_ready(path());
+        EXPECT_TRUE(wait_until([&] { return backend.intake_calls().size() == 2; }));
+        EXPECT_EQ(backend.intake_calls(), (std::vector<bool>{false, true}));
+    }
+    EXPECT_TRUE(wait_until([&] { return backend.intake_calls().size() == 3; }));
+    EXPECT_EQ(backend.intake_calls(), (std::vector<bool>{false, true, false}));
+}
+
+TEST_F(HookIpcTest, AnApplicationThatCannotReadQuestionsIsRefusedAndTheIntakeStaysClosed) {
+    const RunningServer server{sys, backend, hook_config()};
+    Client old{path()};
+    old.send_message(ipc::Hello{.major = ipc::kVersionMajor, .minor = 1, .token = {}});
+    const auto reply = old.receive();
+    ASSERT_TRUE(reply);
+    EXPECT_EQ(reply->kind, Reply::Kind::Status);
+    EXPECT_EQ(reply->request, 0U);
+    EXPECT_EQ(reply->status, kInvalidArgument);
+    EXPECT_TRUE(old.closed_by_server());
+    EXPECT_EQ(backend.intake_calls(), (std::vector<bool>{false}));
+}
+
+TEST_F(HookIpcTest, WithoutTheHookTheIntakeIsNeverTouched) {
+    const RunningServer server{sys, backend, config()};
+    const auto client = connect_ready(path());
+    EXPECT_TRUE(backend.intake_calls().empty());
+}
+
+TEST_F(HookIpcTest, AQuestionArrivesAsEventKind6AndTheAnswersReachTheBackend) {
+    const RunningServer server{sys, backend, hook_config()};
+    const auto client = connect_ready(path());
+    ASSERT_TRUE(backend.push(HostEventType::Handshake, 11, "blob").has_value());
+    const auto question = client->receive();
+    ASSERT_TRUE(question);
+    EXPECT_EQ(question->kind, Reply::Kind::Event);
+    EXPECT_EQ(question->event, ipc::EventKind::Handshake);
+    EXPECT_EQ(question->conn, 11U);
+    EXPECT_EQ(question->data, "blob");
+
+    ipc::HandshakeAccept accept;
+    accept.request = 1;
+    accept.conn = 11;
+    const std::string chosen = "chat";
+    accept.subprotocol =
+        ByteView{reinterpret_cast<const std::byte*>(chosen.data()), chosen.size()};  // NOLINT
+    client->send_message(accept);
+    const auto accepted = client->receive();
+    ASSERT_TRUE(accepted);
+    EXPECT_EQ(accepted->kind, Reply::Kind::Status);
+    EXPECT_EQ(accepted->request, 1U);
+    EXPECT_EQ(accepted->status, kOk);
+
+    client->send_message(ipc::HandshakeReject{.request = 2, .conn = 12, .status = 403});
+    EXPECT_EQ(client->receive()->status, kOk);
+    const auto commands = backend.commands();
+    ASSERT_EQ(commands.size(), 2U);
+    EXPECT_EQ(commands[0].kind, RecordedCommand::Kind::Accept);
+    EXPECT_EQ(commands[0].conn, 11U);
+    EXPECT_EQ(commands[0].data, "chat");
+    EXPECT_EQ(commands[1].kind, RecordedCommand::Kind::Reject);
+    EXPECT_EQ(commands[1].conn, 12U);
+    EXPECT_EQ(commands[1].code, 403U);
+}
+
+TEST_F(HookIpcTest, AQuestionTooBigForAFrameIsRefusedWith503AndTheLinkSurvives) {
+    const RunningServer server{sys, backend, hook_config()};
+    const auto client = connect_ready(path());
+    ASSERT_TRUE(
+        backend.push(HostEventType::Handshake, 21, std::string(kMaxFrame, 'x')).has_value());
+    ASSERT_TRUE(backend.push(HostEventType::Open, 22, "peer").has_value());
+    const auto next = client->receive();  // the oversized question is skipped, not fatal
+    ASSERT_TRUE(next);
+    EXPECT_EQ(next->event, ipc::EventKind::Open);
+    EXPECT_EQ(next->conn, 22U);
+    const auto commands = backend.commands();
+    ASSERT_EQ(commands.size(), 1U);
+    EXPECT_EQ(commands[0].kind, RecordedCommand::Kind::Reject);
+    EXPECT_EQ(commands[0].conn, 21U);
+    EXPECT_EQ(commands[0].code, 503U);
+}
+
+/// The whole chain with the hook on: a browser, the real WebSocket server, the daemon, an IPC
+/// application that decides.
+struct HookEndToEnd : public ::testing::Test {
+    static std::unique_ptr<wsrv::EmbeddedServer> start_web_server() {
+        wsrv::EmbeddedConfig web;
+        EXPECT_TRUE(web.set("allow_origin", "https://app.example.com").has_value());
+        EXPECT_TRUE(web.set("shutdown_grace_ms", "1000").has_value());
+        EXPECT_TRUE(web.set("handshake_hook", "true").has_value());
+        EXPECT_TRUE(web.set("handshake_forward_header", "Cookie").has_value());
+        // Long on purpose: a 503 that arrives sooner was not the timeout.
+        EXPECT_TRUE(web.set("handshake_decision_timeout_ms", "30000").has_value());
+        auto created = wsrv::EmbeddedServer::create(web);
+        EXPECT_TRUE(created.has_value());
+        EXPECT_TRUE((*created)->start().has_value());
+        return std::move(*created);
+    }
+
+    [[nodiscard]] IpcServerConfig config() const {
+        IpcServerConfig c;
+        c.socket_path = dir.file("ipc.sock");
+        c.max_frame = 1U << 20U;
+        c.restart_grace = 400ms;
+        c.handshake_hook = true;
+        return c;
+    }
+    [[nodiscard]] std::string path() const {
+        return dir.file("ipc.sock");
+    }
+
+    FakeSyscalls sys;
+    TempDir dir;
+    std::unique_ptr<wsrv::EmbeddedServer> embedded = start_web_server();
+    wsrv::wsrvd::EmbeddedBackend backend{*embedded};
+};
+
+TEST_F(HookEndToEnd, TheApplicationDecidesAndTheBrowserGetsThatAnswer) {
+    const RunningServer server{sys, backend, config()};
+    const auto app = connect_ready(path());
+
+    wsrv::test::TcpClient allowed{embedded->port()};
+    std::string request = wsrv::test::TcpClient::upgrade_request();
+    request.insert(request.size() - 2, "Cookie: session=good\r\n");
+    ASSERT_TRUE(allowed.send(request));
+    const auto question = app->receive();
+    ASSERT_TRUE(question);
+    ASSERT_EQ(question->event, ipc::EventKind::Handshake);
+    const auto blob =
+        wsrv::decode_handshake(ByteView{reinterpret_cast<const std::byte*>(question->data.data()),
+                                        question->data.size()});  // NOLINT
+    ASSERT_TRUE(blob.has_value());
+    EXPECT_EQ(blob->path, "/chat");
+    ASSERT_EQ(blob->headers.size(), 1U);
+    EXPECT_EQ(blob->headers[0].second, "session=good");
+    EXPECT_TRUE(allowed.silent_for(100ms)) << "no 101 until the application answers";
+
+    app->send_message(
+        ipc::HandshakeAccept{.request = 1, .conn = question->conn, .subprotocol = {}});
+    EXPECT_EQ(app->receive()->status, kOk);
+    EXPECT_EQ(allowed.read_http_head().rfind("HTTP/1.1 101 ", 0), 0U);
+    const auto open = app->receive();
+    ASSERT_TRUE(open);
+    EXPECT_EQ(open->event, ipc::EventKind::Open);
+    EXPECT_EQ(open->conn, question->conn) << "the id of the question is the id of the connection";
+
+    wsrv::test::TcpClient refused{embedded->port()};
+    ASSERT_TRUE(refused.send(wsrv::test::TcpClient::upgrade_request()));
+    const auto second = app->receive();
+    ASSERT_TRUE(second);
+    ASSERT_EQ(second->event, ipc::EventKind::Handshake);
+    app->send_message(ipc::HandshakeReject{.request = 2, .conn = second->conn, .status = 401});
+    EXPECT_EQ(app->receive()->status, kOk);
+    EXPECT_EQ(refused.read_http_head().rfind("HTTP/1.1 401 ", 0), 0U);
+}
+
+TEST_F(HookEndToEnd, WithNoApplicationConnectedUpgradesAreRefusedAtOnceNotHeld) {
+    const RunningServer server{sys, backend, config()};
+    wsrv::test::TcpClient browser{embedded->port()};
+    ASSERT_TRUE(browser.send(wsrv::test::TcpClient::upgrade_request()));
+    EXPECT_EQ(browser.read_http_head().rfind("HTTP/1.1 503 ", 0), 0U) << "fail closed";
+}
+
+TEST_F(HookEndToEnd, WhenTheApplicationDiesWhileAskedTheWaitingBrowserGets503AtOnce) {
+    const RunningServer server{sys, backend, config()};
+    wsrv::test::TcpClient browser{embedded->port()};
+    {
+        const auto app = connect_ready(path());
+        ASSERT_TRUE(browser.send(wsrv::test::TcpClient::upgrade_request()));
+        const auto question = app->receive();
+        ASSERT_TRUE(question);
+        ASSERT_EQ(question->event, ipc::EventKind::Handshake);
+    }  // the application dies without answering; the server's own wait is 30 s
+    EXPECT_EQ(browser.read_http_head().rfind("HTTP/1.1 503 ", 0), 0U);
 }
 
 }  // namespace

@@ -32,13 +32,17 @@ public:
     /// @param token the shared secret; empty means "no token required" (then only the peer uid
     ///        check protects the socket, which the daemon logs at startup).
     /// @param max_frame the largest frame the daemon will accept after HELLO, told to the peer.
-    Handshake(std::string token, std::uint32_t max_frame);
+    /// @param asks_questions the daemon asks the application about each upgrade (ADR-0018), so an
+    ///        application that speaks an older minor version, and cannot read a Handshake event,
+    ///        is refused: it would leave every browser waiting for a 503.
+    Handshake(std::string token, std::uint32_t max_frame, bool asks_questions = false);
 
     [[nodiscard]] Outcome on_first_message(const ipc::Message& first) const;
 
 private:
     std::string token_;
     std::uint32_t max_frame_;
+    bool asks_questions_;
 };
 
 }  // namespace wsrv::wsrvd

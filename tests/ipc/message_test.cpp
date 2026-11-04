@@ -69,6 +69,20 @@ TEST(IpcMessage, EventLayout) {
                                'b',  'y',  'e'}));
 }
 
+TEST(IpcMessage, HandshakeAnswersLayout) {  // ADR-0018: frames 10 and 11, event kind 6
+    EXPECT_EQ(encoded(HandshakeAccept{0x01020304U, 0x0A0B0C0D0E0F1011ULL, text("v2")}),
+              bytes_of({0,    0,    0,    2 + 12 + 2, 10,   0,                 //
+                        1,    2,    3,    4,                                   // request
+                        0x0A, 0x0B, 0x0C, 0x0D,       0x0E, 0x0F, 0x10, 0x11,  // connection id
+                        'v',  '2'}));
+    EXPECT_EQ(encoded(HandshakeAccept{1, 5, ByteView{}}),
+              bytes_of({0, 0, 0, 2 + 12, 10, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 5}));
+    EXPECT_EQ(encoded(HandshakeReject{9, 5, 403}),
+              bytes_of({0, 0, 0, 2 + 14, 11, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 5, 0x01, 0x93}));
+    const auto frame = encoded(Event{EventKind::Handshake, 5, 0, false, text("blob")});
+    EXPECT_EQ(frame[6], std::byte{6});  // the kind byte
+}
+
 // ---- encode -> parse round trip for every message
 // ---------------------------------------------------
 
@@ -96,6 +110,10 @@ TEST(IpcMessage, EveryMessageSurvivesARoundTripByteForByte) {
         Event{EventKind::Binary, 5, 0, false, ByteView{token}},
         Event{EventKind::Close, 5, 1006, false, ByteView{}},
         Event{EventKind::Error, 5, 0, false, text("Protocol")},
+        Event{EventKind::Handshake, 5, 0, false, text("blob")},
+        HandshakeAccept{12, 5, text("chat")},
+        HandshakeAccept{13, 5, ByteView{}},
+        HandshakeReject{14, 5, 401},
         Status{1, 0},
         Status{0xFFFFFFFFU, 255},
     };
@@ -135,6 +153,7 @@ TEST(IpcMessage, EncodeRefusesMessagesNoPeerCouldParse) {
     ByteBuffer out{1U << 16};
     const std::vector<std::byte> long_token(kMaxTokenSize + 1, std::byte{1});
     const std::vector<std::byte> long_reason(kMaxCloseReason + 1, std::byte{1});
+    const std::vector<std::byte> long_subprotocol(kMaxSubprotocol + 1, std::byte{1});
     const std::vector<Message> bad = {
         Hello{0, 1, ByteView{long_token}},
         CloseCommand{1, 1, 1000, ByteView{long_reason}},
@@ -144,7 +163,11 @@ TEST(IpcMessage, EncodeRefusesMessagesNoPeerCouldParse) {
         Event{EventKind::Text, 1, 1000, false, ByteView{}},         // close code on a Text
         Event{EventKind::Text, 1, 0, true, ByteView{}},             // clean on a Text
         Event{static_cast<EventKind>(0), 1, 0, false, ByteView{}},  // unknown kind
-        Event{static_cast<EventKind>(6), 1, 0, false, ByteView{}},
+        Event{static_cast<EventKind>(7), 1, 0, false, ByteView{}},
+        Event{EventKind::Handshake, 1, 1000, false, ByteView{}},  // close code on a Handshake
+        HandshakeAccept{1, 0, ByteView{}},                        // connection 0
+        HandshakeAccept{1, 1, ByteView{long_subprotocol}},
+        HandshakeReject{1, 0, 403},  // connection 0
     };
     for (const Message& message : bad) {
         const Result<void> r = encode(message, kLimit, out);
@@ -181,7 +204,25 @@ TEST(IpcMessage, ParseRefusesWrongSizesAndImpossibleFields) {
         {FrameType::Close, bytes_of({0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 3, 232}), "close conn 0"},
         {FrameType::Event, bytes_of({1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0}), "event too short"},
         {FrameType::Event, bytes_of({0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0}), "event kind 0"},
-        {FrameType::Event, bytes_of({6, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0}), "event kind 6"},
+        {FrameType::Event, bytes_of({7, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0}), "event kind 7"},
+        {FrameType::Event,
+         bytes_of({6, 0, 0, 0, 0, 0, 0, 0, 1, 3, 232, 0}),
+         "close code on Handshake"},
+        {FrameType::HandshakeAccept,
+         bytes_of({0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0}),
+         "accept too short"},
+        {FrameType::HandshakeAccept,
+         bytes_of({0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}),
+         "accept conn 0"},
+        {FrameType::HandshakeReject,
+         bytes_of({0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 5, 1}),
+         "reject too short"},
+        {FrameType::HandshakeReject,
+         bytes_of({0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 5, 1, 147, 0}),
+         "reject trailing byte"},
+        {FrameType::HandshakeReject,
+         bytes_of({0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 147}),
+         "reject conn 0"},
         {FrameType::Event, bytes_of({1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}), "event conn 0"},
         {FrameType::Event, bytes_of({4, 0, 0, 0, 0, 0, 0, 0, 1, 3, 232, 2}), "clean flag 2"},
         {FrameType::Event, bytes_of({2, 0, 0, 0, 0, 0, 0, 0, 1, 3, 232, 0}), "close code on Text"},
@@ -206,13 +247,20 @@ TEST(IpcMessage, ParseRefusesATokenOrReasonOverTheCap) {
     close.insert(close.end(), kMaxCloseReason + 1, std::byte{'r'});
     EXPECT_EQ(parse_message(FrameType::Close, ByteView{close}).error().code,
               ErrorCode::InvalidFrame);
+
+    std::vector<std::byte> accept = bytes_of({0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 5});
+    accept.insert(accept.end(), kMaxSubprotocol + 1, std::byte{'p'});
+    EXPECT_EQ(parse_message(FrameType::HandshakeAccept, ByteView{accept}).error().code,
+              ErrorCode::InvalidFrame);
+    accept.pop_back();  // exactly at the cap is fine
+    EXPECT_TRUE(parse_message(FrameType::HandshakeAccept, ByteView{accept}).has_value());
 }
 
 TEST(IpcMessage, UnknownFrameTypesAreRejectedByTheLookup) {
     EXPECT_FALSE(frame_type_from(0).has_value());
-    EXPECT_FALSE(frame_type_from(10).has_value());
+    EXPECT_FALSE(frame_type_from(12).has_value());
     EXPECT_FALSE(frame_type_from(255).has_value());
-    for (std::uint8_t raw = 1; raw <= 9; ++raw) {
+    for (std::uint8_t raw = 1; raw <= 11; ++raw) {
         EXPECT_TRUE(frame_type_from(raw).has_value()) << int{raw};
     }
 }

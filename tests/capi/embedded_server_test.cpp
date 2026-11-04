@@ -249,4 +249,15 @@ TEST(EmbeddedServer, AQuestionNobodyAnswersIsA503AfterTheConfiguredWait) {
     EXPECT_EQ(client.read_http_head().rfind("HTTP/1.1 503 ", 0), 0U);
 }
 
+TEST(EmbeddedServer, ClosingTheHandshakeIntakeRefusesNewUpgradesAtOnce) {
+    EmbeddedConfig config = base_config();
+    ASSERT_TRUE(config.set("handshake_hook", "true").has_value());
+    const auto server = started(config);
+    server->set_handshake_intake(false);
+    TcpClient client{server->port()};
+    ASSERT_TRUE(client.send(TcpClient::upgrade_request()));
+    EXPECT_EQ(client.read_http_head().rfind("HTTP/1.1 503 ", 0), 0U);
+    EXPECT_FALSE(server->poll(100ms).has_value());
+}
+
 }  // namespace

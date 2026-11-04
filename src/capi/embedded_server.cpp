@@ -188,4 +188,10 @@ Result<void> EmbeddedServer::reject_handshake(ConnectionId id, int status) {
     return bridge_->reject_handshake(id, status);
 }
 
+void EmbeddedServer::set_handshake_intake(bool open) {
+    if (check_process()) {
+        bridge_->set_handshake_intake(open);
+    }
+}
+
 }  // namespace wsrv

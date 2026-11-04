@@ -33,6 +33,12 @@ public:
 
     [[nodiscard]] ipc::Status execute(const ipc::SendData& command);
     [[nodiscard]] ipc::Status execute(const ipc::CloseCommand& command);
+    /// Answers to a handshake question (ADR-0018). Not checked against the open set: the question
+    /// is about a connection that does not exist yet. The backend knows which questions are open
+    /// (it also learns when the server gives up on one), so a late or repeated answer comes back
+    /// as NO_SUCH_CONN from there, without this class keeping a set that could only grow.
+    [[nodiscard]] ipc::Status execute(const ipc::HandshakeAccept& command);
+    [[nodiscard]] ipc::Status execute(const ipc::HandshakeReject& command);
 
     /// Connections the application knows to be open.
     [[nodiscard]] std::size_t open_count() const noexcept {

@@ -67,6 +67,12 @@ public:
                                                 std::optional<std::string_view> subprotocol);
     [[nodiscard]] Result<void> reject_handshake(ConnectionId id, int status);
 
+    /// Open or close the door for questions. While it is closed (nobody is there to answer, as in
+    /// wsrvd without an application), request() fails at once, so the server refuses the upgrade
+    /// with 503 and nothing is queued. Closing it also refuses, with 503, every upgrade that is
+    /// waiting: its question went to a host that is gone. Open by default. Any thread.
+    void set_handshake_intake(bool open);
+
     /// How many upgrades wait for an answer from the host right now (a gauge for tests and, later,
     /// metrics). Never counts one the server already gave up on.
     [[nodiscard]] std::size_t waiting_handshakes();
@@ -108,6 +114,7 @@ private:
     std::unordered_map<ConnectionId, SessionHandle> handles_;
     std::unordered_set<ConnectionId> parked_;  // paused for a full queue; guarded by mutex_
     std::unordered_map<ConnectionId, PendingHandle> asked_;  // upgrades awaiting the host; mutex_
+    bool intake_open_ = true;                                // guarded by mutex_
 };
 
 }  // namespace wsrv

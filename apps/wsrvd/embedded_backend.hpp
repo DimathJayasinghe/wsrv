@@ -34,6 +34,16 @@ public:
         // answers InvalidArgument if not; this is only a change of type.
         return server_.close(conn, static_cast<CloseCode>(code), reason);
     }
+    [[nodiscard]] Result<void>
+    accept_handshake(ConnectionId conn, std::optional<std::string_view> subprotocol) override {
+        return server_.accept_handshake(conn, subprotocol);
+    }
+    [[nodiscard]] Result<void> reject_handshake(ConnectionId conn, int status) override {
+        return server_.reject_handshake(conn, status);
+    }
+    void set_handshake_intake(bool open) noexcept override {
+        server_.set_handshake_intake(open);
+    }
 
 private:
     EmbeddedServer& server_;

@@ -439,4 +439,34 @@ TEST_F(HostBridgeHookTest, AFullEventQueueMeansA503NotAnAcceptance) {
     EXPECT_TRUE(bridge_->accept_handshake(event->conn, std::nullopt).has_value());
 }
 
+TEST_F(HostBridgeHookTest, WhileTheIntakeIsClosedUpgradesGet503AtOnceAndNothingIsQueued) {
+    start_hook();
+    bridge_->set_handshake_intake(false);  // no application is listening (wsrvd, ADR-0018)
+    TcpClient client{server_->port()};
+    ASSERT_TRUE(client.send(upgrade_with_cookie()));
+    EXPECT_EQ(client.read_http_head().rfind("HTTP/1.1 503 ", 0), 0U);
+    EXPECT_FALSE(next(100ms).has_value()) << "no question was queued for a host that is not there";
+    EXPECT_EQ(bridge_->waiting_handshakes(), 0U);
+
+    bridge_->set_handshake_intake(true);  // the application is back: questions flow again
+    TcpClient again{server_->port()};
+    ASSERT_TRUE(again.send(upgrade_with_cookie()));
+    const auto event = next();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_EQ(event->type, HostEventType::Handshake);
+}
+
+TEST_F(HostBridgeHookTest, ClosingTheIntakeRefusesWhatIsWaitingWith503AndSaysSoToLateAnswers) {
+    start_hook();
+    TcpClient client{server_->port()};
+    ASSERT_TRUE(client.send(upgrade_with_cookie()));
+    const auto event = next();
+    ASSERT_TRUE(event.has_value());
+    bridge_->set_handshake_intake(false);  // the application that was asked is gone
+    EXPECT_EQ(client.read_http_head().rfind("HTTP/1.1 503 ", 0), 0U) << "fail closed, at once";
+    EXPECT_EQ(bridge_->waiting_handshakes(), 0U);
+    EXPECT_EQ(bridge_->accept_handshake(event->conn, std::nullopt).error().code,
+              ErrorCode::Closing);
+}
+
 }  // namespace

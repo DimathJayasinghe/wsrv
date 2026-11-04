@@ -22,13 +22,18 @@ namespace wsrv::ipc {
 /// The format is canonical: one message has exactly one encoding, so encode(parse(frame)) equals
 /// the frame. That is what lets the fuzz target check the parser against the encoder.
 inline constexpr std::uint16_t kVersionMajor = 0;
-inline constexpr std::uint16_t kVersionMinor = 1;
+inline constexpr std::uint16_t kVersionMinor = 2;  // 0.2 added the handshake hook (ADR-0018)
+/// The first minor that can carry handshake questions and answers.
+inline constexpr std::uint16_t kHandshakeHookMinor = 2;
 inline constexpr std::size_t kFrameHeaderSize = 6;
 /// No setting may raise the frame limit above this (ADR-0017: hard cap 64 MiB).
 inline constexpr std::size_t kMaxFrameCeiling = std::size_t{64} << 20U;
 inline constexpr std::size_t kMaxTokenSize = 256;
 /// RFC 6455 section 5.5: a control frame payload is at most 125 bytes, 2 of them the close code.
 inline constexpr std::size_t kMaxCloseReason = 123;
+/// The longest subprotocol name an answer may carry: the core only accepts a name the client
+/// offered, and a name that long is no real protocol (RFC 6455 section 4.1 says a token).
+inline constexpr std::size_t kMaxSubprotocol = 256;
 
 enum class FrameType : std::uint8_t {
     Hello = 1,       ///< client -> daemon: version, token
@@ -38,12 +43,21 @@ enum class FrameType : std::uint8_t {
     Close = 5,       ///< client -> daemon: start the closing handshake
     Ping = 6,
     Pong = 7,
-    Event = 8,   ///< daemon -> client: one wsrv_event
-    Status = 9,  ///< daemon -> client: the answer to one command
+    Event = 8,             ///< daemon -> client: one wsrv_event
+    Status = 9,            ///< daemon -> client: the answer to one command
+    HandshakeAccept = 10,  ///< client -> daemon: let an upgrade in (ADR-0018)
+    HandshakeReject = 11,  ///< client -> daemon: refuse an upgrade with an HTTP status
 };
 
-/// Same five kinds, same numbers, as wsrv_event_type in include/wsrv/wsrv.h.
-enum class EventKind : std::uint8_t { Open = 1, Text = 2, Binary = 3, Close = 4, Error = 5 };
+/// Same kinds, same numbers, as wsrv_event_type in include/wsrv/wsrv.h.
+enum class EventKind : std::uint8_t {
+    Open = 1,
+    Text = 2,
+    Binary = 3,
+    Close = 4,
+    Error = 5,
+    Handshake = 6  ///< data = the blob of capi/handshake_blob.hpp; conn = the id if accepted
+};
 
 // Messages. `ByteView` members point into the buffer the message was parsed from.
 
@@ -69,6 +83,17 @@ struct CloseCommand {  ///< u32 request id, u64 connection id, u16 code, reason 
     std::uint16_t code = 1000;
     ByteView reason;  ///< at most kMaxCloseReason bytes
 };
+struct HandshakeAccept {  ///< u32 request id, u64 connection id, subprotocol to the end (may be
+                          ///< empty)
+    std::uint32_t request = 0;
+    std::uint64_t conn = 0;  ///< never 0
+    ByteView subprotocol;    ///< at most kMaxSubprotocol bytes; empty = none
+};
+struct HandshakeReject {  ///< u32 request id, u64 connection id, u16 HTTP status
+    std::uint32_t request = 0;
+    std::uint64_t conn = 0;    ///< never 0
+    std::uint16_t status = 0;  ///< the core decides which statuses are allowed
+};
 struct Ping {};  ///< empty body
 struct Pong {};  ///< empty body
 struct Event {   ///< u8 kind, u64 conn, u16 close code, u8 clean, data to the end
@@ -83,7 +108,16 @@ struct Status {  ///< u32 request id, u8 status (a wsrv_status value, mapped by 
     std::uint8_t status = 0;
 };
 
-using Message = std::variant<Hello, HelloOk, SendData, CloseCommand, Ping, Pong, Event, Status>;
+using Message = std::variant<Hello,
+                             HelloOk,
+                             SendData,
+                             CloseCommand,
+                             Ping,
+                             Pong,
+                             Event,
+                             Status,
+                             HandshakeAccept,
+                             HandshakeReject>;
 
 /// @return the FrameType for a wire byte, or nothing for an unknown value.
 [[nodiscard]] std::optional<FrameType> frame_type_from(std::uint8_t raw) noexcept;

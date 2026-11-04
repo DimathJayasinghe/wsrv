@@ -97,6 +97,8 @@ public:
     [[nodiscard]] Result<void> accept_handshake(ConnectionId id,
                                                 std::optional<std::string_view> subprotocol);
     [[nodiscard]] Result<void> reject_handshake(ConnectionId id, int status);
+    /// See HostBridge::set_handshake_intake. A call from a forked child does nothing.
+    void set_handshake_intake(bool open);
 
 private:
     struct Started {
