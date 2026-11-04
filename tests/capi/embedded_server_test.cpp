@@ -44,6 +44,21 @@ std::string as_string(const std::vector<std::byte>& bytes) {
     return out;
 }
 
+#ifndef WSRV_TEST_HAS_TLS
+TEST(EmbeddedServer, AskingForTlsInABuildWithoutTlsFailsInsteadOfServingPlainText) {
+    EmbeddedConfig config = base_config();
+    ASSERT_TRUE(config.set("tls_cert", "/etc/wsrv/cert.pem").has_value());
+    ASSERT_TRUE(config.set("tls_key", "/etc/wsrv/key.pem").has_value());
+    auto server = EmbeddedServer::create(config);
+    ASSERT_TRUE(server.has_value());
+    const auto started = (*server)->start();
+    ASSERT_FALSE(started.has_value());
+    EXPECT_EQ(started.error().code, ErrorCode::InvalidConfig);
+    EXPECT_NE((*server)->start_error().find("no TLS"), std::string::npos);
+    EXPECT_FALSE((*server)->running());
+}
+#endif
+
 TEST(EmbeddedServer, StartListensOnTheChosenPortAndTheDestructorEndsTheThread) {
     const auto server = started();
     EXPECT_NE(server->port(), 0U);

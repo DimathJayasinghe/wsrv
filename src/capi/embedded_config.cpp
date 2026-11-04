@@ -80,6 +80,8 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
         KeyEntry{"handshake_decision_timeout_ms",
                  &EmbeddedConfig::set_handshake_decision_timeout_ms},
         KeyEntry{"max_pending_handshakes", &EmbeddedConfig::set_max_pending_handshakes},
+        KeyEntry{"tls_cert", &EmbeddedConfig::set_tls_cert},
+        KeyEntry{"tls_key", &EmbeddedConfig::set_tls_key},
     };
     for (const KeyEntry& entry : kKeys) {
         if (entry.name == key) {
@@ -234,6 +236,22 @@ Result<void> EmbeddedConfig::set_max_pending_handshakes(std::string_view value) 
         return fail(ErrorCode::InvalidConfig, "config: max_pending_handshakes must be above 0");
     }
     server_.max_pending_handshakes = *number;
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_tls_cert(std::string_view value) {
+    if (value.empty()) {
+        return fail(ErrorCode::InvalidConfig, "config: tls_cert needs a file path");
+    }
+    tls_cert_ = std::string{value};  // the file is read at start(), where the reason is reported
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_tls_key(std::string_view value) {
+    if (value.empty()) {
+        return fail(ErrorCode::InvalidConfig, "config: tls_key needs a file path");
+    }
+    tls_key_ = std::string{value};
     return {};
 }
 

@@ -13,6 +13,7 @@ wsrv_server_create
 wsrv_server_destroy
 wsrv_server_event_fd
 wsrv_server_port
+wsrv_server_reload_tls
 wsrv_server_start
 wsrv_server_stop
 wsrv_status_name

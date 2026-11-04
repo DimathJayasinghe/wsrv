@@ -25,6 +25,7 @@ namespace wsrv {
 /// max_message_size, max_connections, shutdown_grace_ms, event_queue_events, event_queue_bytes,
 /// and for the handshake hook (ADR-0018): handshake_hook (bool, off), handshake_forward_header
 /// (repeatable header name), handshake_decision_timeout_ms (> 0), max_pending_handshakes (> 0).
+/// and for TLS (ADR-0019): tls_cert (certificate chain file, PEM), tls_key (private key file, PEM).
 /// max_message_size also sizes the outbound queue at twice that, so a message that can be received
 /// can be sent back (as in the echo example).
 /// Thread-affinity: not thread-safe; configure on one thread before starting.
@@ -51,6 +52,18 @@ public:
         return handshake_hook_;
     }
 
+    /// The TLS files (empty = not set). TLS is asked for as soon as either key is set, so that a
+    /// half setup is refused at start() instead of quietly serving plain text.
+    [[nodiscard]] const std::string& tls_cert() const noexcept {
+        return tls_cert_;
+    }
+    [[nodiscard]] const std::string& tls_key() const noexcept {
+        return tls_key_;
+    }
+    [[nodiscard]] bool tls_requested() const noexcept {
+        return !tls_cert_.empty() || !tls_key_.empty();
+    }
+
     /// Copy the listen address and the server settings into `builder`.
     void apply_to(ServerBuilder& builder) const;
 
@@ -69,12 +82,16 @@ private:
     [[nodiscard]] Result<void> add_handshake_forward_header(std::string_view value);
     [[nodiscard]] Result<void> set_handshake_decision_timeout_ms(std::string_view value);
     [[nodiscard]] Result<void> set_max_pending_handshakes(std::string_view value);
+    [[nodiscard]] Result<void> set_tls_cert(std::string_view value);
+    [[nodiscard]] Result<void> set_tls_key(std::string_view value);
 
     std::string host_ = "127.0.0.1";  // loopback unless the operator opts into exposure
     std::uint16_t port_ = 0;
     ServerConfig server_;
     EventQueueConfig queue_;
     bool handshake_hook_ = false;
+    std::string tls_cert_;
+    std::string tls_key_;
 };
 
 }  // namespace wsrv

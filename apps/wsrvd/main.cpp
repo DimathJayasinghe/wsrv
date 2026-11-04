@@ -18,6 +18,7 @@
 #include "capi/embedded_server.hpp"
 #include "wsrvd/embedded_backend.hpp"
 #include "wsrvd/ipc_server.hpp"
+#include "wsrvd/reload.hpp"
 #include "wsrvd/startup.hpp"
 
 namespace {
@@ -41,13 +42,17 @@ wsrv::wsrvd::IpcServerConfig ipc_config(const wsrv::wsrvd::Startup& startup) {
 
 /// Create the WebSocket server and the IPC server on `loop`, start the WebSocket threads, run the
 /// loop until it is stopped, and shut everything down in the right order.
-int run_daemon(wsrv::EventLoop& loop, wsrv::ISyscalls& sys, const wsrv::wsrvd::Startup& startup) {
+int run_daemon(wsrv::EventLoop& loop,
+               wsrv::ISyscalls& sys,
+               const wsrv::wsrvd::Startup& startup,
+               wsrv::EmbeddedServer*& reloadable) {
     // The WebSocket side. Created (not started) first: the IPC server needs its event descriptor.
     auto embedded = wsrv::EmbeddedServer::create(startup.config.embedded());
     if (!embedded) {
         return fail_with("cannot create the WebSocket server", embedded.error());
     }
     wsrv::wsrvd::EmbeddedBackend backend{**embedded};
+    reloadable = embedded->get();  // SIGHUP may reload TLS from now on (see serve())
 
     auto server = wsrv::wsrvd::IpcServer::create(loop, sys, backend, ipc_config(startup));
     if (!server) {
@@ -66,6 +71,7 @@ int run_daemon(wsrv::EventLoop& loop, wsrv::ISyscalls& sys, const wsrv::wsrvd::S
     std::cerr << "wsrvd: websocket server listening on port " << (*embedded)->port() << '\n';
 
     const wsrv::Result<void> ran = loop.run();
+    reloadable = nullptr;  // the signal handler must not touch a server that is being closed
     // Shutdown order matters: the IPC server uses the backend's descriptor and the loop, so it
     // goes first (and removes the socket file); then the WebSocket server drains and joins.
     server->reset();
@@ -82,14 +88,24 @@ int serve(const wsrv::wsrvd::Startup& startup, wsrv::ISyscalls& sys) {
     }
     // Signals are blocked and read from a descriptor on THIS thread, before any other thread
     // exists: threads inherit the signal mask, so the order matters (net/signal_watcher.hpp).
-    const std::array<int, 2> signals{SIGINT, SIGTERM};
-    auto watcher = wsrv::SignalWatcher::create(**loop, sys, signals, [&loop](int /*signo*/) {
-        (*loop)->stop();  // graceful: the loop returns, destructors run in reverse order
-    });
+    // SIGHUP re-reads the TLS certificate (ADR-0019 section 6). The handler runs on this thread, in
+    // the loop, so `reloadable` needs no lock: it is set and cleared on the same thread.
+    wsrv::EmbeddedServer* reloadable = nullptr;
+    const std::array<int, 3> signals{SIGINT, SIGTERM, SIGHUP};
+    auto watcher =
+        wsrv::SignalWatcher::create(**loop, sys, signals, [&loop, &reloadable](int signo) {
+            if (signo == SIGHUP) {
+                if (reloadable != nullptr) {
+                    std::cerr << wsrv::wsrvd::reload_tls_on_hangup(*reloadable).line << '\n';
+                }
+                return;
+            }
+            (*loop)->stop();  // graceful: the loop returns, destructors run in reverse order
+        });
     if (!watcher) {
         return fail_with("cannot watch signals", watcher.error());
     }
-    return run_daemon(**loop, sys, startup);
+    return run_daemon(**loop, sys, startup, reloadable);
 }
 
 int run(const std::vector<std::string_view>& args) {

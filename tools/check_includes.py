@@ -31,7 +31,7 @@ ALLOWED = {
     # OpenSSL TLS transport (ADR-0019): the only module that may include <openssl/...>.
     "tls": {"base", "net"},
     "server": {"base", "http", "protocol", "net", "extensions"},
-    "capi": {"base", "net", "server"},
+    "capi": {"base", "net", "server", "tls"},
     "ipc": {"base"},
     # The sidecar daemon (ADR-0017) lives in apps/wsrvd/, not src/, but obeys the same graph.
     "wsrvd": {"base", "net", "ipc", "capi"},

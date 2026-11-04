@@ -47,6 +47,23 @@ TEST(EmbeddedConfig, EveryDocumentedKeyIsAccepted) {
     EXPECT_EQ(config.queue().max_bytes, 1048576U);
 }
 
+TEST(EmbeddedConfig, TheTlsKeysTakeFilePathsAndAreOffByDefault) {  // ADR-0019 section 7
+    EmbeddedConfig config;
+    EXPECT_TRUE(config.tls_cert().empty());
+    EXPECT_TRUE(config.tls_key().empty());
+    EXPECT_FALSE(config.tls_requested());
+
+    EXPECT_FALSE(config.set("tls_cert", "").has_value());  // an empty path is never meant
+    EXPECT_FALSE(config.set("tls_key", "").has_value());
+    EXPECT_FALSE(config.tls_requested());
+
+    ASSERT_TRUE(config.set("tls_cert", "/etc/wsrv/cert.pem").has_value());
+    EXPECT_TRUE(config.tls_requested());  // one key alone already asks for TLS, so start() can
+    ASSERT_TRUE(config.set("tls_key", "/etc/wsrv/key.pem").has_value());  // refuse half a setup
+    EXPECT_EQ(config.tls_cert(), "/etc/wsrv/cert.pem");
+    EXPECT_EQ(config.tls_key(), "/etc/wsrv/key.pem");
+}
+
 TEST(EmbeddedConfig, AnUnknownKeyIsRefusedSoATypoCannotSilentlyLoseASetting) {
     EmbeddedConfig config;
     const Result<void> set = config.set("allow_orign", "https://a.example");

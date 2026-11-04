@@ -8,7 +8,61 @@
 #include <poll.h>
 #include <unistd.h>
 
+#if defined(WSRV_HAS_TLS)
+#include "tls/server_context.hpp"
+#include "tls/tls_transport_wrapper.hpp"
+#endif
+
 namespace wsrv {
+
+#if defined(WSRV_HAS_TLS)
+
+namespace {
+
+/// Keeps the first error line the TLS context logged since the last clear() (which file, and why),
+/// so start() and reload_tls() can hand it to the host: the library never prints on its own, and
+/// an operator needs more than "the certificate could not be read". The first line is the specific
+/// one; the context follows it with a generic summary ("reload failed, keeping ...").
+/// Thread-safe: reload runs on any thread.
+class DetailLogger final : public ILogger {
+public:
+    void log(LogLevel level, std::string_view message) override {
+        if (level < LogLevel::Error) {
+            return;
+        }
+        constexpr std::size_t kMaxDetail = 512;  // a path plus OpenSSL's reason fits easily
+        const std::lock_guard lock{mutex_};
+        if (last_.empty()) {
+            last_.assign(message.substr(0, kMaxDetail));
+        }
+    }
+    void clear() {
+        const std::lock_guard lock{mutex_};
+        last_.clear();
+    }
+    [[nodiscard]] std::string last() const {
+        const std::lock_guard lock{mutex_};
+        return last_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::string last_;
+};
+
+}  // namespace
+
+struct EmbeddedServer::TlsState {
+    DetailLogger logger;
+    std::unique_ptr<TlsServerContext> context;
+    std::unique_ptr<TlsTransportWrapper> wrapper;
+};
+
+#else
+
+struct EmbeddedServer::TlsState {};  // never created: asking for TLS fails at start()
+
+#endif
 
 Result<std::unique_ptr<EmbeddedServer>> EmbeddedServer::create(const EmbeddedConfig& config) {
     try {
@@ -58,6 +112,10 @@ Result<void> EmbeddedServer::start() {
     if (started_.exchange(true)) {
         return fail(ErrorCode::InvalidArgument, "embedded server: already started");
     }
+    if (const Result<void> secured = prepare_tls(); !secured) {
+        started_.store(false);  // nothing was started: the host may fix the settings and retry
+        return secured;
+    }
     std::promise<Started> ready;
     std::future<Started> outcome = ready.get_future();
     try {
@@ -80,6 +138,61 @@ Result<void> EmbeddedServer::start() {
     return {};
 }
 
+Result<void> EmbeddedServer::prepare_tls() {
+    if (!config_.tls_requested()) {
+        return {};
+    }
+    // Asking for TLS and not getting it must never turn into serving plain text.
+    if (config_.tls_cert().empty() || config_.tls_key().empty()) {
+        start_error_ = config_.tls_cert().empty() ? "tls_key is set but tls_cert is not"
+                                                  : "tls_cert is set but tls_key is not";
+        return fail(ErrorCode::InvalidConfig, "embedded server: incomplete TLS settings");
+    }
+#if defined(WSRV_HAS_TLS)
+    try {
+        auto state = std::make_unique<TlsState>();
+        const TlsConfig tls{config_.tls_cert(), config_.tls_key()};
+        auto context = TlsServerContext::load(tls, state->logger);
+        if (!context) {
+            const std::string detail = state->logger.last();
+            start_error_ = detail.empty() ? std::string{context.error().context} : detail;
+            return std::unexpected{context.error()};
+        }
+        state->context = std::move(*context);
+        state->wrapper = std::make_unique<TlsTransportWrapper>(*state->context);
+        tls_ = std::move(state);
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "embedded server: out of memory");
+    }
+    return {};
+#else
+    start_error_ = "tls_cert and tls_key are set, but this build has no TLS (WSRV_ENABLE_TLS=OFF)";
+    return fail(ErrorCode::InvalidConfig, "embedded server: this build has no TLS");
+#endif
+}
+
+Result<void> EmbeddedServer::reload_tls() {
+    if (const Result<void> same = check_process(); !same) {
+        return same;
+    }
+#if defined(WSRV_HAS_TLS)
+    if (tls_) {
+        tls_->logger.clear();
+        return tls_->context->reload();
+    }
+#endif
+    return fail(ErrorCode::InvalidArgument, "embedded server: TLS is not enabled");
+}
+
+std::string EmbeddedServer::tls_detail() const {
+#if defined(WSRV_HAS_TLS)
+    if (tls_) {
+        return tls_->logger.last();
+    }
+#endif
+    return {};
+}
+
 /// Runs on the I/O thread for the whole life of the server: the loops belong to the thread that
 /// builds them, so build, run and destroy all happen here (ADR-0013).
 void EmbeddedServer::io_thread_main(std::promise<Started>& ready) {
@@ -91,6 +204,11 @@ void EmbeddedServer::io_thread_main(std::promise<Started>& ready) {
         if (config_.handshake_hook()) {
             builder.handshake_decider(*bridge_);
         }
+#if defined(WSRV_HAS_TLS)
+        if (tls_) {
+            builder.transport_wrapper(*tls_->wrapper);
+        }
+#endif
         server = builder.build();
     } catch (const ConfigError& error) {
         // The code says what kind of failure it is; the message says which field or address.
