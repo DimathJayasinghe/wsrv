@@ -48,6 +48,22 @@ TEST(DaemonConfig, OtherKeysGoToTheEmbeddedConfigWithItsRules) {
     EXPECT_EQ(bad.error().code, ErrorCode::InvalidConfig);
 }
 
+TEST(DaemonConfig,
+     TheTlsSettingsComeInAsFlagsLikeAnyOtherKey) {  // ADR-0019: same parser as the library
+    DaemonConfig config = with_socket();
+    ASSERT_TRUE(config.apply_argument("--tls-cert=/etc/wsrv/cert.pem").has_value());
+    ASSERT_TRUE(config.apply_argument("--tls-key=/etc/wsrv/key.pem").has_value());
+    // The value of tls_sni itself contains '=' and ':': only the first '=' belongs to the flag.
+    ASSERT_TRUE(
+        config.apply_argument("--tls-sni=app.example.com=/c/app.pem:/k/app.pem").has_value());
+    ASSERT_TRUE(config.finish().has_value());
+    EXPECT_EQ(config.embedded().tls_cert(), "/etc/wsrv/cert.pem");
+    EXPECT_EQ(config.embedded().tls_key(), "/etc/wsrv/key.pem");
+    ASSERT_EQ(config.embedded().tls_sni().size(), 1U);
+    EXPECT_EQ(config.embedded().tls_sni()[0].name, "app.example.com");
+    EXPECT_EQ(config.embedded().tls_sni()[0].key, "/k/app.pem");
+}
+
 TEST(DaemonConfig, AnUnknownKeyIsRefused) {
     DaemonConfig config;
     const auto done = config.set("no_such_key", "1");

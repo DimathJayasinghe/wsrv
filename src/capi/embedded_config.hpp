@@ -5,13 +5,27 @@
 #include "server/config.hpp"
 #include "server/server_builder.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "capi/event_queue.hpp"
 
 namespace wsrv {
+
+/// The most tls_sni settings one config takes. The same number as tls/server_context.hpp's
+/// kMaxSniEntries (a test in embedded_tls_test.cpp keeps them equal): this header cannot include
+/// tls/, and the config must be bounded before the context ever sees it.
+inline constexpr std::size_t kMaxTlsSniSettings = 64;
+
+/// One tls_sni setting: a host name (or "*." wildcard) and the files of its certificate.
+struct TlsSniSetting {
+    std::string name;
+    std::string certificate;
+    std::string key;
+};
 
 /// The settings a host can give an embedded server, as text key/value pairs (ADR-0016 section 6).
 /// Text keys are the one configuration shape every binding can express without sharing any C++
@@ -25,6 +39,10 @@ namespace wsrv {
 /// max_message_size, max_connections, shutdown_grace_ms, event_queue_events, event_queue_bytes,
 /// and for the handshake hook (ADR-0018): handshake_hook (bool, off), handshake_forward_header
 /// (repeatable header name), handshake_decision_timeout_ms (> 0), max_pending_handshakes (> 0).
+/// and for TLS (ADR-0019): tls_cert (certificate chain file, PEM), tls_key (private key file, PEM),
+/// tls_sni (repeatable "name=cert_file:key_file", at most 64: a certificate for one host name or
+/// one
+/// "*.example.com" wildcard; the paths must not contain a colon).
 /// max_message_size also sizes the outbound queue at twice that, so a message that can be received
 /// can be sent back (as in the echo example).
 /// Thread-affinity: not thread-safe; configure on one thread before starting.
@@ -51,6 +69,21 @@ public:
         return handshake_hook_;
     }
 
+    /// The TLS files (empty = not set). TLS is asked for as soon as either key is set, so that a
+    /// half setup is refused at start() instead of quietly serving plain text.
+    [[nodiscard]] const std::string& tls_cert() const noexcept {
+        return tls_cert_;
+    }
+    [[nodiscard]] const std::string& tls_key() const noexcept {
+        return tls_key_;
+    }
+    [[nodiscard]] const std::vector<TlsSniSetting>& tls_sni() const noexcept {
+        return tls_sni_;
+    }
+    [[nodiscard]] bool tls_requested() const noexcept {
+        return !tls_cert_.empty() || !tls_key_.empty() || !tls_sni_.empty();
+    }
+
     /// Copy the listen address and the server settings into `builder`.
     void apply_to(ServerBuilder& builder) const;
 
@@ -69,12 +102,18 @@ private:
     [[nodiscard]] Result<void> add_handshake_forward_header(std::string_view value);
     [[nodiscard]] Result<void> set_handshake_decision_timeout_ms(std::string_view value);
     [[nodiscard]] Result<void> set_max_pending_handshakes(std::string_view value);
+    [[nodiscard]] Result<void> set_tls_cert(std::string_view value);
+    [[nodiscard]] Result<void> set_tls_key(std::string_view value);
+    [[nodiscard]] Result<void> add_tls_sni(std::string_view value);
 
     std::string host_ = "127.0.0.1";  // loopback unless the operator opts into exposure
     std::uint16_t port_ = 0;
     ServerConfig server_;
     EventQueueConfig queue_;
     bool handshake_hook_ = false;
+    std::string tls_cert_;
+    std::string tls_key_;
+    std::vector<TlsSniSetting> tls_sni_;
 };
 
 }  // namespace wsrv

@@ -24,10 +24,15 @@ wsrv_add_test(NAME net_acceptor_test SOURCES net/acceptor_test.cpp LINK wsrv::ne
 wsrv_add_test(NAME net_loopback_test SOURCES net/loopback_test.cpp LINK wsrv::net)
 
 if(WSRV_ENABLE_TLS)
+    wsrv_add_test(NAME tls_sni_test SOURCES tls/sni_test.cpp LINK wsrv::tls)
+    wsrv_add_test(NAME tls_server_context_sni_test SOURCES tls/server_context_sni_test.cpp
+                  LINK wsrv::tls OpenSSL::SSL OpenSSL::Crypto)
     wsrv_add_test(NAME tls_server_context_test SOURCES tls/server_context_test.cpp
                   LINK wsrv::tls OpenSSL::SSL OpenSSL::Crypto)
     wsrv_add_test(NAME tls_transport_test SOURCES tls/tls_transport_test.cpp
                   LINK wsrv::tls OpenSSL::SSL OpenSSL::Crypto)
+    wsrv_add_test(NAME tls_server_test SOURCES tls/tls_server_test.cpp
+                  LINK wsrv::server wsrv::tls OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
 wsrv_add_test(NAME server_connection_test SOURCES server/connection_test.cpp LINK wsrv::server)
@@ -44,6 +49,11 @@ wsrv_add_test(NAME capi_host_bridge_test SOURCES capi/host_bridge_test.cpp LINK 
 wsrv_add_test(NAME capi_handshake_blob_test SOURCES capi/handshake_blob_test.cpp LINK wsrv::capi)
 wsrv_add_test(NAME capi_embedded_config_test SOURCES capi/embedded_config_test.cpp LINK wsrv::capi)
 wsrv_add_test(NAME capi_embedded_server_test SOURCES capi/embedded_server_test.cpp LINK wsrv::capi)
+if(WSRV_ENABLE_TLS)
+    target_compile_definitions(capi_embedded_server_test PRIVATE WSRV_TEST_HAS_TLS=1)
+    wsrv_add_test(NAME capi_embedded_tls_test SOURCES capi/embedded_tls_test.cpp
+                  LINK wsrv::capi OpenSSL::SSL OpenSSL::Crypto)
+endif()
 wsrv_add_test(NAME ipc_message_test SOURCES ipc/message_test.cpp LINK wsrv::ipc)
 wsrv_add_test(NAME ipc_frame_decoder_test SOURCES ipc/frame_decoder_test.cpp LINK wsrv::ipc)
 wsrv_add_test(NAME wsrvd_token_test SOURCES wsrvd/token_test.cpp LINK wsrv::wsrvd)
@@ -54,6 +64,11 @@ wsrv_add_test(NAME wsrvd_ipc_server_test SOURCES wsrvd/ipc_server_test.cpp LINK 
 wsrv_add_test(NAME wsrvd_startup_test SOURCES wsrvd/startup_test.cpp LINK wsrv::wsrvd)
 wsrv_add_test(NAME wsrvd_event_convert_test SOURCES wsrvd/event_convert_test.cpp LINK wsrv::wsrvd)
 wsrv_add_test(NAME wsrvd_relay_test SOURCES wsrvd/relay_test.cpp LINK wsrv::wsrvd)
+wsrv_add_test(NAME wsrvd_reload_test SOURCES wsrvd/reload_test.cpp LINK wsrv::wsrvd)
+if(WSRV_ENABLE_TLS)
+    target_link_libraries(wsrvd_reload_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    target_compile_definitions(wsrvd_reload_test PRIVATE WSRV_TEST_HAS_TLS=1)
+endif()
 wsrv_add_test(NAME capi_c_status_test SOURCES capi/c_status_test.cpp LINK wsrv::capi)
 
 # The C ABI (ADR-0016 section 8): exports equal the checked-in list, and a C-only program can use
@@ -128,6 +143,8 @@ file(READ "${CMAKE_CURRENT_SOURCE_DIR}/module_graph.expected" _graph_expected)
 if(WSRV_ENABLE_TLS)
     list(APPEND _graph_modules tls)
     string(APPEND _graph_expected "tls: base net\n")   # the optional module comes last (ADR-0019)
+    # The embedded server (a composition root) uses it when TLS is built.
+    string(REPLACE "capi: base net server\n" "capi: base net server tls\n" _graph_expected "${_graph_expected}")
 endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/module_graph.expected")
 file(WRITE "${CMAKE_BINARY_DIR}/module_graph.expected" "${_graph_expected}")

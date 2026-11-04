@@ -276,6 +276,24 @@ int wsrv_server_event_fd(const wsrv_server* server) {
     return server == nullptr ? -1 : server->impl->event_fd();
 }
 
+wsrv_status wsrv_server_reload_tls(wsrv_server* server, wsrv_error* error) {
+    if (server == nullptr) {
+        return invalid(error, "wsrv_server_reload_tls: server is NULL");
+    }
+    return guarded(error, [&] {
+        const wsrv::Result<void> reloaded = server->impl->reload_tls();
+        if (!reloaded) {
+            const wsrv_status status = wsrv::to_c_status(reloaded.error().code);
+            const std::string detail = server->impl->tls_detail();
+            fill(error,
+                 status,
+                 detail.empty() ? std::string_view{reloaded.error().context} : detail);
+            return status;
+        }
+        return ok(error);
+    });
+}
+
 wsrv_status wsrv_server_stop(wsrv_server* server) {
     if (server == nullptr) {
         return WSRV_ERR_INVALID_ARGUMENT;

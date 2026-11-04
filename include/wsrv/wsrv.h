@@ -35,7 +35,7 @@ extern "C" {
 #endif
 
 /* (major << 16) | minor. Compare the major with the one you compiled against. */
-#define WSRV_ABI_VERSION ((0u << 16) | 2u)
+#define WSRV_ABI_VERSION ((0u << 16) | 3u)
 WSRV_API uint32_t wsrv_abi_version(void);
 
 typedef enum wsrv_status {
@@ -98,6 +98,20 @@ WSRV_API void wsrv_config_free(wsrv_config *config); /* NULL is fine */
  *                        event; repeatable. Cookie and Authorization are NOT sent unless listed.
  *   handshake_decision_timeout_ms  how long the host has to answer, default 3000 (> 0)
  *   max_pending_handshakes  most upgrades waiting at once, default 256 (> 0); more get 503
+ *   tls_cert             path of the server certificate chain (PEM, certificate first)
+ *   tls_key              path of its private key (PEM, not readable by "others"; no passphrase)
+ *                        Setting either asks for wss://: connections are then TLS only (1.2 and
+ *                        1.3, hardened profile). The files are read by wsrv_server_start(); a
+ *                        missing or unusable file, only one of the two keys, or a build without
+ *                        TLS makes the start fail with WSRV_ERR_INVALID_CONFIG and the reason in
+ *                        `error`. It never falls back to plain text.
+ *   tls_sni              "name=cert_file:key_file"; repeatable, at most 64. Serve that certificate
+ *                        to clients that ask for `name` (case-blind) in the TLS server_name
+ *                        extension; name is a host name or one leading wildcard label
+ *                        ("*.example.com": exactly one label, never "*.com"). Exact names win over
+ *                        wildcards. Clients that send no name, an unknown name or a malformed one
+ *                        get the tls_cert certificate (never an error). Needs tls_cert and tls_key.
+ *                        The paths must not contain ':'. Reloaded with the rest.
  * Any thread, but not concurrently with another call on the same config. */
 WSRV_API wsrv_status wsrv_config_set(wsrv_config *config,
                                      const char *key,
@@ -123,6 +137,14 @@ WSRV_API uint16_t wsrv_server_port(const wsrv_server *server);
 /* A descriptor that is readable while events wait: add it to your poll/epoll/select loop, then
  * call wsrv_poll(server, &ev, 0) until it returns WSRV_TIMEOUT. Do not read or close it. */
 WSRV_API int wsrv_server_event_fd(const wsrv_server *server);
+
+/* Re-read tls_cert and tls_key and use them for connections accepted from now on (connections
+ * already open keep their certificate). Call it after a successful start, for example when the
+ * certificate was renewed; any thread. If the new files are unusable (missing, expired, key does
+ * not match, key readable by everyone) nothing changes, the server keeps serving the old
+ * certificate, and WSRV_ERR_INVALID_CONFIG comes back with the reason in `error`.
+ * WSRV_ERR_INVALID_ARGUMENT if the server was not configured for TLS. */
+WSRV_API wsrv_status wsrv_server_reload_tls(wsrv_server *server, wsrv_error *error);
 
 /* Begin a graceful shutdown: connections get Close 1001, then the server ends after
  * shutdown_grace_ms. Any thread, idempotent, fine before start or after the end. Keep polling to

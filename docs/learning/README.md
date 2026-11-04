@@ -28,5 +28,8 @@ We teach as we build. Each lesson answers three questions: **What** are we build
 | 21 | [Authenticating a WebSocket connection from PHP](21-authenticating-from-php.md) | M11 | written |
 | 22 | [A hardened TLS context](22-a-hardened-tls-context.md) | M8 | written (slice 2; extended as M8 lands) |
 | 23 | [Pumping TLS through memory](23-pumping-tls-through-memory.md) | M8 | written (slice 3) |
+| 24 | [Wiring TLS into the server](24-wiring-tls-into-the-server.md) | M8 | written (slice 4) |
+| 25 | [TLS from configuration: failing closed, reload](25-config-reload-and-failing-closed.md) | M8 | written (slice 5) |
+| 26 | [Choosing a certificate by name (SNI)](26-choosing-a-certificate-by-name.md) | M8 | written (slice 6) |
 
 Lesson template: *Goal → Background (the problem) → Design (why this way) → Walkthrough (code, small steps) → Tests (what proves it works) → Pitfalls → Exercises.*

@@ -97,21 +97,40 @@ public:
     [[nodiscard]] Result<void> accept_handshake(ConnectionId id,
                                                 std::optional<std::string_view> subprotocol);
     [[nodiscard]] Result<void> reject_handshake(ConnectionId id, int status);
+    /// Re-read the certificate and key files (tls_cert / tls_key) and use them for connections
+    /// accepted from now on; connections already open keep the old certificate. A reload that fails
+    /// (file missing, expired, key mismatch) changes nothing and the server keeps serving.
+    /// Call it after start() succeeded; any thread (the daemon calls it on SIGHUP).
+    /// @return Error{InvalidArgument} if TLS is not enabled, Error{InvalidConfig} or the like if
+    /// the new files are unusable; tls_detail() then says which file and why.
+    [[nodiscard]] Result<void> reload_tls();
+
+    /// The reason the last TLS load or reload failed, for people and logs; empty if none.
+    [[nodiscard]] std::string tls_detail() const;
+
     /// See HostBridge::set_handshake_intake. A call from a forked child does nothing.
     void set_handshake_intake(bool open);
 
 private:
+    /// The TLS context and wrapper (defined in the .cpp, so this header needs no TLS include and a
+    /// build without TLS compiles the same header).
+    struct TlsState;
+
     struct Started {
         Result<std::uint16_t> port;
         std::string detail;
     };
 
     void io_thread_main(std::promise<Started>& ready);
+    /// Load the certificate when TLS was asked for. Runs in start(), before the thread exists, so
+    /// a bad setup is reported by start() and nothing is listening yet.
+    [[nodiscard]] Result<void> prepare_tls();
 
     const pid_t owner_pid_;
     const EmbeddedConfig config_;
     LinuxSyscalls sys_;
     std::unique_ptr<HostBridge> bridge_;
+    std::unique_ptr<TlsState> tls_;  // null = plain TCP; set in start(), before the I/O thread
 
     std::atomic<bool> started_{false};
     std::atomic<bool> running_{false};

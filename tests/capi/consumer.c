@@ -238,6 +238,10 @@ int main(void) {
     /* Starting twice is a caller bug, reported and harmless. */
     CHECK(wsrv_server_start(server, NULL) == WSRV_ERR_INVALID_ARGUMENT);
 
+    /* TLS reload: no server, or a server without TLS, is a caller bug (ADR-0019). */
+    CHECK(wsrv_server_reload_tls(NULL, &error) == WSRV_ERR_INVALID_ARGUMENT);
+    CHECK(wsrv_server_reload_tls(server, &error) == WSRV_ERR_INVALID_ARGUMENT);
+
     fd = connect_loopback(wsrv_server_port(server));
     CHECK(fd >= 0);
     CHECK(send(fd, request, sizeof request - 1, 0) == (ssize_t)(sizeof request - 1));
@@ -278,5 +282,19 @@ int main(void) {
     CHECK(wsrv_server_stop(server) == WSRV_OK); /* idempotent */
     wsrv_server_destroy(server);
     wsrv_server_destroy(NULL);
+
+    /* TLS settings that cannot work fail at start with the reason, never serve plain text. */
+    config = wsrv_config_new();
+    CHECK(config != NULL);
+    CHECK(wsrv_config_set(config, "tls_cert", "/nonexistent/wsrv-cert.pem", &error) == WSRV_OK);
+    CHECK(wsrv_config_set(config, "tls_key", "/nonexistent/wsrv-key.pem", &error) == WSRV_OK);
+    CHECK(wsrv_config_set(config, "tls_key", "", &error) == WSRV_ERR_INVALID_CONFIG);
+    server = NULL;
+    CHECK(wsrv_server_create(config, &server, &error) == WSRV_OK);
+    wsrv_config_free(config);
+    CHECK(wsrv_server_start(server, &error) == WSRV_ERR_INVALID_CONFIG);
+    CHECK(error.message[0] != '\0');
+    CHECK(wsrv_server_port(server) == 0);
+    wsrv_server_destroy(server);
     return hook_scenario();
 }

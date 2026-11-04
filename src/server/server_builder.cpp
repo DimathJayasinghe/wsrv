@@ -44,6 +44,11 @@ ServerBuilder& ServerBuilder::syscalls(ISyscalls& sys) noexcept {
     return *this;
 }
 
+ServerBuilder& ServerBuilder::transport_wrapper(ITransportWrapper& wrapper) noexcept {
+    deps_.transport_wrapper = &wrapper;
+    return *this;
+}
+
 ServerBuilder& ServerBuilder::handshake_decider(IHandshakeDecider& decider) noexcept {
     deps_.decider = &decider;
     return *this;

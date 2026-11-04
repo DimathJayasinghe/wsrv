@@ -47,6 +47,63 @@ TEST(EmbeddedConfig, EveryDocumentedKeyIsAccepted) {
     EXPECT_EQ(config.queue().max_bytes, 1048576U);
 }
 
+TEST(EmbeddedConfig, TheTlsKeysTakeFilePathsAndAreOffByDefault) {  // ADR-0019 section 7
+    EmbeddedConfig config;
+    EXPECT_TRUE(config.tls_cert().empty());
+    EXPECT_TRUE(config.tls_key().empty());
+    EXPECT_FALSE(config.tls_requested());
+
+    EXPECT_FALSE(config.set("tls_cert", "").has_value());  // an empty path is never meant
+    EXPECT_FALSE(config.set("tls_key", "").has_value());
+    EXPECT_FALSE(config.tls_requested());
+
+    ASSERT_TRUE(config.set("tls_cert", "/etc/wsrv/cert.pem").has_value());
+    EXPECT_TRUE(config.tls_requested());  // one key alone already asks for TLS, so start() can
+    ASSERT_TRUE(config.set("tls_key", "/etc/wsrv/key.pem").has_value());  // refuse half a setup
+    EXPECT_EQ(config.tls_cert(), "/etc/wsrv/cert.pem");
+    EXPECT_EQ(config.tls_key(), "/etc/wsrv/key.pem");
+}
+
+TEST(EmbeddedConfig, TlsSniTakesNameCertAndKeyAndIsRepeatable) {  // ADR-0019 section 7
+    EmbeddedConfig config;
+    EXPECT_TRUE(config.tls_sni().empty());
+    ASSERT_TRUE(config.set("tls_sni", "app.example.com=/c/app.pem:/k/app.pem").has_value());
+    ASSERT_TRUE(config.set("tls_sni", "*.example.com=/c/wild.pem:/k/wild.pem").has_value());
+    ASSERT_EQ(config.tls_sni().size(), 2U);
+    EXPECT_EQ(config.tls_sni()[0].name, "app.example.com");
+    EXPECT_EQ(config.tls_sni()[0].certificate, "/c/app.pem");
+    EXPECT_EQ(config.tls_sni()[0].key, "/k/app.pem");
+    EXPECT_EQ(config.tls_sni()[1].name, "*.example.com");
+    EXPECT_TRUE(config.tls_requested());  // SNI alone already asks for TLS (and needs a default)
+}
+
+TEST(EmbeddedConfig, MalformedTlsSniValuesAreRefusedAndChangeNothing) {
+    for (const char* bad :
+         {"",
+          "app.example.com",
+          "app.example.com=",
+          "app.example.com=/c.pem",
+          "app.example.com=/c.pem:",
+          "app.example.com=:/k.pem",
+          "=/c.pem:/k.pem",
+          "app.example.com=/a:b.pem:/k.pem"}) {  // a ':' inside a path is ambiguous
+        EmbeddedConfig config;
+        EXPECT_FALSE(config.set("tls_sni", bad).has_value()) << '"' << bad << '"';
+        EXPECT_TRUE(config.tls_sni().empty()) << '"' << bad << '"';
+        EXPECT_FALSE(config.tls_requested());
+    }
+}
+
+TEST(EmbeddedConfig, TlsSniIsBoundedSoTheHostCannotGrowTheConfigWithoutLimit) {
+    EmbeddedConfig config;
+    for (std::size_t i = 0; i < kMaxTlsSniSettings; ++i) {
+        ASSERT_TRUE(
+            config.set("tls_sni", "n" + std::to_string(i) + ".example=/c.pem:/k.pem").has_value());
+    }
+    EXPECT_FALSE(config.set("tls_sni", "one-too-many.example=/c.pem:/k.pem").has_value());
+    EXPECT_EQ(config.tls_sni().size(), kMaxTlsSniSettings);
+}
+
 TEST(EmbeddedConfig, AnUnknownKeyIsRefusedSoATypoCannotSilentlyLoseASetting) {
     EmbeddedConfig config;
     const Result<void> set = config.set("allow_orign", "https://a.example");

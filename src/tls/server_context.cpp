@@ -5,14 +5,18 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <new>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 
+#include "tls/sni.hpp"
 #include "tls/tls_material.hpp"
 
 namespace wsrv {
@@ -174,8 +178,10 @@ Result<void> load_key(SSL_CTX* ctx, ILogger& logger, const std::string& path) {
     return {};
 }
 
-Result<std::shared_ptr<const TlsMaterial>> build(const TlsConfig& config, ILogger& logger) {
-    if (config.certificate_chain_file.empty() || config.private_key_file.empty()) {
+/// One complete context: the hardened profile, the certificate chain (valid now) and its key.
+Result<UniqueSslCtx>
+build_context(const std::string& chain_file, const std::string& key_file, ILogger& logger) {
+    if (chain_file.empty() || key_file.empty()) {
         logger.log(LogLevel::Error,
                    "tls: a certificate chain file and a private key file are required");
         return fail(ErrorCode::InvalidConfig, "tls: a certificate and a key file are required");
@@ -185,21 +191,107 @@ Result<std::shared_ptr<const TlsMaterial>> build(const TlsConfig& config, ILogge
         static_cast<void>(take_openssl_reason());
         return fail(ErrorCode::InvalidConfig, "tls: cannot apply the hardened profile");
     }
-    if (SSL_CTX_use_certificate_chain_file(ctx.get(), config.certificate_chain_file.c_str()) != 1) {
+    if (SSL_CTX_use_certificate_chain_file(ctx.get(), chain_file.c_str()) != 1) {
         return refuse(logger,
                       "cannot use the certificate chain",
-                      config.certificate_chain_file,
+                      chain_file,
                       "tls: cannot read the certificate chain");
     }
-    if (const Result<void> valid = check_validity(ctx.get(), logger, config.certificate_chain_file);
-        !valid) {
+    if (const Result<void> valid = check_validity(ctx.get(), logger, chain_file); !valid) {
         return std::unexpected{valid.error()};
     }
-    if (const Result<void> keyed = load_key(ctx.get(), logger, config.private_key_file); !keyed) {
+    if (const Result<void> keyed = load_key(ctx.get(), logger, key_file); !keyed) {
         return std::unexpected{keyed.error()};
     }
+    return ctx;
+}
+
+/// The entry for `host` (already normalised): an exact pattern first, otherwise the most specific
+/// wildcard (the longest suffix). Nothing if no entry fits.
+const TlsSniContext* find_entry(const TlsMaterial& material, std::string_view host) {
+    const TlsSniContext* wildcard = nullptr;
+    for (const TlsSniContext& entry : material.entries) {
+        if (!sni::matches(entry.pattern, host)) {
+            continue;
+        }
+        if (!entry.pattern.starts_with("*.")) {
+            return &entry;
+        }
+        if (wildcard == nullptr || entry.pattern.size() > wildcard->pattern.size()) {
+            wildcard = &entry;
+        }
+    }
+    return wildcard;
+}
+
+/// OpenSSL calls this while it reads the ClientHello, before it picks a certificate. We only ever
+/// swap the SSL to another context of ours; every outcome (no name, a name we cannot use, a name
+/// nobody has a certificate for) is "carry on with the default": a client is never refused for its
+/// SNI (clients that send an address, or nothing, must still work). The name is peer-controlled:
+/// it is length- and character-checked before it is compared, and it is never logged.
+int select_certificate(SSL* ssl, int* /*alert*/, void* arg) {
+    const auto* material = static_cast<const TlsMaterial*>(arg);
+    const char* raw = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
+    if (raw == nullptr || material->entries.empty()) {
+        return SSL_TLSEXT_ERR_OK;
+    }
+    const std::string_view wire{raw, ::strnlen(raw, sni::kMaxNameLength + 1)};
+    if (const std::optional<std::string> host = sni::normalise_host(wire)) {
+        if (const TlsSniContext* entry = find_entry(*material, *host)) {
+            static_cast<void>(SSL_set_SSL_CTX(ssl, entry->ctx.get()));
+        }
+    }
+    return SSL_TLSEXT_ERR_OK;
+}
+
+/// The entries of a configuration: names normalised and unique, at most kMaxSniEntries, every
+/// certificate held to the rules of the default one.
+Result<void> build_entries(const TlsConfig& config, ILogger& logger, TlsMaterial& material) {
+    if (config.sni.size() > kMaxSniEntries) {
+        logger.log(LogLevel::Error, "tls: too many SNI entries");
+        return fail(ErrorCode::InvalidConfig, "tls: too many SNI entries");
+    }
+    std::unordered_set<std::string> seen;
+    material.entries.reserve(config.sni.size());
+    for (const TlsSniEntry& entry : config.sni) {
+        auto pattern = sni::normalise_pattern(entry.name);
+        if (!pattern) {
+            logger.log(LogLevel::Error, "tls: an SNI name is not a host name or a *.wildcard");
+            return fail(ErrorCode::InvalidConfig, "tls: an SNI name is not valid");
+        }
+        if (!seen.insert(*pattern).second) {
+            logger.log(LogLevel::Error, "tls: the same SNI name is configured twice");
+            return fail(ErrorCode::InvalidConfig, "tls: an SNI name is listed twice");
+        }
+        auto ctx = build_context(entry.certificate_chain_file, entry.private_key_file, logger);
+        if (!ctx) {
+            return std::unexpected{ctx.error()};
+        }
+        material.entries.push_back({std::move(*pattern), std::move(*ctx)});
+    }
+    return {};
+}
+
+Result<std::shared_ptr<const TlsMaterial>> build(const TlsConfig& config, ILogger& logger) {
+    auto ctx = build_context(config.certificate_chain_file, config.private_key_file, logger);
+    if (!ctx) {
+        return std::unexpected{ctx.error()};
+    }
     auto material = std::make_shared<TlsMaterial>();
-    material->ctx = std::move(ctx);
+    material->ctx = std::move(*ctx);
+    if (const Result<void> entries = build_entries(config, logger, *material); !entries) {
+        return std::unexpected{entries.error()};
+    }
+    if (!material->entries.empty()) {
+        // The callback finds the entries through this pointer. The material never moves after this
+        // point (it lives in a shared_ptr) and the SSL objects that use `ctx` are owned by a
+        // TlsTransport that keeps the material alive.
+        SSL_CTX_ctrl(material->ctx.get(), SSL_CTRL_SET_TLSEXT_SERVERNAME_ARG, 0, material.get());
+        // OpenSSL's callback slot is a generic function pointer; this one cast is the API's shape.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        const auto slot = reinterpret_cast<void (*)()>(&select_certificate);
+        SSL_CTX_callback_ctrl(material->ctx.get(), SSL_CTRL_SET_TLSEXT_SERVERNAME_CB, slot);
+    }
     return std::shared_ptr<const TlsMaterial>{std::move(material)};
 }
 

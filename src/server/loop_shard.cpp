@@ -71,7 +71,16 @@ LoopShard::~LoopShard() {
 void LoopShard::adopt(Fd client, const Endpoint& peer, ConnectionId id) {
     Connection* connection = nullptr;
     try {
-        auto transport = std::make_unique<PlainTransport>(std::move(client), shared_.sys);
+        std::unique_ptr<ITransport> transport =
+            std::make_unique<PlainTransport>(std::move(client), shared_.sys);
+        if (shared_.wrapper != nullptr) {
+            transport = shared_.wrapper->wrap(std::move(transport));
+            if (!transport) {
+                shared_.live.fetch_sub(1);  // the socket was closed with the failed wrapper
+                shared_.logger.log(LogLevel::Error, "server: cannot wrap a connection's transport");
+                return;
+            }
+        }
         connection = &table_->insert(
             std::make_unique<Connection>(id, peer, std::move(transport), *context_));
     } catch (const std::exception&) {

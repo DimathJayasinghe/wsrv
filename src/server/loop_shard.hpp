@@ -8,6 +8,7 @@
 #include "net/event_loop.hpp"
 #include "net/fd.hpp"
 #include "net/syscalls.hpp"
+#include "net/transport_wrapper.hpp"
 #include "protocol/handshake.hpp"
 #include "server/config.hpp"
 #include "server/connection.hpp"
@@ -38,6 +39,7 @@ struct ShardShared {
     std::atomic<std::size_t>& live;        // connections alive in all shards (the global cap)
     IHandshakeDecider* decider = nullptr;  // null = valid upgrades are accepted at once
     PendingGate* pending = nullptr;        // the bound on upgrades waiting for the decider
+    ITransportWrapper* wrapper = nullptr;  // null = plain TCP; else wraps each accepted transport
 };
 
 /// Everything that belongs to one loop thread: the loop, the connections it serves and what they

@@ -10,6 +10,7 @@
 #include "net/signal_watcher.hpp"
 #include "net/syscalls.hpp"
 #include "net/tcp_listener.hpp"
+#include "net/transport_wrapper.hpp"
 #include "protocol/handshake.hpp"
 #include "server/config.hpp"
 #include "server/handler.hpp"
@@ -38,6 +39,9 @@ struct ServerDeps {
     /// Opt-in asynchronous handshake decision (ADR-0018). Null = valid upgrades are accepted at
     /// once. Borrowed; must be thread-safe (it is asked from every loop thread).
     IHandshakeDecider* decider = nullptr;
+    /// Wraps each accepted transport (TLS, ADR-0019). Null = connections are plain TCP. Borrowed;
+    /// must be thread-safe (it is called from every loop thread).
+    ITransportWrapper* transport_wrapper = nullptr;
 };
 
 /// A WebSocket server (Facade): accepts connections, runs them on one or more loops, shuts them
@@ -111,6 +115,7 @@ private:
     ServerConfig config_;
     IHandlerFactory& factory_;
     IHandshakeDecider* decider_;  // null = the hook is off
+    ITransportWrapper* wrapper_;  // null = plain TCP
     LinuxSyscalls own_sys_;
     SteadyClock own_clock_;
     NullLogger own_logger_;
