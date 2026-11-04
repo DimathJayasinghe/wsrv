@@ -44,6 +44,7 @@
 | protocol | base, crypto, http |
 | extensions | base, protocol (interfaces only) |
 | net | base |
+| tls (`src/tls/`, optional, `WSRV_ENABLE_TLS`) | base, net (the only module that includes `<openssl/...>`; ADR-0019) |
 | server | base, http, protocol, net, extensions |
 | capi (`include/wsrv/wsrv.h`, `src/capi/`) | base, net, server (wraps it; catches all exceptions; exports C symbols only; ADR-0016) |
 | ipc (`src/ipc/`) | base only (sans-I/O sidecar frame codec; ADR-0017) |
