@@ -35,3 +35,10 @@ wsrv_add_fuzzer(fuzz_message_pipeline fuzz_message_pipeline.cpp wsrv::protocol)
 wsrv_add_fuzzer(fuzz_session fuzz_session.cpp wsrv::protocol)
 wsrv_add_fuzzer(fuzz_ipc_frame fuzz_ipc_frame.cpp wsrv::ipc)
 wsrv_add_fuzzer(fuzz_handshake_blob fuzz_handshake_blob.cpp wsrv::capi)
+
+# TLS server side (ADR-0019): a real OpenSSL server behind TlsTransport, fed hostile bytes. It builds a
+# certificate in-process with the test fixtures (tests/support/tls_fixtures.hpp).
+if(WSRV_ENABLE_TLS)
+    wsrv_add_fuzzer(fuzz_tls_server fuzz_tls_server.cpp "wsrv::tls;OpenSSL::SSL;OpenSSL::Crypto")
+    target_include_directories(fuzz_tls_server PRIVATE "${PROJECT_SOURCE_DIR}/tests")
+endif()

@@ -31,6 +31,7 @@ enum class ErrorCode : std::uint8_t {
     MessageInProgress,  ///< A streamed message is open; no other data message may start (Internal).
     WrongProcess,       ///< Called from a forked child of the process that created it (Internal).
     InvalidFrame,       ///< A peer's IPC frame is malformed (Protocol).
+    TlsFailure,         ///< The TLS handshake or a TLS record failed; the stream is dead (Tls).
 };
 
 /// A failure. `context` MUST be a string literal (static storage): it is never built from peer
@@ -67,6 +68,8 @@ struct Error {
     case ErrorCode::MessageInProgress:
     case ErrorCode::WrongProcess:
         return ErrorCategory::Internal;
+    case ErrorCode::TlsFailure:
+        return ErrorCategory::Tls;
     case ErrorCode::InvalidConfig:
         return ErrorCategory::Config;
     }

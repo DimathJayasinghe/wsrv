@@ -35,6 +35,23 @@ public:
     virtual void close() noexcept = 0;
     /// The descriptor to register with the poller, or -1 once closed.
     [[nodiscard]] virtual int fd() const noexcept = 0;
+
+    /// True while the transport holds bytes it must send but the descriptor refused them (a TLS
+    /// handshake flight). The connection then asks the poller for "writable" and calls read()
+    /// again when it comes, which lets the transport continue. Edge-triggered epoll reports a
+    /// change once: without this hint a handshake that needs to write while the connection only
+    /// listens would never be woken. Plain transports never need it.
+    [[nodiscard]] virtual bool wants_write() const noexcept {
+        return false;
+    }
+
+    /// True while the transport holds input it already took from the descriptor but has not handed
+    /// out (TLS: decrypted data or whole records not yet processed). The kernel will not report
+    /// that data again, so a connection that stopped reading early (read budget, back-pressure)
+    /// must schedule the next read itself. Plain transports never buffer.
+    [[nodiscard]] virtual bool buffered_input() const noexcept {
+        return false;
+    }
 };
 
 }  // namespace wsrv
