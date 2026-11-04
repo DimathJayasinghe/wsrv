@@ -147,6 +147,22 @@ final class Client
         return $this->command(fn (int $r): string => Codec::close($r, $conn, $code, $reason));
     }
 
+    /**
+     * Answer a Handshake event: let the upgrade in (ADR-0018). Prefer Upgrade::accept().
+     *
+     * @return int the request id
+     */
+    public function acceptHandshake(int $conn, string $subprotocol = ''): int
+    {
+        return $this->command(fn (int $r): string => Codec::handshakeAccept($r, $conn, $subprotocol));
+    }
+
+    /** Refuse an upgrade with 400, 401, 403, 404, 429, 500 or 503. Prefer Upgrade::reject(). @return int the request id */
+    public function rejectHandshake(int $conn, int $status): int
+    {
+        return $this->command(fn (int $r): string => Codec::handshakeReject($r, $conn, $status));
+    }
+
     /** The daemon answers with a Pong message. */
     public function ping(): void
     {

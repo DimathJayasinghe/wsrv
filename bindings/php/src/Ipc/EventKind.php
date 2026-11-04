@@ -5,7 +5,7 @@ declare(strict_types=1);
 
 namespace Wsrv\Ipc;
 
-/** Same five kinds, same numbers, as wsrv_event_type. */
+/** Same kinds, same numbers, as wsrv_event_type. */
 enum EventKind: int
 {
     case Open = 1;
@@ -13,4 +13,6 @@ enum EventKind: int
     case Binary = 3;
     case Close = 4;
     case Error = 5;
+    /** An upgrade waits for the application's answer (data = the blob; see HandshakeRequest). */
+    case Handshake = 6;
 }

@@ -21,7 +21,7 @@ use Wsrv\ProtocolError;
 final class Codec
 {
     public const VERSION_MAJOR = 0;
-    public const VERSION_MINOR = 1;
+    public const VERSION_MINOR = 2;  // 0.2: the handshake hook (ADR-0018)
 
     public const TYPE_HELLO = 1;
     public const TYPE_HELLO_OK = 2;
@@ -32,11 +32,17 @@ final class Codec
     public const TYPE_PONG = 7;
     public const TYPE_EVENT = 8;
     public const TYPE_STATUS = 9;
+    public const TYPE_HANDSHAKE_ACCEPT = 10;
+    public const TYPE_HANDSHAKE_REJECT = 11;
 
     public const HEADER_SIZE = 6;
     public const MAX_TOKEN = 256;
     /** RFC 6455 section 5.5: a control frame carries at most 125 bytes, 2 of them the close code. */
     public const MAX_CLOSE_REASON = 123;
+    /** The longest subprotocol name an answer may carry. */
+    public const MAX_SUBPROTOCOL = 256;
+    /** The HTTP statuses the daemon accepts for a refused upgrade (ADR-0018 section 3). */
+    public const REJECT_STATUSES = [400, 401, 403, 404, 429, 500, 503];
     /** No setting may raise the daemon's frame limit above this (64 MiB). */
     public const FRAME_CEILING = 64 * 1024 * 1024;
 
@@ -70,6 +76,26 @@ final class Codec
             throw new ProtocolError('close reason is longer than ' . self::MAX_CLOSE_REASON . ' bytes');
         }
         return self::frame(self::TYPE_CLOSE, self::commandHead($request, $conn) . pack('n', $code) . $reason);
+    }
+
+    /** Let an upgrade in; $subprotocol is one the client offered, or '' for none. */
+    public static function handshakeAccept(int $request, int $conn, string $subprotocol = ''): string
+    {
+        if (strlen($subprotocol) > self::MAX_SUBPROTOCOL) {
+            throw new ProtocolError('subprotocol is longer than ' . self::MAX_SUBPROTOCOL . ' bytes');
+        }
+        return self::frame(self::TYPE_HANDSHAKE_ACCEPT, self::commandHead($request, $conn) . $subprotocol);
+    }
+
+    /** Refuse an upgrade with one of REJECT_STATUSES. */
+    public static function handshakeReject(int $request, int $conn, int $status): string
+    {
+        if (!in_array($status, self::REJECT_STATUSES, true)) {
+            throw new ProtocolError(
+                'status ' . $status . ' is not one of ' . implode(', ', self::REJECT_STATUSES)
+            );
+        }
+        return self::frame(self::TYPE_HANDSHAKE_REJECT, self::commandHead($request, $conn) . pack('n', $status));
     }
 
     public static function ping(): string
