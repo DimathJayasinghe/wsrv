@@ -37,11 +37,23 @@ Protocol: [`docs/IPC_PROTOCOL.md`](../../docs/IPC_PROTOCOL.md). Lesson: [`docs/l
 | `Client::connect($socket, $token = '', $timeout = 5.0)` | connect and run the HELLO handshake |
 | `$client->poll($timeout)` | next `Event` / `StatusReply` / `Pong`, or `null` on timeout |
 | `$client->sendText($conn, $text)`, `sendBinary`, `closeConnection($conn, $code, $reason)` | commands; return the request id |
-| `Worker::on('open'\|'message'\|'close'\|'error'\|'status', $fn)` | callbacks (signatures in `src/Worker.php`) |
+| `Worker::on('open'\|'message'\|'close'\|'error'\|'status'\|'authenticate', $fn)` | callbacks (signatures in `src/Worker.php`) |
 | `Worker::run()` / `step($timeout)` / `stop()` | blocking loop, or one step for your own loop |
 | `Connection::send/sendBinary/close` | handle given to callbacks |
+| `Upgrade::accept($subprotocol = null)` / `reject($status = 403)` | answer a waiting upgrade (`authenticate`) |
+| `HandshakeRequest::cookie($name)` / `header($name)` / `headers($name)` | read the request in `authenticate` |
 
 A command's request id comes back later in a `StatusReply` (`'status'` handler). `StatusCode::OK` means *accepted*, not delivered. Ids number from 1; id 0 is reserved.
+
+## Authenticating connections
+
+Turn the hook on in the daemon (`--handshake-hook=true --handshake-forward-header=Cookie`) and register an `authenticate` handler. No browser gets a WebSocket until it answers:
+
+```php
+$worker->on('authenticate', fn (Upgrade $u) => $u->request->cookie('session') === lookup_session());
+```
+
+Return `true` (accept), `false` (403), an int status (`400, 401, 403, 404, 429, 500, 503`), a string (accept, choosing that subprotocol), or `null` to answer later with `$u->accept()` / `$u->reject()`. **It fails closed:** no handler, a handler that throws, an unusable return value, or no answer within the daemon's `handshake_decision_timeout_ms` (default 3 s) all refuse the browser (500 or 503), never accept. The daemon also refuses at once while your worker is not connected. Everything the request carries (`$u->request`) comes from the browser: validate it. See `examples/authenticate.php` and `docs/OPERATIONS.md`.
 
 ## Rules that keep it stable
 
@@ -56,7 +68,7 @@ A command's request id comes back later in a `StatusReply` (`'status'` handler).
 ## Tests
 
 ```sh
-php tests/run.php                              # unit tests: codec, decoder, client, worker (no daemon)
+php tests/run.php                              # unit tests: codec, decoder, client, worker, handshake (no daemon)
 php tests/interop.php /path/to/build/wsrvd     # against the real daemon with a raw WebSocket client
 ```
 

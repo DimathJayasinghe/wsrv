@@ -25,5 +25,6 @@ We teach as we build. Each lesson answers three questions: **What** are we build
 | 18 | [Asking the application who may connect](18-asking-the-application-who-may-connect.md) | M11 | written |
 | 19 | [The question crosses the C boundary](19-the-question-crosses-the-c-boundary.md) | M11 | written |
 | 20 | [Asking the application through a socket](20-asking-through-a-socket.md) | M11 | written |
+| 21 | [Authenticating a WebSocket connection from PHP](21-authenticating-from-php.md) | M11 | written |
 
 Lesson template: *Goal → Background (the problem) → Design (why this way) → Walkthrough (code, small steps) → Tests (what proves it works) → Pitfalls → Exercises.*

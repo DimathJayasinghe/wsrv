@@ -43,12 +43,16 @@ test('decoder: every event kind', function () {
     $d->feed(event_frame(3, 7, 0, 0, "\x00\xff"));
     $d->feed(event_frame(4, 7, 1005, 0, 'why'));
     $d->feed(event_frame(5, 7, 0, 0, 'tls'));
+    $d->feed(event_frame(6, 7, 0, 0, 'question'));
     $kinds = [];
     while (($m = $d->next()) !== null) {
         assertTrue($m instanceof Event);
         $kinds[] = $m->kind;
     }
-    assertSame([EventKind::Open, EventKind::Text, EventKind::Binary, EventKind::Close, EventKind::Error], $kinds);
+    assertSame(
+        [EventKind::Open, EventKind::Text, EventKind::Binary, EventKind::Close, EventKind::Error, EventKind::Handshake],
+        $kinds
+    );
 });
 
 test('decoder: a Close event keeps code, clean flag and reason', function () {
@@ -117,7 +121,7 @@ test('decoder: malformed headers are errors', function () {
 });
 
 test('decoder: frame types only an application may send are errors from the daemon', function () {
-    foreach ([1, 3, 4, 5, 6] as $type) {
+    foreach ([1, 3, 4, 5, 6, 10, 11] as $type) {
         $d = new FrameDecoder(1024);
         $d->feed(pack('NCC', 2, $type, 0));
         assertThrows(ProtocolError::class, fn () => $d->next(), "type $type");
@@ -145,7 +149,8 @@ test('decoder: inconsistent events are errors', function () {
     foreach (
         [
             'kind 0' => event_frame(0, 1, 0, 0, ''),
-            'kind 6' => event_frame(6, 1, 0, 0, ''),
+            'kind 7' => event_frame(7, 1, 0, 0, ''),
+            'close code on Handshake' => event_frame(6, 1, 1000, 0, ''),
             'conn 0' => event_frame(2, 0, 0, 0, ''),
             'conn >= 2^63' => event_frame(2, PHP_INT_MIN, 0, 0, ''),
             'close code on Text' => event_frame(2, 1, 1000, 0, ''),

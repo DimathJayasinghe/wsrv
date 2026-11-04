@@ -11,17 +11,23 @@ use Wsrv\Client;
 use Wsrv\Connection;
 use Wsrv\HandshakeRefused;
 use Wsrv\StatusCode;
+use Wsrv\Upgrade;
 use Wsrv\Worker;
 
 // ---- a minimal WebSocket client (RFC 6455), enough to drive the daemon ----------------------
 
-/** @return resource */
-function ws_connect(int $port)
+/**
+ * Open a TCP connection, send an upgrade request and read the HTTP answer head.
+ *
+ * @return array{0: resource, 1: string, 2: string} [stream, response head, Sec-WebSocket-Key]
+ */
+function ws_request(int $port, string $extraHeaders = '')
 {
     $s = stream_socket_client("tcp://127.0.0.1:$port", $errno, $error, 5) ?: fail("connect: $error");
     $key = base64_encode(random_bytes(16));
     fwrite($s, "GET /chat HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
-        . "Sec-WebSocket-Key: $key\r\nSec-WebSocket-Version: 13\r\nOrigin: https://app.example.com\r\n\r\n");
+        . "Sec-WebSocket-Key: $key\r\nSec-WebSocket-Version: 13\r\nOrigin: https://app.example.com\r\n"
+        . $extraHeaders . "\r\n");
     stream_set_timeout($s, 5);
     $head = '';
     while (!str_contains($head, "\r\n\r\n")) {
@@ -31,10 +37,54 @@ function ws_connect(int $port)
         }
         $head .= $byte;
     }
+    return [$s, $head, $key];
+}
+
+/** @return resource */
+function ws_connect(int $port, string $extraHeaders = '')
+{
+    [$s, $head, $key] = ws_request($port, $extraHeaders);
     str_starts_with($head, 'HTTP/1.1 101') || fail('handshake refused: ' . $head);
     $accept = base64_encode(sha1($key . '258EAFA5-E914-47DA-95CA-C5AB0DC85B11', true));
     str_contains($head, $accept) || fail('wrong Sec-WebSocket-Accept');
     return $s;
+}
+
+/**
+ * Send an upgrade request but do not wait for the answer: the daemon holds it until the
+ * application decides, and the test must run the worker meanwhile.
+ *
+ * @return array{0: resource, 1: string} [stream, key]
+ */
+function ws_request_async(int $port, string $extraHeaders = ''): array
+{
+    $s = stream_socket_client("tcp://127.0.0.1:$port", $errno, $error, 5) ?: fail("connect: $error");
+    $key = base64_encode(random_bytes(16));
+    fwrite($s, "GET /chat HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+        . "Sec-WebSocket-Key: $key\r\nSec-WebSocket-Version: 13\r\nOrigin: https://app.example.com\r\n"
+        . $extraHeaders . "\r\n");
+    stream_set_timeout($s, 5);
+    return [$s, $key];
+}
+
+/**
+ * Read the HTTP answer head of a request sent with ws_request_async().
+ *
+ * @param array{0: resource, 1: string} $pending
+ * @return array{0: resource, 1: string}
+ */
+function ws_finish(array $pending): array
+{
+    [$s] = $pending;
+    $head = '';
+    while (!str_contains($head, "\r\n\r\n")) {
+        $byte = fread($s, 1);
+        if ($byte === false || $byte === '') {
+            fail('no HTTP response: ' . $head);
+        }
+        $head .= $byte;
+    }
+    return [$s, $head];
 }
 
 /** @param resource $s */
@@ -278,6 +328,142 @@ $check('the daemon stops cleanly on SIGTERM and removes its socket', function ()
     }
     fail('wsrvd did not stop within 10 seconds');
 });
+
+// ---- the handshake hook against the real daemon (ADR-0018) -----------------------------------
+
+$hookDir = sys_get_temp_dir() . '/wsrv-php-hook-' . bin2hex(random_bytes(4));
+mkdir($hookDir, 0700) || fail('mkdir');
+$hookSocket = $hookDir . '/ipc.sock';
+$hookProcess = proc_open(
+    [$daemonPath, "--ipc-socket=$hookSocket", '--listen-port=0', '--allow-origin=https://app.example.com',
+        '--shutdown-grace-ms=1500', '--handshake-hook=true', '--handshake-forward-header=Cookie'],
+    [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['pipe', 'w']],
+    $hookPipes
+) ?: fail('cannot start the second wsrvd');
+$hookPort = 0;
+$hookLog = '';
+$deadline = microtime(true) + 10;
+while ($hookPort === 0 && microtime(true) < $deadline) {
+    $r = [$hookPipes[2]];
+    $w = $e = null;
+    if (stream_select($r, $w, $e, 0, 200000) > 0) {
+        $line = fgets($hookPipes[2]);
+        $hookLog .= (string) $line;
+        if ($line !== false && preg_match('/listening on port (\d+)/', $line, $m)) {
+            $hookPort = (int) $m[1];
+        }
+    }
+}
+$hookPort > 0 || fail("the hook wsrvd did not start:\n$hookLog");
+
+$check('hook: with no application connected an upgrade is refused with 503 at once', function () use ($hookPort) {
+    [$s, $head] = ws_request($hookPort, "Cookie: session=good\r\n");
+    assertTrue(str_starts_with($head, 'HTTP/1.1 503'), 'got: ' . strtok($head, "\r\n"));
+    fclose($s);
+});
+
+$hookClient = Client::connect($hookSocket, '', 5.0);
+$hookWorker = new Worker($hookClient);
+$hk = new stdClass();
+$hk->seen = [];     // [path, cookie] per question
+$hk->opened = [];   // ids of opened connections
+$hk->received = 0;  // message events
+$hookWorker->on('authenticate', function (Upgrade $u) use ($hk) {
+    $hk->seen[] = [$u->request->path, $u->request->cookie('session')];
+    return match ($u->request->cookie('session')) {
+        'good' => true,
+        'expired' => 401,
+        'slow' => null,   // answered later by the test
+        default => false,
+    };
+})->on('open', function (Connection $c) use ($hk) {
+    $hk->opened[$c->id] = true;
+})->on('message', function (Connection $c, string $data) use ($hk) {
+    $hk->received++;
+    $c->send($data);
+});
+
+$hookUntil = function (callable $done, string $what) use ($hookWorker): void {
+    $deadline = microtime(true) + 10;
+    while (!$done()) {
+        microtime(true) < $deadline || fail("timed out waiting for $what");
+        $hookWorker->step(0.2);
+    }
+};
+
+$check('hook: a good cookie is let in and the connection works', function () use ($hookPort, $hookUntil, $hk) {
+    // The worker must run while the daemon waits for it: send the request, then dispatch events.
+    $pending = ws_request_async($hookPort, "Cookie: theme=dark; session=good\r\n");
+    $hookUntil(fn () => $hk->opened !== [], 'the open event');
+    [$s, $head] = ws_finish($pending);
+    assertTrue(str_starts_with($head, 'HTTP/1.1 101'), 'got: ' . strtok($head, "\r\n"));
+    ws_send($s, 1, 'hello');
+    $hookUntil(fn () => $hk->received > 0, 'the message event');
+    assertSame([1, 'hello'], ws_read($s));
+    assertSame(['/chat', 'good'], $hk->seen[0]);
+    fclose($s);
+});
+
+$check('hook: an expired session is refused with 401 and never becomes a connection', function () use ($hookPort, $hookUntil, $hk) {
+    $opened = count($hk->opened);
+    $questions = count($hk->seen);
+    $done = false;
+    $tcp = ws_request_async($hookPort, "Cookie: session=expired\r\n");
+    $hookUntil(fn () => count($hk->seen) > $questions, 'the question');
+    [$s, $head] = ws_finish($tcp);
+    assertTrue(str_starts_with($head, 'HTTP/1.1 401'), 'got: ' . strtok($head, "\r\n"));
+    assertSame($opened, count($hk->opened), 'no open event for a refused upgrade');
+    fclose($s);
+});
+
+$check('hook: no cookie at all is refused with 403', function () use ($hookPort, $hookUntil, $hk) {
+    $questions = count($hk->seen);
+    $tcp = ws_request_async($hookPort);
+    $hookUntil(fn () => count($hk->seen) > $questions, 'the question');
+    [$s, $head] = ws_finish($tcp);
+    assertTrue(str_starts_with($head, 'HTTP/1.1 403'), 'got: ' . strtok($head, "\r\n"));
+    fclose($s);
+});
+
+$check('hook: the application may answer later, through the Upgrade it kept', function () use ($hookPort, $hookWorker, $hookUntil, $hk) {
+    $held = null;
+    $hookWorker->on('authenticate', function (Upgrade $u) use (&$held) {
+        $held = $u;
+        return null;
+    });
+    $tcp = ws_request_async($hookPort, "Cookie: session=slow\r\n");
+    $hookUntil(function () use (&$held) {
+        return $held !== null;
+    }, 'the question');
+    $held->accept();
+    [$s, $head] = ws_finish($tcp);
+    assertTrue(str_starts_with($head, 'HTTP/1.1 101'), 'got: ' . strtok($head, "\r\n"));
+    fclose($s);
+});
+
+$check('hook: when the application dies, the waiting upgrade is refused with 503 at once', function () use ($hookPort, $hookWorker, $hookClient, $hookUntil) {
+    $held = false;
+    $hookWorker->on('authenticate', function () use (&$held) {
+        $held = true;
+        return null;  // never answered
+    });
+    $tcp = ws_request_async($hookPort, "Cookie: session=gone\r\n");
+    $hookUntil(function () use (&$held) {
+        return $held;
+    }, 'the question');
+    $hookClient->close();
+    [$s, $head] = ws_finish($tcp);
+    assertTrue(str_starts_with($head, 'HTTP/1.1 503'), 'got: ' . strtok($head, "\r\n"));
+    fclose($s);
+});
+
+proc_terminate($hookProcess, SIGTERM);
+$deadline = microtime(true) + 10;
+while (proc_get_status($hookProcess)['running'] && microtime(true) < $deadline) {
+    usleep(50000);
+}
+@unlink($hookSocket);
+@rmdir($hookDir);
 
 @unlink($socket);
 @rmdir($dir);
