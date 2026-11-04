@@ -26,6 +26,10 @@ def main(path: str) -> int:
                 elif verdict == "NON-STRICT":
                     non_strict.append(f"{agent} {case}")
     print("Autobahn verdicts:", dict(counts))
+    if not counts:
+        # An unreachable server gives an empty report and a zero exit status from the suite.
+        print("  FAILED: no case ran (is the server up and reachable?)")
+        return 1
     for case in non_strict:
         print("  non-strict:", case)
     for case in failed:

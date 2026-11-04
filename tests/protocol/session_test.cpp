@@ -172,13 +172,16 @@ TEST(Session, AnUnsolicitedPongIsSurfacedAndAnswersNothing) {  // EC-C03
     EXPECT_TRUE(rig.take_output().frames.empty());
 }
 
-TEST(Session, ManyPingsInOneReadAreAnsweredWithTheLatestPongOnly) {  // EC-C02
+TEST(Session, ManyPingsInOneReadAreEachAnsweredWithinTheBound) {  // EC-C02, Autobahn 2.10
     Rig rig;
     const auto events = rig.feed(cat({client_frame(Opcode::Ping, true, "1"),
                                       client_frame(Opcode::Ping, true, "2"),
                                       client_frame(Opcode::Ping, true, "3")}));
     EXPECT_EQ(events.size(), 3U);
-    EXPECT_EQ(rig.take_output().frames, (std::vector<WireFrame>{{Opcode::Pong, true, "3"}}));
+    EXPECT_EQ(rig.take_output().frames,
+              (std::vector<WireFrame>{{Opcode::Pong, true, "1"},
+                                      {Opcode::Pong, true, "2"},
+                                      {Opcode::Pong, true, "3"}}));
 }
 
 TEST(Session, ChunkingNeverChangesWhatTheSessionDoes) {

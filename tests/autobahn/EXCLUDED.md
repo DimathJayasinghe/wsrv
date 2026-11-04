@@ -39,14 +39,18 @@ First full run: 2026-11-02, `tests/autobahn/run.sh` (optimized build, 301 cases,
 Verdicts: **588 OK, 7 NON-STRICT, 6 INFORMATIONAL, 1 FAILED** (the report counts each case's behaviour and its
 closing behaviour). Cases 12.* and 13.* are the excluded permessage-deflate ones.
 
-**FAILED: 2.10** (10 Pings sent back to back; the suite expects 10 Pongs and gets only the last one).
-This is the documented design, not an accident: the outbound scheduler has one Pong slot and a newer Pong
-replaces an unsent one, which RFC 6455 section 5.5.3 allows ("MAY elect to send a Pong frame for only the
-most recent Ping frame") and EC-C02 records. Autobahn checks for a Pong per Ping anyway ("not required by the
-Spec .. but we check for this behaviour anyway"). The gate says a failing case is a bug to fix at its root,
-so this needs an owner decision: (a) keep one slot and record 2.10 as an accepted deviation here, or (b) queue
-a small bounded number of Pongs (say 16; beyond that, coalesce to the latest), which makes 2.10 pass at the cost
-of a slightly larger per-connection control queue. Not changed yet.
+**2.10 (fixed 2026-11-04).** Ten Pings back to back used to get one Pong because the outbound scheduler had a
+single Pong slot (allowed by RFC 6455 section 5.5.3, but Autobahn checks for a Pong per Ping anyway). The scheduler
+now queues up to 16 Pongs (about 2 KiB at worst per connection) and only beyond that replaces the last one with the
+newest (decision (b) of the first report; EC-C02). Second full run: **589 OK, 7 NON-STRICT, 6 INFORMATIONAL, 0 FAILED**.
+
+**Over TLS (2026-11-04).** `tests/autobahn/run.sh --wss` runs the same 301 cases against the echo example served
+with `--tls-cert/--tls-key` (self-signed certificate; the suite's client does not verify it): **589 OK, 7 NON-STRICT
+(the same seven), 6 INFORMATIONAL, 0 FAILED**. TLS adds no protocol difference. The grade of the TLS settings is a
+separate check, `tests/tls/run_testssl.sh` (testssl.sh: Overall Grade A+, ADR-0019 amendment 6).
+
+A run that tested nothing now fails the gate: with an unreachable server the suite writes an empty report and exits 0,
+and `summarize.py` used to pass it (found when the first wss attempt hit a build without TLS).
 
 **NON-STRICT (7): 3.2, 3.3, 4.1.3, 4.1.4, 4.2.3, 4.2.4, 5.15.** All have the same shape: a valid message is
 sent, then a violation (RSV bit set, reserved opcode, or a continuation with nothing to continue). The suite

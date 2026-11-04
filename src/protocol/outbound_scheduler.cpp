@@ -134,8 +134,28 @@ Result<void> OutboundScheduler::queue_ping(ByteView payload) {
 }
 
 void OutboundScheduler::queue_pong(ByteView payload) {
-    if (!close_queued_) {
-        fill(pong_, payload);  // replaces an unsent one (EC-C02)
+    if (close_queued_) {
+        return;
+    }
+    if (pongs_.size() < kMaxQueuedPongs) {
+        try {
+            pongs_.emplace_back();
+            fill(pongs_.back(), payload);
+            return;
+        } catch (const std::bad_alloc&) {
+            // No room for another entry: answer the newest Ping in place of the last, as below.
+        }
+    }
+    if (!pongs_.empty()) {
+        fill(pongs_.back(), payload);  // coalesce: the most recent Ping wins (EC-C02)
+    }
+}
+
+/// The oldest Pong becomes the next frame; it stays queued if the wire buffer is out of memory.
+void OutboundScheduler::append_pong() {
+    Control& oldest = pongs_.front();
+    if (append_frame(Opcode::Pong, true, ByteView{oldest.payload}.first(oldest.length))) {
+        pongs_.erase(pongs_.begin());
     }
 }
 
@@ -150,7 +170,7 @@ void OutboundScheduler::queue_close(std::optional<std::uint16_t> code, std::stri
     front_started_ = false;
     stream_open_ = false;
     queued_ = 0;
-    pong_.present = false;
+    pongs_.clear();
     ping_.present = false;
     if (code.has_value()) {
         close_.length = encode_close_payload(close_.payload, static_cast<CloseCode>(*code), reason);
@@ -223,8 +243,8 @@ void OutboundScheduler::refill() {
     if (close_.present) {
         append_control(Opcode::Close, close_);
         close_in_wire_ = !failed_;
-    } else if (pong_.present) {
-        append_control(Opcode::Pong, pong_);
+    } else if (!pongs_.empty()) {
+        append_pong();
     } else if (ping_.present) {
         append_control(Opcode::Ping, ping_);
     } else if (data_ready()) {
@@ -248,7 +268,7 @@ void OutboundScheduler::consume(std::size_t count) noexcept {
 
 bool OutboundScheduler::has_pending() const noexcept {
     return !failed_ &&
-           (wire_.size() > 0 || pong_.present || ping_.present || close_.present || data_ready());
+           (wire_.size() > 0 || !pongs_.empty() || ping_.present || close_.present || data_ready());
 }
 
 }  // namespace wsrv

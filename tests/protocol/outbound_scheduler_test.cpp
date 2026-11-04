@@ -147,14 +147,42 @@ TEST(OutboundScheduler, EveryRefillIsExactlyOneFrameSoAControlFrameNeverWaitsFor
     EXPECT_EQ(static_cast<unsigned>(rest[5]) & 0x0FU, 0x8U);  // Close opcode right after the Pong
 }
 
-TEST(OutboundScheduler, OnlyTheLatestUnsentPongIsKept) {  // EC-C02
+TEST(OutboundScheduler, EveryUnsentPongIsSentInOrderUpToTheBound) {  // EC-C02, Autobahn 2.10
     OutboundScheduler s{config()};
-    s.queue_pong(bytes_of("one"));
-    s.queue_pong(bytes_of("two"));
-    s.queue_pong(bytes_of("three"));
+    std::vector<WireFrame> expected;
+    for (std::size_t i = 0; i < wsrv::kMaxQueuedPongs; ++i) {
+        const std::string payload = std::to_string(i);
+        s.queue_pong(bytes_of(payload));
+        expected.push_back({Opcode::Pong, true, payload});
+    }
     const auto parsed = parse_server_output(drain(s));
     ASSERT_TRUE(parsed.ok);
-    EXPECT_EQ(parsed.frames, (std::vector<WireFrame>{{Opcode::Pong, true, "three"}}));
+    EXPECT_EQ(parsed.frames, expected);
+}
+
+TEST(OutboundScheduler, BeyondTheBoundTheNewestPongReplacesTheLastOneQueued) {  // EC-C02
+    OutboundScheduler s{config()};
+    for (std::size_t i = 0; i < wsrv::kMaxQueuedPongs + 4; ++i) {
+        s.queue_pong(bytes_of(std::to_string(i)));
+    }
+    const auto parsed = parse_server_output(drain(s));
+    ASSERT_TRUE(parsed.ok);
+    ASSERT_EQ(parsed.frames.size(), wsrv::kMaxQueuedPongs);  // memory stays bounded
+    EXPECT_EQ(parsed.frames.front().payload, "0");           // the oldest still go out first
+    EXPECT_EQ(parsed.frames.back().payload,
+              std::to_string(wsrv::kMaxQueuedPongs + 3));  // the latest wins
+}
+
+TEST(OutboundScheduler, AQueuedCloseDropsEveryUnsentPong) {
+    OutboundScheduler s{config()};
+    for (int i = 0; i < 5; ++i) {
+        s.queue_pong(bytes_of("p"));
+    }
+    s.queue_close(1000, "");
+    const auto parsed = parse_server_output(drain(s));
+    ASSERT_TRUE(parsed.ok);
+    ASSERT_EQ(parsed.frames.size(), 1U);
+    EXPECT_EQ(parsed.frames[0].opcode, Opcode::Close);
 }
 
 TEST(OutboundScheduler, OnePingMayWaitAndAnotherIsBackpressure) {

@@ -13,6 +13,7 @@
 #include <deque>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 namespace wsrv {
 
@@ -29,6 +30,10 @@ struct OutboundConfig {
 /// Cost charged to the queue bound for every queued message on top of its payload.
 inline constexpr std::size_t kMessageOverhead = 16;
 
+/// Most Pongs waiting to be sent at once: 16 x (125 + 2) bytes at worst, per connection, and only
+/// while a peer is pinging faster than the socket drains.
+inline constexpr std::size_t kMaxQueuedPongs = 16;
+
 /// Decides WHAT goes on the wire next (docs/FRAGMENTATION.md section 2.3). Data messages wait
 /// unframed; at every frame boundary the scheduler emits, in this order: the Close frame (nothing
 /// after it, RFC 6455 section 5.5.1), else the pending Pong, the pending Ping, then the next
@@ -36,9 +41,11 @@ inline constexpr std::size_t kMessageOverhead = 16;
 /// interleaved with another: control frames wait for the frame in flight (and only that one), then
 /// go first (FR-F10, EC-F32, EC-C01).
 ///
-/// Every queue is bounded: data by max_queued_bytes, Pong / Ping / Close by one slot each (a newer
-/// Pong replaces an unsent one, which RFC 6455 section 5.5.3 allows, EC-C02). Frames are unmasked
-/// (server role). The wire buffer holds exactly one frame.
+/// Every queue is bounded: data by max_queued_bytes, Ping / Close by one slot each, Pongs by
+/// kMaxQueuedPongs. A Ping burst gets one Pong per Ping while they fit (what peers and conformance
+/// suites expect, Autobahn 2.10); beyond that the newest Pong replaces the last queued one, which
+/// RFC 6455 section 5.5.3 allows ("a Pong for only the most recent Ping", EC-C02). Frames are
+/// unmasked (server role). The wire buffer holds exactly one frame.
 ///
 /// Thread-affinity: loop-thread-only (not synchronised).
 class OutboundScheduler {
@@ -75,8 +82,9 @@ public:
     /// Error{InvalidArgument} if payload > 125 bytes, Error{Closing} after queue_close().
     [[nodiscard]] Result<void> queue_ping(ByteView payload);
 
-    /// Queue a Pong, replacing an unsent one. Precondition: payload <= 125 bytes (the parser
-    /// guarantees it for a Ping's payload). Ignored after queue_close().
+    /// Queue a Pong behind the unsent ones; with kMaxQueuedPongs already waiting, replace the last
+    /// one instead. Precondition: payload <= 125 bytes (the parser guarantees it for a Ping's
+    /// payload). Ignored after queue_close(). An out-of-memory error coalesces like a full queue.
     void queue_pong(ByteView payload);
 
     /// Queue the Close frame: `code` (must be valid on the wire) + `reason` (valid UTF-8; cut to
@@ -124,6 +132,7 @@ private:
     /// A data frame can be framed now: the front message has unframed bytes, or has ended.
     [[nodiscard]] bool data_ready() const noexcept;
     void append_control(Opcode opcode, Control& slot);
+    void append_pong();
     void append_next_fragment();
     static void fill(Control& slot, ByteView payload) noexcept;
 
@@ -135,7 +144,7 @@ private:
     bool front_started_ = false;    // its first frame (the one with the opcode) is out
     bool stream_open_ = false;      // the last message is open: nothing else may be queued
     std::size_t queued_ = 0;        // charged against max_queued_bytes
-    Control pong_;
+    std::vector<Control> pongs_;    // oldest first; grows on demand, at most kMaxQueuedPongs
     Control ping_;
     Control close_;
     bool close_queued_ = false;
