@@ -287,7 +287,7 @@ TEST(Handshake, SelectedSubprotocolIsEchoedAndNothingElse) {
 // ---- EC-H13: extension offers
 // -----------------------------------------------------------------------------
 
-TEST(Handshake, ExtensionOffersAreParsedButNeverAcceptedYet) {
+TEST(Handshake, ExtensionOffersAreNotAcceptedUnlessConfigured) {
     const HandshakeDecision decision = HandshakeNegotiator{default_config()}.negotiate(
         with(valid_request(),
              "Sec-WebSocket-Extensions",
@@ -299,7 +299,49 @@ TEST(Handshake, ExtensionOffersAreParsedButNeverAcceptedYet) {
     const auto text = wsrv::serialize(wsrv::to_response(decision));
     ASSERT_TRUE(text.has_value());
     EXPECT_EQ(text->find("Sec-WebSocket-Extensions"),
-              std::string::npos);  // M9 will negotiate; M2 declines all
+              std::string::npos);  // no policy configured: no extension
+}
+
+TEST(Handshake, PermessageDeflateIsAnsweredWhenConfiguredAndOffered) {  // EC-D01
+    HandshakeConfig config = default_config();
+    config.permessage_deflate = wsrv::DeflatePolicy{};
+    const HandshakeDecision decision = HandshakeNegotiator{config}.negotiate(
+        with(valid_request(), "Sec-WebSocket-Extensions", "x-unknown, permessage-deflate"));
+    ASSERT_TRUE(std::holds_alternative<HandshakeAccept>(decision));
+    const auto& accept = std::get<HandshakeAccept>(decision);
+    ASSERT_TRUE(accept.deflate.has_value());
+    EXPECT_TRUE(accept.deflate->params.server_no_context_takeover);
+    const auto text = wsrv::serialize(wsrv::to_response(decision));
+    ASSERT_TRUE(text.has_value());
+    EXPECT_NE(text->find("Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; "
+                         "server_max_window_bits=12\r\n"),
+              std::string::npos);
+    EXPECT_EQ(text->find("x-unknown"), std::string::npos);
+}
+
+TEST(Handshake, NoDeflateAnswerWhenTheClientDidNotOfferItOrNoOfferIsAcceptable) {
+    HandshakeConfig config = default_config();
+    config.permessage_deflate = wsrv::DeflatePolicy{};
+    for (const char* offers : {"x-unknown", "permessage-deflate; bogus"}) {
+        const HandshakeDecision decision = HandshakeNegotiator{config}.negotiate(
+            with(valid_request(), "Sec-WebSocket-Extensions", offers));
+        ASSERT_TRUE(std::holds_alternative<HandshakeAccept>(decision)) << offers;  // never a refusal
+        EXPECT_FALSE(std::get<HandshakeAccept>(decision).deflate.has_value()) << offers;
+        const auto text = wsrv::serialize(wsrv::to_response(decision));
+        ASSERT_TRUE(text.has_value());
+        EXPECT_EQ(text->find("Sec-WebSocket-Extensions"), std::string::npos) << offers;
+    }
+    const HandshakeDecision plain = HandshakeNegotiator{config}.negotiate(valid_request());
+    ASSERT_TRUE(std::holds_alternative<HandshakeAccept>(plain));
+    EXPECT_FALSE(std::get<HandshakeAccept>(plain).deflate.has_value());
+}
+
+TEST(Handshake, AnInvalidDeflatePolicyIsAConfigurationError) {
+    HandshakeConfig config = default_config();
+    wsrv::DeflatePolicy policy;
+    policy.server_max_window_bits = 8;
+    config.permessage_deflate = policy;
+    EXPECT_THROW(HandshakeNegotiator{config}, std::invalid_argument);
 }
 
 TEST(Handshake, MalformedExtensionOffersAreRejected) {

@@ -281,7 +281,7 @@ void Connection::accept_pending(const HandshakeVerdict& verdict) {
     if (verdict.subprotocol && *verdict.subprotocol != outcome.subprotocol) {
         outcome.subprotocol = *verdict.subprotocol;
         outcome.response = render_response(
-            HandshakeDecision{HandshakeAccept{outcome.accept_key, outcome.subprotocol, {}, {}}});
+            HandshakeDecision{HandshakeAccept{outcome.accept_key, outcome.subprotocol, {}, {}, {}}});
     }
     establish(outcome, MutableByteView{leftover});
 }

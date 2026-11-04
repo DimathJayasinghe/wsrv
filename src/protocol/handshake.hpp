@@ -4,6 +4,7 @@
 #include "http/request.hpp"
 #include "http/response.hpp"
 #include "protocol/extension_offer.hpp"
+#include "protocol/permessage_deflate.hpp"
 
 #include <cstddef>
 #include <map>
@@ -36,7 +37,7 @@ inline constexpr std::size_t kMaxSubprotocolOffers = 32;
 /// Facts the rules collect for the final decision.
 struct HandshakeContext {
     std::string subprotocol;                       // chosen by the built-in rule; empty = none
-    std::vector<ExtensionOffer> extension_offers;  // valid offers; none are accepted before M9
+    std::vector<ExtensionOffer> extension_offers;  // valid offers, in order (informational: negotiation uses them)
     /// Application data set by user rules (user id, claims...), handed to the application with the
     /// accepted connection and never sent to the peer. This is the ONLY part of the context user
     /// rules may change: if a rule alters `subprotocol` or `extension_offers` the handshake fails
@@ -78,6 +79,10 @@ struct HandshakeConfig {
     std::vector<std::string> subprotocols;
     /// Refuse (400) when the client offers none of `subprotocols`.
     bool require_subprotocol = false;
+    /// Offer permessage-deflate (RFC 7692) under this policy. Empty (the default) = never
+    /// negotiate any extension. A policy outside the supported window range is a configuration
+    /// error (std::invalid_argument).
+    std::optional<DeflatePolicy> permessage_deflate;
     /// Application rules (authentication, rate limits...), run after all built-in rules, in order.
     std::vector<std::shared_ptr<const IHandshakeRule>> user_rules;
 };
@@ -86,6 +91,7 @@ struct HandshakeAccept {
     std::string accept_key;   // value of Sec-WebSocket-Accept
     std::string subprotocol;  // empty = none selected
     std::vector<ExtensionOffer> extension_offers;
+    std::optional<DeflateAgreement> deflate;  // set when permessage-deflate was agreed
     std::map<std::string, std::string> annotations;  // from user rules; for the application only
 };
 
