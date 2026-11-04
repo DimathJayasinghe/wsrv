@@ -23,5 +23,6 @@ One decision per file, immutable once *Accepted* (supersede with a new ADR). Use
 | [0017](0017-wsrvd-sidecar-and-ipc-v0.md) | `wsrvd` sidecar and IPC protocol v0 | Accepted |
 | [0018](0018-handshake-authentication-hook.md) | Handshake authentication hook (application decides who connects) | Accepted |
 | [0019](0019-tls-transport.md) | TLS (`wss://`) as a transport decorator over OpenSSL | Accepted |
+| [0020](0020-permessage-deflate.md) | permessage-deflate (RFC 7692) over system zlib | Accepted |
 
 Statuses: Proposed → Accepted → (Deprecated | Superseded by ADR-NNNN). The project owner moves Proposed → Accepted.

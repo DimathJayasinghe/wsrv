@@ -4,7 +4,8 @@
 // backend of the browser demo (examples/demo).
 //
 //   echo [--host IP] [--port N] [--threads N] [--allow-origin URL]... [--allow-missing-origin]
-//        [--autobahn]
+//        [--tls-cert FILE --tls-key FILE] [--autobahn]
+#include "base/logger.hpp"
 #include "server/server_builder.hpp"
 
 #include <charconv>
@@ -19,6 +20,11 @@
 #include <system_error>
 #include <vector>
 
+#if defined(WSRV_HAS_TLS)
+#include "tls/server_context.hpp"
+#include "tls/tls_transport_wrapper.hpp"
+#endif
+
 namespace {
 
 struct Options {
@@ -28,15 +34,19 @@ struct Options {
     std::vector<std::string> allowed_origins;
     bool allow_missing_origin = false;  // non-browser clients (Autobahn, curl-like tools)
     bool autobahn = false;
+    std::string tls_cert;  // both set = serve wss:// (ADR-0019)
+    std::string tls_key;
 };
 
 constexpr std::string_view kUsage =
     "usage: echo [--host IP] [--port N] [--threads N] [--allow-origin URL]... "
-    "[--allow-missing-origin] [--autobahn]\n"
+    "[--allow-missing-origin] [--tls-cert FILE --tls-key FILE] [--autobahn]\n"
     "  --threads N              event loops, one thread each (default 1)\n"
     "  --allow-origin URL       accept browsers on this Origin (repeatable), e.g. "
     "http://localhost:8000\n"
     "  --allow-missing-origin   accept clients that send no Origin header\n"
+    "  --tls-cert FILE          serve wss://: PEM certificate chain (needs --tls-key)\n"
+    "  --tls-key FILE           PEM private key, not readable by others\n"
     "  --autobahn               raise size and rate limits for the conformance suite (test use "
     "only)\n";
 
@@ -58,6 +68,10 @@ void report_unknown(std::string_view arg) {
 bool apply_valued_option(Options& options, std::string_view name, std::string_view value) {
     if (name == "--host") {
         options.host = std::string{value};
+    } else if (name == "--tls-cert") {
+        options.tls_cert = std::string{value};
+    } else if (name == "--tls-key") {
+        options.tls_key = std::string{value};
     } else if (name == "--allow-origin") {
         options.allowed_origins.emplace_back(value);
     } else if (name == "--port") {
@@ -150,16 +164,46 @@ wsrv::ServerBuilder make_builder(const Options& options, EchoFactory& factory) {
     return builder;
 }
 
+/// Prints what the TLS context reports (which file, and why): a server that cannot load its
+/// certificate must say so on the terminal.
+class StderrLogger final : public wsrv::ILogger {
+public:
+    void log(wsrv::LogLevel /*level*/, std::string_view message) override {
+        std::cerr << "echo: " << message << '\n';
+    }
+};
+
 int serve(const Options& options) {
     EchoFactory factory;
+    wsrv::ServerBuilder builder = make_builder(options, factory);
+#if defined(WSRV_HAS_TLS)
+    StderrLogger logger;
+    std::unique_ptr<wsrv::TlsServerContext> tls;
+    std::unique_ptr<wsrv::TlsTransportWrapper> wrapper;
+    if (!options.tls_cert.empty() || !options.tls_key.empty()) {
+        auto loaded = wsrv::TlsServerContext::load({options.tls_cert, options.tls_key, {}}, logger);
+        if (!loaded) {
+            std::cerr << "echo: cannot load the TLS certificate and key\n";
+            return EXIT_FAILURE;  // never fall back to plain ws:// (fail closed)
+        }
+        tls = std::move(*loaded);
+        wrapper = std::make_unique<wsrv::TlsTransportWrapper>(*tls);
+        builder.transport_wrapper(*wrapper);
+    }
+#else
+    if (!options.tls_cert.empty() || !options.tls_key.empty()) {
+        std::cerr << "echo: this build has no TLS (WSRV_ENABLE_TLS=OFF)\n";
+        return EXIT_FAILURE;
+    }
+#endif
     try {
-        const std::unique_ptr<wsrv::Server> server = make_builder(options, factory).build();
+        const std::unique_ptr<wsrv::Server> server = builder.build();
         if (const auto signals = server->install_signal_handlers(); !signals) {
             std::cerr << "echo: cannot install signal handlers\n";
             return EXIT_FAILURE;
         }
-        std::cout << "echo: listening on " << options.host << ':' << server->local_endpoint().port
-                  << " (Ctrl-C to stop)\n"
+        std::cout << "echo: listening (" << (options.tls_cert.empty() ? "ws" : "wss") << ") on "
+                  << options.host << ':' << server->local_endpoint().port << " (Ctrl-C to stop)\n"
                   << std::flush;  // flushed: scripts wait for this line
         return server->run() ? EXIT_SUCCESS : EXIT_FAILURE;
     } catch (const wsrv::ConfigError& error) {

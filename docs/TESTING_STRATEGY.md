@@ -56,6 +56,7 @@ Targets (`tests/fuzz/`): `http_request`, `frame_parser`, `protocol_session`(stru
 
 ## 6. Conformance (Autobahn)
 
+- `tests/autobahn/run.sh --wss` repeats the full suite over TLS; `tests/tls/run_testssl.sh` grades the TLS settings with testssl.sh (manual, needs a download; ADR-0019 amendment 6).
 - `tests/autobahn/` has `fuzzingclient.json` (cases `*`, excludes documented in `EXCLUDED.md` with RFC justification) and a runner script (docker).
 - Gate: **no `FAILED`**; `NON-STRICT` allowed only if listed; `INFORMATIONAL` reviewed. Report HTML archived by CI.
 - Run against plain, TLS, deflate-on, deflate-off builds.

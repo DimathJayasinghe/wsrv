@@ -104,7 +104,7 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | ID | Case | Expected |
 |---|---|---|
 | EC-C01 | Ping → Pong with identical payload | Sent promptly, even mid-fragmented message |
-| EC-C02 | Multiple pings queued before write | Pong for the latest may suffice (RFC allows); ordering of other frames preserved |
+| EC-C02 | Multiple pings queued before write | One Pong per Ping while at most 16 wait (Autobahn 2.10 expects it); beyond that the newest Pong replaces the last queued one (RFC 6455 section 5.5.3 allows answering only the most recent Ping); ordering of other frames preserved |
 | EC-C03 | Unsolicited Pong | Ignored (optionally surfaced) |
 | EC-C04 | Ping flood > rate limit | Close 1008 |
 | EC-C05 | Close with empty payload | Echo Close (code 1005 semantics internally; send empty) |
