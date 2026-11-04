@@ -25,6 +25,7 @@ wsrv_add_test(NAME net_loopback_test SOURCES net/loopback_test.cpp LINK wsrv::ne
 
 if(WSRV_ENABLE_DEFLATE)
     wsrv_add_test(NAME extensions_zlib_codec_test SOURCES extensions/zlib_codec_test.cpp LINK wsrv::extensions)
+    wsrv_add_test(NAME protocol_session_deflate_test SOURCES protocol/session_deflate_test.cpp LINK wsrv::protocol wsrv::extensions)
 endif()
 if(WSRV_ENABLE_TLS)
     wsrv_add_test(NAME tls_sni_test SOURCES tls/sni_test.cpp LINK wsrv::tls)

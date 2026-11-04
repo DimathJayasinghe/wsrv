@@ -90,6 +90,20 @@ Result<void> validate(const SessionConfig& config) {
         config.outbound.max_queued_bytes > kMaxConfiguredQueue) {
         return std::unexpected{bad_config("max_queued_bytes out of range")};
     }
+    if (config.deflate) {
+        const SessionDeflate& deflate = *config.deflate;
+        const auto window_ok = [](int bits) {
+            return bits >= kMinDeflateWindowBits && bits <= kMaxDeflateWindowBits;
+        };
+        if (deflate.codecs == nullptr || !window_ok(deflate.params.server_window_bits) ||
+            !window_ok(deflate.params.client_window_bits)) {
+            return std::unexpected{bad_config("deflate needs a codec factory and windows 9..15")};
+        }
+        if (deflate.max_inflate_ratio == 0 ||
+            deflate.max_inflate_ratio > kMaxConfiguredInflateRatio) {
+            return std::unexpected{bad_config("max_inflate_ratio out of range")};
+        }
+    }
     return {};
 }
 
@@ -102,8 +116,19 @@ namespace {
 
 }  // namespace
 
+namespace {
+
+/// RSV1 is legal on the first frame of a data message exactly when permessage-deflate was agreed.
+[[nodiscard]] FrameParserConfig parser_config(const SessionConfig& config) {
+    FrameParserConfig parser = config.parser;
+    parser.allow_rsv1 = parser.allow_rsv1 || config.deflate.has_value();
+    return parser;
+}
+
+}  // namespace
+
 ProtocolSession::ProtocolSession(SessionConfig config, TimePoint now)
-    : config_{checked(config)}, parser_{config.parser}, assembler_{config.assembler},
+    : config_{checked(config)}, parser_{parser_config(config)}, assembler_{config.assembler},
       out_{config.outbound}, now_{now}, last_frame_{now}, last_ping_{now}, closing_since_{now},
       window_start_{now} {}
 
@@ -120,6 +145,15 @@ std::optional<SessionEvent> ProtocolSession::next_event(MutableByteView& input) 
 /// violated the protocol, the rest of the input is thrown away (FR-C5, EC-C10).
 std::optional<SessionEvent> ProtocolSession::pump(MutableByteView& input) {
     while (state_ != SessionState::Closed && !close_received_ && !failed_) {
+        if (inflate_.phase != InflatePhase::Idle) {  // a compressed frame is still being inflated
+            if (auto event = run_inflate()) {
+                return event;
+            }
+            if (auto queued = queue_.pop()) {
+                return queued;
+            }
+            continue;
+        }
         const FrameResult<std::optional<FrameEvent>> frame = parser_.next(input);
         if (!frame) {
             return fail_connection(frame.error());
@@ -142,16 +176,153 @@ std::optional<SessionEvent> ProtocolSession::on_frame(const FrameEvent& frame) {
     if (const std::optional<ProtocolFailure> over_limit = count_frame(frame)) {
         return fail_connection(*over_limit);
     }
-    const auto step = assembler_.handle(frame);
-    track_message(frame);
+    if (config_.deflate && frame_is_compressed(frame)) {
+        return on_compressed_frame(frame);
+    }
+    return feed_assembler(frame, frame);
+}
+
+/// `event` goes to the assembler; `real` is the frame the parser produced (the incomplete-message
+/// timer follows real frames; for an uncompressed frame the two are the same).
+std::optional<SessionEvent> ProtocolSession::feed_assembler(const FrameEvent& event,
+                                                            const FrameEvent& real) {
+    const auto step = assembler_.handle(event);
+    track_message(real);
     if (!step) {
         return fail_connection(step.error());
     }
-    const std::optional<MessageEvent>& event = *step;
-    if (!event) {
+    const std::optional<MessageEvent>& message = *step;
+    if (!message) {
         return std::nullopt;
     }
-    return translate(*event);
+    return translate(*message);
+}
+
+// ---- permessage-deflate, receive side (RFC 7692 section 6.2, ADR-0020 section 4) ----------------
+
+/// RSV1 on the first frame of a data message starts a compressed message; its continuation frames
+/// belong to it (RSV1 on a continuation or control frame never gets here: the parser refuses it).
+bool ProtocolSession::frame_is_compressed(const FrameEvent& frame) {
+    const FrameHeader& header = frame.header;
+    if (is_control(header.opcode)) {
+        return false;  // control frames are never compressed (section 6.1)
+    }
+    if (frame.kind == FrameEvent::Kind::Header && header.opcode != Opcode::Continuation) {
+        inflate_.message_compressed = header.rsv1;
+    }
+    return inflate_.message_compressed;
+}
+
+Result<void> ProtocolSession::ensure_codecs() {
+    if (codecs_) {
+        return {};
+    }
+    auto created = config_.deflate->codecs->create(config_.deflate->params);
+    if (!created) {
+        return std::unexpected{created.error()};
+    }
+    try {
+        inflate_buffer_.resize(kInflatePiece);
+        codecs_.emplace(std::move(*created));
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "deflate: out of memory");
+    }
+    return {};
+}
+
+namespace {
+
+/// What the assembler is shown in place of a compressed frame: no RSV1, and no declared length
+/// (the inflated length is not known in advance; the size limit is checked on the bytes).
+[[nodiscard]] FrameHeader inflated_header(const FrameHeader& real) {
+    FrameHeader header = real;
+    header.rsv1 = false;
+    header.payload_length = 0;
+    return header;
+}
+
+}  // namespace
+
+std::optional<SessionEvent> ProtocolSession::on_compressed_frame(const FrameEvent& frame) {
+    switch (frame.kind) {
+    case FrameEvent::Kind::Header: {
+        if (const Result<void> ready = ensure_codecs(); !ready) {
+            return inflate_failure(ready.error());
+        }
+        if (frame.header.opcode != Opcode::Continuation) {
+            inflate_.compressed_in = 0;
+            inflate_.inflated_out = 0;
+        }
+        inflate_.header = frame.header;
+        return feed_assembler(FrameEvent{frame.kind, inflated_header(frame.header), {}}, frame);
+    }
+    case FrameEvent::Kind::Payload:
+        inflate_.pending = frame.payload;
+        inflate_.phase = InflatePhase::Payload;
+        return run_inflate();
+    case FrameEvent::Kind::End:
+        inflate_.phase = frame.header.fin ? InflatePhase::Finish : InflatePhase::End;
+        return run_inflate();
+    }
+    return std::nullopt;
+}
+
+std::optional<SessionEvent> ProtocolSession::inflate_failure(const Error& error) {
+    inflate_.phase = InflatePhase::Idle;
+    if (error.code == ErrorCode::InvalidCompressedData) {
+        return fail_connection(
+            ProtocolFailure{CloseCode::InvalidPayload, "invalid compressed data"});
+    }
+    return fail_connection(ProtocolFailure{CloseCode::InternalError, "cannot inflate the message"});
+}
+
+/// Inflate in pieces of at most kInflatePiece and give each to the assembler, which applies the
+/// message-size limit, UTF-8 validation and streaming to the inflated bytes. Returns as soon as a
+/// piece produces an event; the phase and `pending` remember where to resume (pump() calls again).
+std::optional<SessionEvent> ProtocolSession::run_inflate() {
+    const FrameHeader header = inflated_header(inflate_.header);
+    const FrameEvent real{FrameEvent::Kind::End, inflate_.header, {}};
+    while (inflate_.phase != InflatePhase::Idle) {
+        if (inflate_.phase == InflatePhase::End) {
+            inflate_.phase = InflatePhase::Idle;
+            if (inflate_.header.fin) {
+                inflate_.message_compressed = false;
+            }
+            return feed_assembler(FrameEvent{FrameEvent::Kind::End, header, {}}, real);
+        }
+        const bool finishing = inflate_.phase == InflatePhase::Finish;
+        const Result<InflateStep> step =
+            finishing ? codecs_->inflater->finish(inflate_buffer_)
+                      : codecs_->inflater->inflate(inflate_.pending, inflate_buffer_);
+        if (!step) {
+            return inflate_failure(step.error());
+        }
+        inflate_.compressed_in += step->consumed;
+        inflate_.pending = inflate_.pending.subspan(step->consumed);
+        if (finishing ? step->done
+                      : (inflate_.pending.empty() && step->produced < inflate_buffer_.size())) {
+            inflate_.phase = finishing ? InflatePhase::End : InflatePhase::Idle;
+        }
+        if (step->produced == 0) {
+            continue;
+        }
+        inflate_.inflated_out += step->produced;
+        // SECURITY_DESIGN T6: checked after every piece, before more output is produced.
+        const std::uint64_t allowed =
+            inflate_.compressed_in * config_.deflate->max_inflate_ratio + kInflateAllowance;
+        if (inflate_.inflated_out > allowed) {
+            inflate_.phase = InflatePhase::Idle;
+            return fail_connection(
+                ProtocolFailure{CloseCode::MessageTooBig,
+                                "inflated size out of proportion to the compressed size"});
+        }
+        const FrameEvent piece{
+            FrameEvent::Kind::Payload, header, ByteView{inflate_buffer_}.first(step->produced)};
+        if (auto event = feed_assembler(piece, real)) {
+            return event;
+        }
+    }
+    return std::nullopt;
 }
 
 std::optional<SessionEvent> ProtocolSession::translate(const MessageEvent& event) {
@@ -291,14 +462,73 @@ Result<void> ProtocolSession::send_text(std::string_view text) {
     if (!is_valid_utf8(as_bytes(text))) {
         return fail(ErrorCode::InvalidUtf8, "text message is not valid UTF-8");
     }
-    return out_.enqueue_message(Opcode::Text, as_bytes(text));
+    return send_message(Opcode::Text, as_bytes(text));
 }
 
 Result<void> ProtocolSession::send_binary(ByteView data) {
     if (state_ != SessionState::Open) {
         return fail(ErrorCode::Closing, "send after close");
     }
-    return out_.enqueue_message(Opcode::Binary, data);
+    return send_message(Opcode::Binary, data);
+}
+
+// ---- permessage-deflate, send side (RFC 7692 section 7.2.1, ADR-0020 section 5) ----------------
+
+bool ProtocolSession::should_compress(std::size_t size) const noexcept {
+    return config_.deflate && !compress_disabled_ && size >= config_.deflate->min_compress_size &&
+           size > 0;
+}
+
+namespace {
+
+/// Zlib's worst case for incompressible input with a sync flush (deflateBound for non-default
+/// parameters), rounded up. Used to make sure the queue has room BEFORE the compressor sees the
+/// message: with context takeover, a message that was compressed but not sent would leave the
+/// peer's history one message behind and corrupt every later one.
+[[nodiscard]] std::size_t compressed_bound(std::size_t size) noexcept {
+    return size + size / 8 + size / 64 + 32;
+}
+
+}  // namespace
+
+Result<void> ProtocolSession::send_message(Opcode text_or_binary, ByteView data) {
+    if (!should_compress(data.size())) {
+        return out_.enqueue_message(text_or_binary, data);
+    }
+    if (const Result<void> room = out_.can_enqueue(compressed_bound(data.size())); !room) {
+        if (room.error().code != ErrorCode::BufferFull) {
+            return room;
+        }
+        // The worst case of compression would not fit, the plain message might: send it plain.
+        if (const Result<void> plain = out_.can_enqueue(data.size()); !plain) {
+            return plain;
+        }
+        return out_.enqueue_message(text_or_binary, data);
+    }
+    if (const Result<void> ready = ensure_codecs(); !ready) {
+        compress_disabled_ = true;  // nothing was compressed yet: plain is consistent
+        return out_.enqueue_message(text_or_binary, data);
+    }
+    deflate_scratch_.clear();
+    const Result<void> compressed = codecs_->deflater->deflate(data, deflate_scratch_);
+    if (!compressed) {
+        compress_disabled_ = true;  // the compressor's history is in doubt: never use it again
+        return compressed;
+    }
+    // With server_no_context_takeover the compressor has no memory, so an expansion can be sent
+    // as it was (EC-D07). With takeover the peer's history must see this message: send it as is.
+    const bool plain_is_better = config_.deflate->params.server_no_context_takeover &&
+                                 deflate_scratch_.size() >= data.size();
+    const Result<void> queued = plain_is_better
+                                    ? out_.enqueue_message(text_or_binary, data)
+                                    : out_.enqueue_message(text_or_binary, deflate_scratch_, true);
+    if (!queued && !plain_is_better) {
+        compress_disabled_ = true;  // compressed but not queued: history diverged from the peer's
+    }
+    if (deflate_scratch_.capacity() > 4 * kInflatePiece) {
+        std::vector<std::byte>{}.swap(deflate_scratch_);  // do not keep a big buffer per connection
+    }
+    return queued;
 }
 
 Result<void> ProtocolSession::begin_message(Opcode text_or_binary) {
