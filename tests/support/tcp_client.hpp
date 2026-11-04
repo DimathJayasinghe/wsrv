@@ -42,6 +42,12 @@ public:
         }
     }
 
+    TcpClient(const TcpClient&) = delete;
+    TcpClient& operator=(const TcpClient&) = delete;
+    TcpClient(TcpClient&&) noexcept = default;
+    TcpClient& operator=(TcpClient&&) noexcept = default;
+    virtual ~TcpClient() = default;
+
     [[nodiscard]] bool valid() const {
         return fd_.valid();
     }
@@ -49,7 +55,7 @@ public:
     bool send(std::string_view bytes) const {
         return send(as_bytes(bytes));
     }
-    bool send(ByteView bytes) const {
+    virtual bool send(ByteView bytes) const {
         std::size_t done = 0;
         while (done < bytes.size()) {
             const ssize_t n =
@@ -81,7 +87,7 @@ public:
 
     /// True if nothing at all (data or EOF) arrives within `period`: used to show that a server
     /// is deliberately keeping quiet.
-    [[nodiscard]] bool silent_for(std::chrono::milliseconds period) const {
+    [[nodiscard]] virtual bool silent_for(std::chrono::milliseconds period) const {
         return !readable(period);
     }
 
@@ -136,7 +142,7 @@ public:
     }
 
     /// True once the server has closed the connection (EOF), false on timeout.
-    bool wait_for_eof() {
+    virtual bool wait_for_eof() {
         for (;;) {
             std::array<char, 4096> chunk{};
             if (!readable(kTimeout)) {
@@ -156,12 +162,13 @@ public:
         fd_.reset();
     }
 
-private:
+protected:
+    // The seams a TLS client (support/tls_client.hpp) overrides: how bytes leave and arrive.
     bool readable(std::chrono::milliseconds timeout) const {
         pollfd p{fd_.get(), POLLIN, 0};
         return ::poll(&p, 1, static_cast<int>(timeout.count())) > 0;
     }
-    bool fill() {
+    virtual bool fill() {
         if (!readable(kTimeout)) {
             return false;
         }
@@ -173,6 +180,14 @@ private:
         buffer_.append(chunk.data(), static_cast<std::size_t>(n));
         return true;
     }
+    [[nodiscard]] int raw_fd() const {
+        return fd_.get();
+    }
+    void append(const char* data, std::size_t size) {
+        buffer_.append(data, size);
+    }
+
+private:
     bool fill_to(std::size_t size) {
         while (buffer_.size() < size) {
             if (!fill()) {

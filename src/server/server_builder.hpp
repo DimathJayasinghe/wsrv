@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "net/transport_wrapper.hpp"
 #include "server/config.hpp"
 #include "server/server.hpp"
 
@@ -58,6 +59,10 @@ public:
     /// `decider` (see ServerConfig::handshake_decision_timeout). Without it, upgrades are accepted
     /// at once. Borrowed; must be thread-safe and outlive the Server.
     ServerBuilder& handshake_decider(IHandshakeDecider& decider) noexcept;
+
+    /// Wrap every accepted connection (TLS: pass a TlsTransportWrapper from the composition root).
+    /// Without it connections are plain TCP. Borrowed; must be thread-safe and outlive the Server.
+    ServerBuilder& transport_wrapper(ITransportWrapper& wrapper) noexcept;
 
     /// Everything else (limits, timeouts, Origin policy, subprotocols, delivery mode...).
     [[nodiscard]] ServerConfig& config() noexcept {

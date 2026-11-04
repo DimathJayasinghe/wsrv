@@ -28,6 +28,8 @@ if(WSRV_ENABLE_TLS)
                   LINK wsrv::tls OpenSSL::SSL OpenSSL::Crypto)
     wsrv_add_test(NAME tls_transport_test SOURCES tls/tls_transport_test.cpp
                   LINK wsrv::tls OpenSSL::SSL OpenSSL::Crypto)
+    wsrv_add_test(NAME tls_server_test SOURCES tls/tls_server_test.cpp
+                  LINK wsrv::server wsrv::tls OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
 wsrv_add_test(NAME server_connection_test SOURCES server/connection_test.cpp LINK wsrv::server)
