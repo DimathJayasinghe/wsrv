@@ -145,6 +145,7 @@ private:
     [[nodiscard]] bool drain_events();
     enum class WriteStep : std::uint8_t { Done, Progress, Stopped };
     [[nodiscard]] WriteStep write_once();
+    [[nodiscard]] WriteStep push_held_output();
     void flush();
     [[nodiscard]] ByteView next_output();
     void consume_output(std::size_t count);
@@ -175,6 +176,8 @@ private:
     void on_decision_timeout();
     void on_tick();
     void on_write_stall();
+    void on_reread();
+    void schedule_reread();
 
     // handler barrier
     template <class Call>
@@ -222,6 +225,7 @@ private:
     TimerHandle handshake_timer_{};
     TimerHandle tick_timer_{};
     TimerHandle stall_timer_{};
+    TimerHandle reread_timer_{};  ///< a read owed because the transport buffers input (TLS)
 };
 
 }  // namespace wsrv

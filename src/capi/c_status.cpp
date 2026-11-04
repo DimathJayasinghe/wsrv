@@ -26,6 +26,7 @@ wsrv_status to_c_status(ErrorCode code) noexcept {
         return WSRV_ERR_RESOURCE;
     case ErrorCode::Io:
     case ErrorCode::ConnectionClosed:
+    case ErrorCode::TlsFailure:  // a connection-level failure; no C API call returns it
     case ErrorCode::WouldBlock:
         return WSRV_ERR_IO;
     case ErrorCode::OutOfRange:

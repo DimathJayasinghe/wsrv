@@ -55,6 +55,12 @@ public:
     }
     [[nodiscard]] Result<std::size_t> write(ByteView data) override {
         ++write_calls;
+        if (data.empty()) {  // a TLS-style "push out what you hold"
+            ++empty_writes;
+            if (write_capacity_ != 0 && !write_error_) {
+                held_output_ = false;
+            }
+        }
         if (write_error_) {
             return fail(*write_error_, "fake write");
         }
@@ -77,6 +83,21 @@ public:
     [[nodiscard]] int fd() const noexcept override {
         return closed ? -1 : 42;
     }
+    /// Like TLS ciphertext the descriptor refused: wants_write() is true until a write({}) can
+    /// push it out (the kernel must have room).
+    void hold_output(bool held) {
+        held_output_ = held;
+    }
+    /// Like TLS records already taken from the descriptor: the kernel will not announce them.
+    void hold_input(bool held) {
+        held_input_ = held;
+    }
+    [[nodiscard]] bool wants_write() const noexcept override {
+        return held_output_;
+    }
+    [[nodiscard]] bool buffered_input() const noexcept override {
+        return held_input_;
+    }
 
     [[nodiscard]] std::string written_text() const {
         return std::string{as_chars(ByteView{written})};
@@ -88,6 +109,7 @@ public:
     std::vector<std::byte> written;
     std::size_t read_calls = 0;
     std::size_t write_calls = 0;
+    std::size_t empty_writes = 0;
     bool shut_down = false;
     bool closed = false;
 
@@ -96,6 +118,8 @@ private:
     bool eof_ = false;
     std::optional<ErrorCode> read_error_;
     std::optional<ErrorCode> write_error_;
+    bool held_output_ = false;
+    bool held_input_ = false;
     static constexpr std::size_t kUnlimited = static_cast<std::size_t>(-1);
     std::size_t write_capacity_ = kUnlimited;
 };

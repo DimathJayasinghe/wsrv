@@ -122,7 +122,9 @@ void Connection::on_readable() {
         if (reads >= budget.max_reads_per_event || bytes >= budget.max_bytes_per_event) {
             if (const Result<void> again = ctx_.host.rewatch(watch_, interest_); !again) {
                 transport_failed(again.error());
+                return;
             }
+            schedule_reread();  // a transport that buffers (TLS) is not re-announced by the kernel
             return;
         }
         const Result<std::size_t> got = transport_->read(ctx_.scratch);
@@ -417,7 +419,7 @@ bool Connection::drain_events() {
 Connection::WriteStep Connection::write_once() {
     const ByteView pending = next_output();
     if (pending.empty()) {
-        return WriteStep::Done;
+        return push_held_output();
     }
     const Result<std::size_t> sent = transport_->write(pending);
     if (!sent || *sent == 0) {
@@ -431,6 +433,25 @@ Connection::WriteStep Connection::write_once() {
     consume_output(*sent);
     note_write_progress();
     return WriteStep::Progress;
+}
+
+/// Nothing of ours is queued, but the transport may still hold bytes the descriptor refused (a TLS
+/// handshake flight, records not yet sent). Offer it the chance to push them out; while it still
+/// cannot, the connection is write-blocked: it asks for "writable" and the stall timer runs.
+Connection::WriteStep Connection::push_held_output() {
+    if (!transport_->wants_write()) {
+        return WriteStep::Done;
+    }
+    const Result<std::size_t> pushed = transport_->write(ByteView{});
+    if (!pushed && pushed.error().code != ErrorCode::WouldBlock) {
+        transport_failed(pushed.error());
+        return WriteStep::Stopped;
+    }
+    if (transport_->wants_write()) {
+        set_write_blocked(true);
+        return WriteStep::Stopped;
+    }
+    return WriteStep::Done;
 }
 
 void Connection::flush() {
@@ -495,10 +516,15 @@ void Connection::apply_interest() {
     if (wanted == interest_) {
         return;
     }
+    const bool gains_read = !has(interest_, PollEvents::Read) && has(wanted, PollEvents::Read);
     interest_ = wanted;
     if (watching_) {
         if (const Result<void> changed = ctx_.host.rewatch(watch_, interest_); !changed) {
             transport_failed(changed.error());
+            return;
+        }
+        if (gains_read) {
+            schedule_reread();  // input a buffering transport already holds gets no new event
         }
     }
 }
@@ -714,6 +740,7 @@ void Connection::release() noexcept {
     disarm(handshake_timer_);
     disarm(tick_timer_);
     disarm(stall_timer_);
+    disarm(reread_timer_);
     end_wait();  // frees the place among the waiting upgrades, whatever ended the wait
     if (watching_) {
         ctx_.host.unwatch(watch_);
@@ -766,6 +793,24 @@ void Connection::on_tick() {
     if (phase_ == Phase::Established && !arm(tick_timer_, kTickInterval, &Connection::on_tick)) {
         drop_transport();
     }
+}
+
+/// A transport that buffers (TLS) may hold input the kernel will never announce again; when the
+/// connection stopped or paused reading it must come back for it by itself, on a later turn of the
+/// loop so other connections are served in between.
+void Connection::schedule_reread() {
+    if (reread_timer_.id != 0 || phase_ == Phase::Finished || transport_dead_ ||
+        !transport_->buffered_input()) {
+        return;
+    }
+    if (!arm(reread_timer_, std::chrono::milliseconds{0}, &Connection::on_reread)) {
+        drop_transport();
+    }
+}
+
+void Connection::on_reread() {
+    reread_timer_ = TimerHandle{};
+    on_event(PollEvents::Read);  // the same path (and exception barrier) as a real readiness event
 }
 
 void Connection::on_write_stall() {

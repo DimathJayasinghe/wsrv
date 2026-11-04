@@ -43,6 +43,8 @@ std::string_view to_string(ErrorCode code) noexcept {
         return "WrongProcess";
     case ErrorCode::InvalidFrame:
         return "InvalidFrame";
+    case ErrorCode::TlsFailure:
+        return "TlsFailure";
     }
     return "Unknown";
 }

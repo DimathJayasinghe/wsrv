@@ -14,6 +14,13 @@ struct SslCtxDeleter {
 };
 using UniqueSslCtx = std::unique_ptr<SSL_CTX, SslCtxDeleter>;
 
+struct SslDeleter {
+    void operator()(SSL* ssl) const noexcept {
+        SSL_free(ssl);
+    }
+};
+using UniqueSsl = std::unique_ptr<SSL, SslDeleter>;
+
 /// One loaded certificate with the hardened settings applied. Immutable once published; SSL
 /// objects made from `ctx` hold their own reference, so the material may be replaced (reload)
 /// while connections created from it are still running.

@@ -305,6 +305,99 @@ TEST_F(ConnectionTest, ABudgetedReadYieldsAndTheRestIsReportedAgain) {  // EC-N0
     EXPECT_EQ(script.texts.size(), 4U);
 }
 
+// ---- a transport that buffers (TLS, ADR-0019 section 3)
+// -------------------------------------------
+
+TEST_F(ConnectionTest, OutputHeldByTheTransportArmsWriteInterestUntilItIsPushedOut) {
+    establish();
+    transport->hold_output(true);
+    transport->set_write_capacity(0);  // the kernel buffer is full
+    readable();  // any event: the connection settles and looks at the transport
+    EXPECT_TRUE(wsrv::has(host.interest_now, PollEvents::Write));
+    EXPECT_GT(transport->empty_writes, 0U);  // it tried to push the held bytes out
+
+    transport->set_write_capacity(static_cast<std::size_t>(-1));
+    conn->on_event(PollEvents::Write);
+    EXPECT_FALSE(transport->wants_write());
+    EXPECT_FALSE(wsrv::has(host.interest_now, PollEvents::Write));
+    EXPECT_FALSE(conn->finished());
+}
+
+TEST_F(ConnectionTest, ATransportThatCannotWriteDuringTheHandshakeIsWokenWhenWritable) {
+    open();
+    transport->hold_output(true);  // a TLS handshake flight the socket refused
+    transport->set_write_capacity(0);
+    send_bytes("GET /chat");  // partial head: still handshaking
+    EXPECT_TRUE(wsrv::has(host.interest_now, PollEvents::Write));
+
+    transport->set_write_capacity(static_cast<std::size_t>(-1));
+    conn->on_event(PollEvents::Write);
+    EXPECT_FALSE(wsrv::has(host.interest_now, PollEvents::Write));
+}
+
+TEST_F(ConnectionTest, ATransportThatHoldsOutputForeverIsDroppedByTheStallTimer) {  // T3
+    establish();
+    transport->hold_output(true);
+    transport->set_write_capacity(0);
+    readable();
+    host.advance(config.write_stall_timeout + 1s, 1s);
+    EXPECT_TRUE(conn->finished());
+}
+
+/// Open with a scratch buffer so small that one read holds only part of the input.
+void open_with_tiny_reads(ConnectionTest& test, std::size_t scratch_size) {
+    test.open(scratch_size);
+    test.transport->feed(kRequest);
+    for (int guard = 0; guard < 400 && test.script.opened == 0; ++guard) {
+        test.readable();
+    }
+    ASSERT_EQ(test.script.opened, 1);
+    test.transport->written.clear();
+}
+
+TEST_F(ConnectionTest, BufferedInputIsReadAgainAfterTheReadBudgetEvenWithoutANewEvent) {
+    open_with_tiny_reads(*this, 16);
+    script.echo = true;
+    config.read.max_reads_per_event = 1;
+    for (int i = 0; i < 3; ++i) {
+        const auto frame = client_frame(Opcode::Text, true, "buffered");
+        transport->feed(wsrv::ByteView{frame});
+    }
+    transport->hold_input(
+        true);  // the transport has taken the bytes: the kernel will not announce them
+    readable();
+    EXPECT_GE(host.pending_timers(), 1U);  // it asked the loop to call it back at once
+    for (int guard = 0; guard < 10 && script.texts.size() < 3; ++guard) {
+        host.advance(1ms, 1ms);
+    }
+    EXPECT_EQ(script.texts.size(), 3U);
+}
+
+TEST_F(ConnectionTest, APlainTransportNeverSchedulesARereadAtTheBudget) {
+    open_with_tiny_reads(*this, 16);
+    config.read.max_reads_per_event = 1;
+    const std::size_t timers = host.pending_timers();
+    for (int i = 0; i < 3; ++i) {
+        const auto frame = client_frame(Opcode::Text, true, "plain");
+        transport->feed(wsrv::ByteView{frame});
+    }
+    readable();
+    EXPECT_EQ(host.pending_timers(), timers);  // the kernel's re-armed edge does the job
+    EXPECT_EQ(script.texts.size(), 1U);
+}
+
+TEST_F(ConnectionTest, ResumingReadsReadsBufferedInputAtOnce) {
+    establish();
+    conn->pause_reads();
+    const auto frame = client_frame(Opcode::Text, true, "held");
+    transport->feed(wsrv::ByteView{frame});
+    transport->hold_input(true);
+    conn->resume_reads();
+    host.advance(1ms, 1ms);
+    ASSERT_EQ(script.texts.size(), 1U);
+    EXPECT_EQ(script.texts[0], "held");
+}
+
 TEST_F(ConnectionTest, AnEofInTheMiddleOfAMessageIsAnUncleanClose) {  // EC-N04
     establish();
     const auto frame = client_frame(Opcode::Text, false, "partial");

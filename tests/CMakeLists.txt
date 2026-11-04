@@ -26,6 +26,8 @@ wsrv_add_test(NAME net_loopback_test SOURCES net/loopback_test.cpp LINK wsrv::ne
 if(WSRV_ENABLE_TLS)
     wsrv_add_test(NAME tls_server_context_test SOURCES tls/server_context_test.cpp
                   LINK wsrv::tls OpenSSL::SSL OpenSSL::Crypto)
+    wsrv_add_test(NAME tls_transport_test SOURCES tls/tls_transport_test.cpp
+                  LINK wsrv::tls OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
 wsrv_add_test(NAME server_connection_test SOURCES server/connection_test.cpp LINK wsrv::server)
