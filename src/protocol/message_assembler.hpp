@@ -82,6 +82,8 @@ public:
     /// Drop the message in progress, wherever it is, even in the middle of a frame (used when the
     /// session decides to close). Nothing more of that message is delivered; the frames that
     /// complete it are drained silently. A no-op when no message is in progress.
+    /// Safe to call while a Message view is in use: the storage is released by the next handle(),
+    /// not by this call (a handler may close() from inside its callback).
     void discard_message() noexcept;
 
     /// Forget everything, including a failure.
@@ -89,6 +91,8 @@ public:
 
 private:
     using StepResult = FrameResult<std::optional<MessageEvent>>;
+
+    void reset_message_state() noexcept;
 
     [[nodiscard]] std::unexpected<ProtocolFailure> fail_with(CloseCode code,
                                                              std::string_view reason);

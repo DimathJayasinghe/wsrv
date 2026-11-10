@@ -15,20 +15,30 @@ std::unexpected<ProtocolFailure> MessageAssembler::fail_with(CloseCode code,
     return protocol_failure(code, reason);
 }
 
-void MessageAssembler::discard_message() noexcept {
+/// Everything about "the message in progress" except the buffer (see discard_message()).
+void MessageAssembler::reset_message_state() noexcept {
     draining_ = in_message_;  // the peer's remaining fragments of this message are still coming
     in_message_ = false;
     fragments_ = 0;
     total_ = 0;
     utf8_.reset();
-    buffer_.clear();
-    clear_buffer_ = false;
     final_part_sent_ = false;
     held_len_ = 0;
 }
 
+/// The buffer is NOT released here but at the next handle(): the handler that was just given a
+/// Message view may call close() from inside its callback, and the session then discards the
+/// message while the handler still reads the view. Releasing now would free memory it points into
+/// (a heap-use-after-free; ByteBuffer really frees storage above its retained capacity).
+void MessageAssembler::discard_message() noexcept {
+    reset_message_state();
+    clear_buffer_ = true;
+}
+
 void MessageAssembler::reset() noexcept {
-    discard_message();
+    reset_message_state();
+    buffer_.clear();  // a reset is not issued from inside a delivery: no view can be outstanding
+    clear_buffer_ = false;
     draining_ = false;
     failed_ = false;
     frame_ = FrameHeader{};
@@ -67,7 +77,7 @@ FrameResult<void> MessageAssembler::start_or_continue(const FrameHeader& header)
             return fail_with(CloseCode::ProtocolError,
                              "new data frame during a fragmented message");
         }
-        discard_message();  // fresh state for the new message
+        reset_message_state();  // fresh state; the buffer is already empty (handle() cleared it)
         in_message_ = true;
         type_ = header.opcode == Opcode::Text ? MessageType::Text : MessageType::Binary;
     }
