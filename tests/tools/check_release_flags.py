@@ -11,7 +11,16 @@ import platform
 import sys
 
 EXCLUDE = ("/header_check/", "/module_graph_fixture/")
-COMMON = ["-fstack-protector-strong", "-fstack-clash-protection", "-D_FORTIFY_SOURCE=3"]
+# The last two switch on the standard library's own bounds checks (std::span, vector, string_view...):
+# an out-of-range index aborts instead of being silent undefined behaviour. libstdc++ reads the first,
+# libc++ the second; each ignores the other.
+COMMON = [
+    "-fstack-protector-strong",
+    "-fstack-clash-protection",
+    "-D_FORTIFY_SOURCE=3",
+    "-D_GLIBCXX_ASSERTIONS",
+    "-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST",
+]
 ARCH = {"x86_64": ["-fcf-protection"], "aarch64": ["-mbranch-protection=standard"]}
 
 
