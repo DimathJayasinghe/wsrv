@@ -388,6 +388,30 @@ TEST(SessionDeflate, TheRatioDoesNotDependOnTheOrderOfTheMessagesContent) {
     EXPECT_EQ(messages(seen), (std::vector<std::string>{content}));
 }
 
+/// The incomplete-message timer is for FRAGMENTED messages and starts when a fragment has been
+/// received completely (FRAGMENTATION.md section 1.2); a single frame that arrives slowly is the
+/// idle timer's business, compressed or not. Inflating the first 16 KiB piece of a frame still on
+/// the wire must not start it (the idle timers are off here to isolate it).
+TEST(SessionDeflate, ASlowCompressedSingleFrameIsNotKilledByTheIncompleteMessageTimer) {
+    PeerCompressor peer;
+    SessionConfig config = deflate_config();
+    config.ping_interval = std::chrono::milliseconds::zero();
+    config.idle_timeout = std::chrono::milliseconds::zero();
+    Rig rig{config};
+    const std::string text = varied_text(40000);
+    const std::vector<std::byte> frame =
+        client_frame(Opcode::Binary, true, peer.compress(text), true);
+    const std::ptrdiff_t cut = 12000;  // inflates to well over one 16 KiB piece
+    ASSERT_GT(static_cast<std::ptrdiff_t>(frame.size()), cut);
+    auto seen = rig.feed(std::vector<std::byte>{frame.begin(), frame.begin() + cut});
+    EXPECT_TRUE(messages(seen).empty());
+    rig.session().tick(wsrv::TimePoint{} + config.incomplete_message_timeout +
+                       std::chrono::seconds{1});
+    seen = rig.feed(std::vector<std::byte>{frame.begin() + cut, frame.end()});
+    EXPECT_EQ(error_event(seen), nullptr);
+    EXPECT_EQ(messages(seen), (std::vector<std::string>{text}));
+}
+
 TEST(SessionDeflate, StreamingModeDeliversInflatedParts) {
     PeerCompressor peer;
     SessionConfig config = deflate_config();

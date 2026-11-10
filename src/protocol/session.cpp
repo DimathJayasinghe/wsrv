@@ -325,7 +325,9 @@ std::optional<SessionEvent> ProtocolSession::inflate_failure(const Error& error)
 /// piece produces an event; the phase and `pending` remember where to resume (pump() calls again).
 std::optional<SessionEvent> ProtocolSession::run_inflate() {
     const FrameHeader header = inflated_header(inflate_.header);
-    const FrameEvent real{FrameEvent::Kind::End, inflate_.header, {}};
+    // The frame is still on the wire while pieces come out of it, so the timer sees a Payload
+    // event here; the real End is reported by end_inflated_frame() (see track_message()).
+    const FrameEvent real{FrameEvent::Kind::Payload, inflate_.header, {}};
     while (inflate_.phase != InflatePhase::Idle) {
         if (inflate_.phase == InflatePhase::End) {
             return end_inflated_frame();
