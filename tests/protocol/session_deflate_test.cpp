@@ -3,6 +3,7 @@
 // inflate limits, compression of outbound messages. The peer's codecs are the real zlib ones.
 #include "extensions/zlib_codec.hpp"
 #include "protocol/session.hpp"
+#include "support/peer_deflate.hpp"
 #include "support/wire.hpp"
 
 #include <gtest/gtest.h>
@@ -25,12 +26,10 @@ using wsrv::SessionDeflate;
 using wsrv::SessionEvent;
 using wsrv::test::client_frame;
 using wsrv::test::parse_server_output;
+using wsrv::test::PeerCompressor;
+using wsrv::test::PeerDecompressor;
 using wsrv::test::WireFrame;
 using Kind = SessionEvent::Kind;
-
-std::string to_string(const std::vector<std::byte>& bytes) {
-    return std::string{wsrv::as_chars(bytes)};
-}
 
 std::string text_of(std::size_t size) {
     std::string text;
@@ -54,73 +53,6 @@ std::string varied_text(std::size_t size) {
     }
     return text;
 }
-
-/// The compressor of a scripted client.
-class PeerCompressor {
-public:
-    explicit PeerCompressor(bool no_context_takeover = false) {
-        DeflateParams params;
-        params.server_no_context_takeover =
-            no_context_takeover;  // the factory builds deflaters from the "server" fields
-        auto codecs = wsrv::ZlibCodecFactory{wsrv::ZlibSettings{}}.create(params);
-        EXPECT_TRUE(codecs.has_value());
-        codecs_ = std::move(*codecs);
-    }
-
-    std::string compress(std::string_view message) {
-        std::vector<std::byte> out;
-        EXPECT_TRUE(codecs_.deflater->deflate(wsrv::as_bytes(message), out).has_value());
-        return to_string(out);
-    }
-
-private:
-    wsrv::DeflateCodecs codecs_;
-};
-
-/// The decompressor of a scripted client (context takeover on).
-class PeerDecompressor {
-public:
-    PeerDecompressor() {
-        auto codecs = wsrv::ZlibCodecFactory{wsrv::ZlibSettings{}}.create(DeflateParams{});
-        EXPECT_TRUE(codecs.has_value());
-        codecs_ = std::move(*codecs);
-    }
-
-    /// The message carried by `compressed`, or "<invalid>".
-    std::string decompress(std::string_view compressed) {
-        std::vector<std::byte> out;
-        std::vector<std::byte> buffer(4096);
-        wsrv::ByteView rest = wsrv::as_bytes(compressed);
-        while (!rest.empty()) {
-            auto step = codecs_.inflater->inflate(rest, buffer);
-            if (!step) {
-                return "<invalid>";
-            }
-            out.insert(out.end(),
-                       buffer.begin(),
-                       buffer.begin() + static_cast<std::ptrdiff_t>(step->produced));
-            rest = rest.subspan(step->consumed);
-            if (rest.empty() && step->produced < buffer.size()) {
-                break;
-            }
-        }
-        for (;;) {
-            auto step = codecs_.inflater->finish(buffer);
-            if (!step) {
-                return "<invalid>";
-            }
-            out.insert(out.end(),
-                       buffer.begin(),
-                       buffer.begin() + static_cast<std::ptrdiff_t>(step->produced));
-            if (step->done) {
-                return to_string(out);
-            }
-        }
-    }
-
-private:
-    wsrv::DeflateCodecs codecs_;
-};
 
 struct Seen {
     Kind kind;

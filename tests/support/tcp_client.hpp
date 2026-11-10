@@ -67,8 +67,10 @@ public:
         }
         return true;
     }
-    bool send_frame(Opcode opcode, std::string_view payload, bool fin = true) const {
-        const std::vector<std::byte> frame = client_frame(opcode, fin, payload);
+    /// `rsv1` marks a permessage-deflate message (first frame only); the payload is sent as given.
+    bool
+    send_frame(Opcode opcode, std::string_view payload, bool fin = true, bool rsv1 = false) const {
+        const std::vector<std::byte> frame = client_frame(opcode, fin, payload, rsv1);
         return send(ByteView{frame});
     }
 
@@ -91,8 +93,10 @@ public:
         return !readable(period);
     }
 
-    /// The standard upgrade request, without sending it.
-    static std::string upgrade_request(std::string_view origin = "https://app.example.com") {
+    /// The standard upgrade request, without sending it. `extra_headers` are whole header lines,
+    /// each ending in CRLF (for example a Sec-WebSocket-Extensions offer).
+    static std::string upgrade_request(std::string_view origin = "https://app.example.com",
+                                       std::string_view extra_headers = {}) {
         std::string request =
             "GET /chat HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\n"
             "Upgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
@@ -102,6 +106,7 @@ public:
             request += origin;
             request += "\r\n";
         }
+        request += extra_headers;
         request += "\r\n";
         return request;
     }
@@ -109,6 +114,16 @@ public:
     /// Handshake with a standard request; true if the answer is 101.
     bool upgrade(std::string_view origin = "https://app.example.com") {
         return send(upgrade_request(origin)) && read_http_head().rfind("HTTP/1.1 101 ", 0) == 0;
+    }
+
+    /// Handshake with extra request headers; the whole response head ("" if nothing came back).
+    /// Tests assert on the status line and on headers such as Sec-WebSocket-Extensions.
+    std::string upgrade_head(std::string_view extra_headers,
+                             std::string_view origin = "https://app.example.com") {
+        if (!send(upgrade_request(origin, extra_headers))) {
+            return {};
+        }
+        return read_http_head();
     }
 
     /// One server frame (unmasked), or nullopt on timeout/EOF/garbage.
@@ -136,7 +151,8 @@ public:
         }
         WireFrame frame{static_cast<Opcode>(first & 0x0FU),
                         (first & 0x80U) != 0,
-                        buffer_.substr(header, length)};
+                        buffer_.substr(header, length),
+                        (first & 0x40U) != 0};  // RSV1: a compressed message (RFC 7692)
         buffer_.erase(0, header + length);
         return frame;
     }

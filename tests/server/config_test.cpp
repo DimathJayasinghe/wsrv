@@ -2,6 +2,7 @@
 #include "server/config.hpp"
 
 #include "server/handler.hpp"
+#include "server/server_builder.hpp"
 #include "server/session_handle.hpp"
 #include "support/identity_codecs.hpp"
 
@@ -132,6 +133,20 @@ TEST(ServerConfig, ADeflatePolicyWithAnImpossibleWindowNamesItsField) {
             << "client window " << bits;
     }
 }
+
+#if !WSRV_TEST_HAS_DEFLATE
+// Fail closed (ADR-0020): a build without zlib must refuse the feature, never serve without it.
+TEST(ServerBuilder, PermessageDeflateIsRefusedWhenTheBuildHasNoZlib) {
+    wsrv::ServerBuilder builder;
+    builder.listen("127.0.0.1", 0).permessage_deflate(wsrv::DeflateOptions{});
+    try {
+        static_cast<void>(builder.build());
+        FAIL() << "build() accepted permessage_deflate without zlib";
+    } catch (const wsrv::ConfigError& error) {
+        EXPECT_NE(std::string_view{error.what()}.find("no zlib"), std::string_view::npos);
+    }
+}
+#endif
 
 TEST(ServerConfig, ARejectedValueNamesItsField) {
     ServerConfig config;
