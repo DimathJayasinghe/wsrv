@@ -6,6 +6,7 @@
 #include "server/message_writer.hpp"
 #include "server/pending_gate.hpp"
 #include "support/fake_connection_env.hpp"
+#include "support/identity_codecs.hpp"
 #include "support/wire.hpp"
 
 #include <gtest/gtest.h>
@@ -121,6 +122,7 @@ struct ConnectionTest : public ::testing::Test {
     Script script;
     ScriptedFactory factory{script};
     wsrv::HandshakeNegotiator negotiator{handshake_config()};
+    const wsrv::HandshakeNegotiator* active_negotiator = &negotiator;  // a fixture may swap it
     std::vector<std::byte> scratch = std::vector<std::byte>(16 * 1024);
     FakeTransport* transport = nullptr;
     std::unique_ptr<Connection> conn;
@@ -129,12 +131,15 @@ struct ConnectionTest : public ::testing::Test {
         scratch.resize(scratch_size);
         auto owned = std::make_unique<FakeTransport>();
         transport = owned.get();
-        conn = std::make_unique<Connection>(
-            7,
-            wsrv::Endpoint{},
-            std::move(owned),
-            wsrv::ConnectionContext{
-                host, config, negotiator, factory, wsrv::MutableByteView{scratch}, nullptr});
+        conn = std::make_unique<Connection>(7,
+                                            wsrv::Endpoint{},
+                                            std::move(owned),
+                                            wsrv::ConnectionContext{host,
+                                                                    config,
+                                                                    *active_negotiator,
+                                                                    factory,
+                                                                    wsrv::MutableByteView{scratch},
+                                                                    nullptr});
         ASSERT_TRUE(conn->start().has_value());
     }
     void readable() {
@@ -1081,6 +1086,7 @@ struct HookTest : public ConnectionTest {
     FakeDecider decider;
     wsrv::PendingGate gate{4};
     wsrv::HandshakeNegotiator hook_negotiator{hook_handshake_config()};
+    const wsrv::HandshakeNegotiator* hook_active = &hook_negotiator;  // a fixture may swap it
     std::string request_text{kRequest};
 
     /// The decider outlives every connection, as in the server (a connection tells it when it
@@ -1094,7 +1100,7 @@ struct HookTest : public ConnectionTest {
         auto owned = std::make_unique<FakeTransport>();
         out_transport = owned.get();
         wsrv::ConnectionContext context{
-            host, config, hook_negotiator, factory, wsrv::MutableByteView{scratch}, nullptr};
+            host, config, *hook_active, factory, wsrv::MutableByteView{scratch}, nullptr};
         context.decider = &decider;
         context.pending = which_gate;
         auto connection =
@@ -1402,6 +1408,126 @@ TEST_F(HookTest, WithoutADeciderNothingChanges) {  // the hook is opt-in
     send_bytes(kRequest);
     EXPECT_EQ(transport->written_text().rfind(kResponseStart, 0), 0U);
     EXPECT_EQ(script.opened, 1);
+}
+
+// ---- permessage-deflate (ADR-0020) --------------------------------------------------------------
+// The wiring only: what the handshake agreed reaches the session, and RSV1 is legal exactly on
+// connections that agreed. The codecs copy their input; real compression is tested elsewhere.
+
+wsrv::HandshakeConfig deflate_handshake_config() {
+    wsrv::HandshakeConfig config = hook_handshake_config();
+    config.permessage_deflate = wsrv::DeflatePolicy{};
+    return config;
+}
+
+/// `request` with one more header line before the blank line.
+std::string with_header(std::string_view request, std::string_view header) {
+    std::string text{request};
+    text.insert(text.find("\r\n\r\n") + 2, header);
+    return text;
+}
+
+constexpr std::string_view kDeflateOffer = "Sec-WebSocket-Extensions: permessage-deflate\r\n";
+
+std::vector<std::byte> compressed_text_frame(std::string_view payload) {
+    return client_frame(Opcode::Text, true, payload, true);  // RSV1 set
+}
+
+struct DeflateTest : public ConnectionTest {
+    std::shared_ptr<wsrv::test::IdentityCodecFactory> codecs =
+        std::make_shared<wsrv::test::IdentityCodecFactory>();
+    wsrv::HandshakeNegotiator deflate_negotiator{deflate_handshake_config()};
+
+    DeflateTest() {
+        active_negotiator = &deflate_negotiator;
+        wsrv::SessionDeflate deflate;
+        deflate.codecs = codecs;
+        config.session.deflate = deflate;
+    }
+    ~DeflateTest() override {
+        conn.reset();  // before the negotiator it points at
+    }
+
+    /// Open the connection and send the upgrade request with `extra` header lines.
+    void upgrade(std::string_view extra) {
+        open();
+        send_bytes(with_header(kRequest, extra));
+        ASSERT_EQ(transport->written_text().rfind(kResponseStart, 0), 0U);
+    }
+    void send_compressed(std::string_view payload) {
+        const auto frame = compressed_text_frame(payload);
+        transport->feed(wsrv::ByteView{frame});
+        readable();
+    }
+};
+
+TEST_F(DeflateTest, AnAgreedConnectionAcceptsRsv1AndBuildsItsCodecsFromTheAgreement) {
+    upgrade("Sec-WebSocket-Extensions: permessage-deflate; server_max_window_bits=10; "
+            "client_max_window_bits=9\r\n");
+    EXPECT_NE(transport->written_text().find("Sec-WebSocket-Extensions: permessage-deflate"),
+              std::string::npos);
+    send_compressed("hello");
+    EXPECT_EQ(script.texts, std::vector<std::string>{"hello"});
+    ASSERT_TRUE(codecs->last_params.has_value());
+    EXPECT_EQ(codecs->last_params->server_window_bits, 10);
+    EXPECT_EQ(codecs->last_params->client_window_bits, 9);
+    EXPECT_TRUE(codecs->last_params->server_no_context_takeover);  // the policy default
+}
+
+TEST_F(DeflateTest, AClientThatDidNotNegotiateMayNotSendRsv1) {  // RFC 6455 section 5.2, EC-F24
+    upgrade("");  // the server is ready for compression, this client offered none
+    EXPECT_EQ(transport->written_text().find("Sec-WebSocket-Extensions"), std::string::npos);
+    transport->written.clear();
+    send_compressed("hello");
+    EXPECT_TRUE(script.texts.empty());
+    EXPECT_EQ(codecs->created, 0) << "no codecs are built for a connection that did not agree";
+    const auto out = output();
+    ASSERT_FALSE(out.frames.empty());
+    EXPECT_EQ(out.frames[0].opcode, Opcode::Close);
+    EXPECT_EQ(code_of(out.frames[0]), std::string("\x03\xea", 2));  // 1002
+}
+
+TEST_F(DeflateTest, EachConnectionGetsItsOwnAgreementNotTheServerDefault) {
+    upgrade("Sec-WebSocket-Extensions: permessage-deflate; server_max_window_bits=9\r\n");
+    send_compressed("one");
+    ASSERT_TRUE(codecs->last_params.has_value());
+    EXPECT_EQ(codecs->last_params->server_window_bits, 9);
+    // The server-wide SessionConfig stays as configured: the agreement is per connection.
+    ASSERT_TRUE(config.session.deflate.has_value());
+    EXPECT_EQ(config.session.deflate->params, wsrv::DeflateParams{});
+}
+
+struct DeflateHookTest : public HookTest {
+    std::shared_ptr<wsrv::test::IdentityCodecFactory> codecs =
+        std::make_shared<wsrv::test::IdentityCodecFactory>();
+    wsrv::HandshakeNegotiator deflate_negotiator{deflate_handshake_config()};
+
+    DeflateHookTest() {
+        hook_active = &deflate_negotiator;
+        wsrv::SessionDeflate deflate;
+        deflate.codecs = codecs;
+        config.session.deflate = deflate;
+    }
+    ~DeflateHookTest() override {
+        conn.reset();  // before the negotiator it points at
+    }
+};
+
+// The 101 is rendered again when the application picks another subprotocol (ADR-0018). Losing the
+// extension there would leave the client without the header while the session expects RSV1.
+TEST_F(DeflateHookTest, ADifferentSubprotocolKeepsTheExtensionInThe101AndTheSessionCompresses) {
+    request_text = with_header(request_text, "Sec-WebSocket-Protocol: chat, v2\r\n");
+    request_text = with_header(request_text, kDeflateOffer);
+    open_hook();
+    send_request();
+    decide(accept_verdict("v2"));
+    const std::string response = transport->written_text();
+    EXPECT_NE(response.find("Sec-WebSocket-Protocol: v2\r\n"), std::string::npos);
+    EXPECT_NE(response.find("Sec-WebSocket-Extensions: permessage-deflate"), std::string::npos);
+    const auto frame = compressed_text_frame("hi");
+    transport->feed(wsrv::ByteView{frame});
+    readable();
+    EXPECT_EQ(script.texts, std::vector<std::string>{"hi"});
 }
 
 }  // namespace

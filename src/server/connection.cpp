@@ -16,6 +16,24 @@ namespace {
 /// measured in ticks.
 constexpr std::chrono::milliseconds kTickInterval{1000};
 
+/// The configuration of ONE connection's session: the server-wide one, with permessage-deflate on
+/// only if this handshake agreed to it (ADR-0020), and with the parameters it agreed to. Without an
+/// agreement the extension is switched off, which keeps RSV1 illegal (RFC 6455 section 5.2): a
+/// client that never negotiated compression and sends it is failed with 1002.
+[[nodiscard]] SessionConfig session_config_for(const SessionConfig& server,
+                                               const HandshakeOutcome& outcome) {
+    // The 101 only offers the extension when codecs exist: validate(ServerConfig) pairs the two.
+    const bool servable = server.deflate.has_value() || !outcome.deflate.has_value();
+    WSRV_ASSERT(servable);
+    SessionConfig session = server;
+    if (outcome.deflate && session.deflate) {
+        session.deflate->params = outcome.deflate->params;
+    } else {
+        session.deflate.reset();
+    }
+    return session;
+}
+
 }  // namespace
 
 // ---- handler barrier ----------------------------------------------------------------------------
@@ -182,7 +200,7 @@ void Connection::establish(HandshakeOutcome& outcome, MutableByteView leftover) 
     disarm(handshake_timer_);
     head_out_ = std::move(outcome.response);
     phase_ = Phase::Established;
-    session_.emplace(ctx_.config.session, ctx_.host.now());
+    session_.emplace(session_config_for(ctx_.config.session, outcome), ctx_.host.now());
 
     ConnectionInfo info{id_, peer_, std::move(outcome.subprotocol), std::move(outcome.annotations)};
     guarded([&] { handler_ = ctx_.factory.create(info); });
@@ -281,7 +299,7 @@ void Connection::accept_pending(const HandshakeVerdict& verdict) {
     if (verdict.subprotocol && *verdict.subprotocol != outcome.subprotocol) {
         outcome.subprotocol = *verdict.subprotocol;
         outcome.response = render_response(HandshakeDecision{
-            HandshakeAccept{outcome.accept_key, outcome.subprotocol, {}, {}, {}}});
+            HandshakeAccept{outcome.accept_key, outcome.subprotocol, {}, outcome.deflate, {}}});
     }
     establish(outcome, MutableByteView{leftover});
 }

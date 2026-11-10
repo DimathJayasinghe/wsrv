@@ -65,6 +65,45 @@ TEST_F(HandshakeDriverTest,
     EXPECT_EQ(driver.request().values("Origin").size(), 1U);
 }
 
+// ADR-0020: the connection builds the session's codecs from the agreed parameters, and renders the
+// 101 again when the application picks a subprotocol later: both need the agreement, not only
+// the header text it was rendered into.
+TEST(HandshakeDriverDeflate, AnAcceptedOutcomeCarriesTheAgreement) {
+    wsrv::HandshakeConfig config = handshake_config();
+    config.permessage_deflate = wsrv::DeflatePolicy{};
+    const HandshakeNegotiator negotiator{config};
+    HandshakeDriver driver{negotiator, wsrv::HttpLimits{}};
+    std::string request{kRequest};
+    request.insert(request.size() - 2,
+                   "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n");
+    const wsrv::HandshakeOutcome outcome = driver.feed(wsrv::as_bytes(request));
+    ASSERT_EQ(outcome.step, HandshakeStep::Accepted);
+    ASSERT_TRUE(outcome.deflate.has_value());
+    EXPECT_TRUE(outcome.deflate->params.server_no_context_takeover);  // the policy default
+    EXPECT_EQ(outcome.deflate->params.server_window_bits, 12);
+    EXPECT_NE(outcome.response.find("Sec-WebSocket-Extensions: " + outcome.deflate->response),
+              std::string::npos);
+}
+
+TEST(HandshakeDriverDeflate, NoAgreementIsCarriedWithoutAnOfferOrWithoutAPolicy) {
+    {  // a policy, but the client offers nothing
+        wsrv::HandshakeConfig config = handshake_config();
+        config.permessage_deflate = wsrv::DeflatePolicy{};
+        const HandshakeNegotiator negotiator{config};
+        HandshakeDriver driver{negotiator, wsrv::HttpLimits{}};
+        EXPECT_FALSE(driver.feed(wsrv::as_bytes(kRequest)).deflate.has_value());
+    }
+    {  // an offer, but the server has no policy
+        const HandshakeNegotiator negotiator{handshake_config()};
+        HandshakeDriver driver{negotiator, wsrv::HttpLimits{}};
+        std::string request{kRequest};
+        request.insert(request.size() - 2, "Sec-WebSocket-Extensions: permessage-deflate\r\n");
+        const wsrv::HandshakeOutcome outcome = driver.feed(wsrv::as_bytes(request));
+        ASSERT_EQ(outcome.step, HandshakeStep::Accepted);
+        EXPECT_FALSE(outcome.deflate.has_value());
+    }
+}
+
 TEST_F(HandshakeDriverTest, ARejectedOutcomeCarriesNoAcceptKey) {
     std::string request{kRequest};
     request.replace(request.find("Version: 13"), 11, "Version: 12");

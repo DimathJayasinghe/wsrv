@@ -38,6 +38,7 @@ HandshakeOutcome HandshakeDriver::decide(std::size_t consumed) {
         outcome.subprotocol = accepted->subprotocol;
         outcome.annotations = accepted->annotations;
         outcome.accept_key = accepted->accept_key;
+        outcome.deflate = accepted->deflate;
     } else {
         outcome.step = HandshakeStep::Rejected;
     }
