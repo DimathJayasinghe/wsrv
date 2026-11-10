@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "protocol/session.hpp"
 
+#include "base/checked.hpp"
 #include "protocol/utf8.hpp"
 
 #include <algorithm>
+#include <limits>
 
 namespace wsrv {
 
@@ -60,9 +62,7 @@ namespace {
     return value > 0 && value <= ceiling;
 }
 
-}  // namespace
-
-Result<void> validate(const SessionConfig& config) {
+[[nodiscard]] Result<void> validate_timeouts(const SessionConfig& config) {
     for (const std::chrono::milliseconds value : {config.ping_interval,
                                                   config.pong_timeout,
                                                   config.idle_timeout,
@@ -78,6 +78,10 @@ Result<void> validate(const SessionConfig& config) {
     if (config.incomplete_message_timeout == std::chrono::milliseconds::zero()) {
         return std::unexpected{bad_config("incomplete_message_timeout is mandatory (FR-F11)")};
     }
+    return {};
+}
+
+[[nodiscard]] Result<void> validate_sizes(const SessionConfig& config) {
     if (!in_range(config.parser.max_frame_payload, kMaxConfiguredFrame) ||
         !in_range(config.outbound.max_frame_payload, kMaxConfiguredFrame)) {
         return std::unexpected{bad_config("a frame payload limit is zero or above 64 MiB")};
@@ -90,19 +94,34 @@ Result<void> validate(const SessionConfig& config) {
         config.outbound.max_queued_bytes > kMaxConfiguredQueue) {
         return std::unexpected{bad_config("max_queued_bytes out of range")};
     }
+    return {};
+}
+
+[[nodiscard]] Result<void> validate_deflate(const SessionDeflate& deflate) {
+    const auto window_ok = [](int bits) {
+        return bits >= kMinDeflateWindowBits && bits <= kMaxDeflateWindowBits;
+    };
+    if (deflate.codecs == nullptr || !window_ok(deflate.params.server_window_bits) ||
+        !window_ok(deflate.params.client_window_bits)) {
+        return std::unexpected{bad_config("deflate needs a codec factory and windows 9..15")};
+    }
+    if (deflate.max_inflate_ratio == 0 || deflate.max_inflate_ratio > kMaxConfiguredInflateRatio) {
+        return std::unexpected{bad_config("max_inflate_ratio out of range")};
+    }
+    return {};
+}
+
+}  // namespace
+
+Result<void> validate(const SessionConfig& config) {
+    if (const Result<void> timeouts = validate_timeouts(config); !timeouts) {
+        return timeouts;
+    }
+    if (const Result<void> sizes = validate_sizes(config); !sizes) {
+        return sizes;
+    }
     if (config.deflate) {
-        const SessionDeflate& deflate = *config.deflate;
-        const auto window_ok = [](int bits) {
-            return bits >= kMinDeflateWindowBits && bits <= kMaxDeflateWindowBits;
-        };
-        if (deflate.codecs == nullptr || !window_ok(deflate.params.server_window_bits) ||
-            !window_ok(deflate.params.client_window_bits)) {
-            return std::unexpected{bad_config("deflate needs a codec factory and windows 9..15")};
-        }
-        if (deflate.max_inflate_ratio == 0 ||
-            deflate.max_inflate_ratio > kMaxConfiguredInflateRatio) {
-            return std::unexpected{bad_config("max_inflate_ratio out of range")};
-        }
+        return validate_deflate(*config.deflate);
     }
     return {};
 }
@@ -127,7 +146,7 @@ namespace {
 
 }  // namespace
 
-ProtocolSession::ProtocolSession(SessionConfig config, TimePoint now)
+ProtocolSession::ProtocolSession(const SessionConfig& config, TimePoint now)
     : config_{checked(config)}, parser_{parser_config(config)}, assembler_{config.assembler},
       out_{config.outbound}, now_{now}, last_frame_{now}, last_ping_{now}, closing_since_{now},
       window_start_{now} {}
@@ -144,13 +163,10 @@ std::optional<SessionEvent> ProtocolSession::next_event(MutableByteView& input) 
 /// Read frames until one produces an event. Once the peer's Close has arrived, or the peer has
 /// violated the protocol, the rest of the input is thrown away (FR-C5, EC-C10).
 std::optional<SessionEvent> ProtocolSession::pump(MutableByteView& input) {
-    while (state_ != SessionState::Closed && !close_received_ && !failed_) {
+    while (reading()) {
         if (inflate_.phase != InflatePhase::Idle) {  // a compressed frame is still being inflated
-            if (auto event = run_inflate()) {
+            if (auto event = or_queued(run_inflate())) {
                 return event;
-            }
-            if (auto queued = queue_.pop()) {
-                return queued;
             }
             continue;
         }
@@ -158,18 +174,21 @@ std::optional<SessionEvent> ProtocolSession::pump(MutableByteView& input) {
         if (!frame) {
             return fail_connection(frame.error());
         }
-        if (!frame->has_value()) {
+        const std::optional<FrameEvent>& parsed = *frame;
+        if (!parsed) {
             return std::nullopt;  // needs more bytes
         }
-        if (auto event = on_frame(**frame)) {
+        if (auto event = or_queued(on_frame(*parsed))) {
             return event;
-        }
-        if (auto queued = queue_.pop()) {
-            return queued;
         }
     }
     input = input.subspan(input.size());
     return queue_.pop();
+}
+
+/// `event` if there is one, else whatever an earlier call left in the queue (Closed, for example).
+std::optional<SessionEvent> ProtocolSession::or_queued(std::optional<SessionEvent> event) {
+    return event ? event : queue_.pop();
 }
 
 std::optional<SessionEvent> ProtocolSession::on_frame(const FrameEvent& frame) {
@@ -213,11 +232,22 @@ bool ProtocolSession::frame_is_compressed(const FrameEvent& frame) {
     return inflate_.message_compressed;
 }
 
+const SessionDeflate& ProtocolSession::deflate_config() const {
+    WSRV_ASSERT(config_.deflate.has_value());
+    return *config_.deflate;
+}
+
+DeflateCodecs& ProtocolSession::active_codecs() {
+    WSRV_ASSERT(codecs_.has_value());
+    return *codecs_;
+}
+
 Result<void> ProtocolSession::ensure_codecs() {
     if (codecs_) {
         return {};
     }
-    auto created = config_.deflate->codecs->create(config_.deflate->params);
+    const SessionDeflate& deflate = deflate_config();
+    auto created = deflate.codecs->create(deflate.params);
     if (!created) {
         return std::unexpected{created.error()};
     }
@@ -284,33 +314,17 @@ std::optional<SessionEvent> ProtocolSession::run_inflate() {
     const FrameEvent real{FrameEvent::Kind::End, inflate_.header, {}};
     while (inflate_.phase != InflatePhase::Idle) {
         if (inflate_.phase == InflatePhase::End) {
-            inflate_.phase = InflatePhase::Idle;
-            if (inflate_.header.fin) {
-                inflate_.message_compressed = false;
-            }
-            return feed_assembler(FrameEvent{FrameEvent::Kind::End, header, {}}, real);
+            return end_inflated_frame();
         }
-        const bool finishing = inflate_.phase == InflatePhase::Finish;
-        const Result<InflateStep> step =
-            finishing ? codecs_->inflater->finish(inflate_buffer_)
-                      : codecs_->inflater->inflate(inflate_.pending, inflate_buffer_);
+        const Result<InflateStep> step = inflate_step();
         if (!step) {
             return inflate_failure(step.error());
-        }
-        inflate_.compressed_in += step->consumed;
-        inflate_.pending = inflate_.pending.subspan(step->consumed);
-        if (finishing ? step->done
-                      : (inflate_.pending.empty() && step->produced < inflate_buffer_.size())) {
-            inflate_.phase = finishing ? InflatePhase::End : InflatePhase::Idle;
         }
         if (step->produced == 0) {
             continue;
         }
         inflate_.inflated_out += step->produced;
-        // SECURITY_DESIGN T6: checked after every piece, before more output is produced.
-        const std::uint64_t allowed =
-            inflate_.compressed_in * config_.deflate->max_inflate_ratio + kInflateAllowance;
-        if (inflate_.inflated_out > allowed) {
+        if (inflate_ratio_exceeded()) {
             inflate_.phase = InflatePhase::Idle;
             return fail_connection(
                 ProtocolFailure{CloseCode::MessageTooBig,
@@ -323,6 +337,56 @@ std::optional<SessionEvent> ProtocolSession::run_inflate() {
         }
     }
     return std::nullopt;
+}
+
+/// One call into the inflater for the current phase, then the bookkeeping of what it used:
+/// `compressed_in` feeds the ratio limit, `pending` is where the next call resumes, and the phase
+/// moves on when this frame's input is used up with no output waiting (Payload -> Idle) or the
+/// inflater says the message is complete (Finish -> End).
+Result<InflateStep> ProtocolSession::inflate_step() {
+    IMessageInflater& inflater = *active_codecs().inflater;
+    const bool finishing = inflate_.phase == InflatePhase::Finish;
+    const Result<InflateStep> step = finishing
+                                         ? inflater.finish(inflate_buffer_)
+                                         : inflater.inflate(inflate_.pending, inflate_buffer_);
+    if (!step) {
+        return step;
+    }
+    inflate_.compressed_in += step->consumed;
+    inflate_.pending = inflate_.pending.subspan(step->consumed);
+    if (finishing) {
+        if (step->done) {
+            inflate_.phase = InflatePhase::End;
+        }
+    } else if (inflate_.pending.empty() && step->produced < inflate_buffer_.size()) {
+        inflate_.phase = InflatePhase::Idle;
+    }
+    return step;
+}
+
+/// SECURITY_DESIGN T6: the inflated size may not outgrow the compressed size by more than the
+/// configured ratio plus a small allowance. Called after every piece, before more output is made.
+/// Saturating: a limit that does not fit in 64 bits is above any size that could be produced.
+bool ProtocolSession::inflate_ratio_exceeded() const {
+    constexpr std::uint64_t kUnlimited = std::numeric_limits<std::uint64_t>::max();
+    const std::uint64_t scaled =
+        checked_mul<std::uint64_t>(inflate_.compressed_in, deflate_config().max_inflate_ratio)
+            .value_or(kUnlimited);
+    const std::uint64_t allowed =
+        checked_add<std::uint64_t>(scaled, kInflateAllowance).value_or(kUnlimited);
+    return inflate_.inflated_out > allowed;
+}
+
+/// The frame's input is fully inflated: tell the assembler the frame ended. At FIN the message is
+/// over, so the next data frame starts a new one (RSV1 is read again).
+std::optional<SessionEvent> ProtocolSession::end_inflated_frame() {
+    inflate_.phase = InflatePhase::Idle;
+    if (inflate_.header.fin) {
+        inflate_.message_compressed = false;
+    }
+    const FrameEvent real{FrameEvent::Kind::End, inflate_.header, {}};
+    return feed_assembler(FrameEvent{FrameEvent::Kind::End, inflated_header(inflate_.header), {}},
+                          real);
 }
 
 std::optional<SessionEvent> ProtocolSession::translate(const MessageEvent& event) {
@@ -510,14 +574,14 @@ Result<void> ProtocolSession::send_message(Opcode text_or_binary, ByteView data)
         return out_.enqueue_message(text_or_binary, data);
     }
     deflate_scratch_.clear();
-    const Result<void> compressed = codecs_->deflater->deflate(data, deflate_scratch_);
+    const Result<void> compressed = active_codecs().deflater->deflate(data, deflate_scratch_);
     if (!compressed) {
         compress_disabled_ = true;  // the compressor's history is in doubt: never use it again
         return compressed;
     }
     // With server_no_context_takeover the compressor has no memory, so an expansion can be sent
     // as it was (EC-D07). With takeover the peer's history must see this message: send it as is.
-    const bool plain_is_better = config_.deflate->params.server_no_context_takeover &&
+    const bool plain_is_better = deflate_config().params.server_no_context_takeover &&
                                  deflate_scratch_.size() >= data.size();
     const Result<void> queued = plain_is_better
                                     ? out_.enqueue_message(text_or_binary, data)

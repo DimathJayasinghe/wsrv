@@ -49,7 +49,7 @@ inline constexpr std::size_t kInflateAllowance = 4096;
 /// Hard ceiling for SessionDeflate::max_inflate_ratio.
 inline constexpr std::uint32_t kMaxConfiguredInflateRatio = 1000;
 /// Inflated bytes are handed to the assembler in pieces of at most this size.
-inline constexpr std::size_t kInflatePiece = 16 * 1024;
+inline constexpr std::size_t kInflatePiece = std::size_t{16} << 10U;  // 16 KiB
 
 struct SessionConfig {
     FrameParserConfig parser;
@@ -136,7 +136,7 @@ public:
     /// The session starts Open; the HTTP handshake is already done. `now` is the start of time for
     /// every timer.
     /// Precondition (asserted): validate(config) succeeds.
-    ProtocolSession(SessionConfig config, TimePoint now);
+    ProtocolSession(const SessionConfig& config, TimePoint now);
 
     /// Consume bytes from the front of `input` (it is advanced past what was used and modified in
     /// place: frames are unmasked there) until one event is ready or the input is exhausted.
@@ -213,6 +213,11 @@ private:
     };
 
     [[nodiscard]] std::optional<SessionEvent> pump(MutableByteView& input);
+    /// False once the peer's Close arrived or the peer broke the protocol: input is not read then.
+    [[nodiscard]] bool reading() const noexcept {
+        return state_ != SessionState::Closed && !close_received_ && !failed_;
+    }
+    [[nodiscard]] std::optional<SessionEvent> or_queued(std::optional<SessionEvent> event);
     [[nodiscard]] std::optional<SessionEvent> on_frame(const FrameEvent& frame);
     /// Hand one event to the assembler and turn its answer into a session event.
     [[nodiscard]] std::optional<SessionEvent> feed_assembler(const FrameEvent& event,
@@ -221,8 +226,15 @@ private:
     [[nodiscard]] bool frame_is_compressed(const FrameEvent& frame);
     [[nodiscard]] std::optional<SessionEvent> on_compressed_frame(const FrameEvent& frame);
     [[nodiscard]] std::optional<SessionEvent> run_inflate();
+    [[nodiscard]] Result<InflateStep> inflate_step();
+    [[nodiscard]] bool inflate_ratio_exceeded() const;
+    [[nodiscard]] std::optional<SessionEvent> end_inflated_frame();
     [[nodiscard]] std::optional<SessionEvent> inflate_failure(const Error& error);
     [[nodiscard]] Result<void> ensure_codecs();
+    /// The agreed settings. Only called where the extension is known to be negotiated (asserted).
+    [[nodiscard]] const SessionDeflate& deflate_config() const;
+    /// This connection's codecs. Only called after ensure_codecs() succeeded (asserted).
+    [[nodiscard]] DeflateCodecs& active_codecs();
     // permessage-deflate, send side (ADR-0020 section 5)
     [[nodiscard]] Result<void> send_message(Opcode text_or_binary, ByteView data);
     [[nodiscard]] bool should_compress(std::size_t size) const noexcept;

@@ -67,52 +67,83 @@ render_answer(const DeflateParams& params, bool server_window_offered, bool clie
     return out;
 }
 
-std::optional<DeflateAgreement> accept_offer(const ExtensionOffer& offer,
-                                             const DeflatePolicy& policy) {
+// What one offer has been turned into so far, parameter by parameter.
+struct OfferState {
     DeflateParams params;
-    params.server_no_context_takeover = policy.server_no_context_takeover;
-    params.server_window_bits = policy.server_max_window_bits;
     bool server_window_offered = false;
     bool client_window_offered = false;
+};
+
+// Section 7.1.1: the two no_context_takeover parameters take no value.
+bool apply_flag(bool& flag, std::string_view value) noexcept {
+    if (!value.empty()) {
+        return false;
+    }
+    flag = true;
+    return true;
+}
+
+// Section 7.1.2.1: a value is required. 8 is valid on the wire but not for us (ADR-0020 section 2).
+bool apply_server_window(OfferState& state, std::string_view value, const DeflatePolicy& policy) {
+    const auto bits = parse_window_bits(value);
+    if (!bits || *bits < kMinDeflateWindowBits) {
+        return false;
+    }
+    state.params.server_window_bits = smaller(*bits, policy.server_max_window_bits);
+    state.server_window_offered = true;
+    return true;
+}
+
+// Section 7.1.2.2: the value is optional; without one the client accepts any bound.
+bool apply_client_window(OfferState& state, std::string_view value, const DeflatePolicy& policy) {
+    int offered = kMaxDeflateWindowBits;
+    if (!value.empty()) {
+        const auto bits = parse_window_bits(value);
+        if (!bits) {
+            return false;
+        }
+        offered = *bits;
+    }
+    state.params.client_window_bits = smaller(offered, policy.client_max_window_bits);
+    state.client_window_offered = true;
+    return true;
+}
+
+// false: this offer cannot be accepted (a bad value, or a parameter we do not know, section 5.2).
+bool apply_parameter(OfferState& state,
+                     std::string_view name,
+                     std::string_view value,
+                     const DeflatePolicy& policy) {
+    if (name == kServerNoContext) {
+        return apply_flag(state.params.server_no_context_takeover, value);
+    }
+    if (name == kClientNoContext) {
+        return apply_flag(state.params.client_no_context_takeover, value);
+    }
+    if (name == kServerWindow) {
+        return apply_server_window(state, value, policy);
+    }
+    if (name == kClientWindow) {
+        return apply_client_window(state, value, policy);
+    }
+    return false;
+}
+
+std::optional<DeflateAgreement> accept_offer(const ExtensionOffer& offer,
+                                             const DeflatePolicy& policy) {
+    OfferState state;
+    state.params.server_no_context_takeover = policy.server_no_context_takeover;
+    state.params.server_window_bits = policy.server_max_window_bits;
 
     // The offer parser has already rejected duplicate parameter names inside one offer.
     for (const auto& [name, value] : offer.params) {
-        if (name == kServerNoContext) {
-            if (!value.empty()) {
-                return std::nullopt;
-            }
-            params.server_no_context_takeover = true;
-        } else if (name == kClientNoContext) {
-            if (!value.empty()) {
-                return std::nullopt;
-            }
-            params.client_no_context_takeover = true;
-        } else if (name == kServerWindow) {
-            // A value is required (section 7.1.2.1). 8 is valid on the wire but not for us.
-            const auto bits = parse_window_bits(value);
-            if (!bits || *bits < kMinDeflateWindowBits) {
-                return std::nullopt;
-            }
-            params.server_window_bits = smaller(*bits, policy.server_max_window_bits);
-            server_window_offered = true;
-        } else if (name == kClientWindow) {
-            // The value is optional (section 7.1.2.2); without one the client accepts any bound.
-            int offered = kMaxDeflateWindowBits;
-            if (!value.empty()) {
-                const auto bits = parse_window_bits(value);
-                if (!bits) {
-                    return std::nullopt;
-                }
-                offered = *bits;
-            }
-            params.client_window_bits = smaller(offered, policy.client_max_window_bits);
-            client_window_offered = true;
-        } else {
-            return std::nullopt;  // unknown parameter: this offer cannot be accepted (section 5.2)
+        if (!apply_parameter(state, name, value, policy)) {
+            return std::nullopt;
         }
     }
-    return DeflateAgreement{params,
-                            render_answer(params, server_window_offered, client_window_offered)};
+    return DeflateAgreement{
+        state.params,
+        render_answer(state.params, state.server_window_offered, state.client_window_offered)};
 }
 
 }  // namespace

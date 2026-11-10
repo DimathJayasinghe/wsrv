@@ -6,10 +6,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <new>
+#include <vector>
 
 namespace wsrv {
 namespace {
@@ -18,7 +20,7 @@ namespace {
 // loop with the rest.
 constexpr std::size_t kMaxZlibChunk = std::size_t{1} << 30U;
 // The compressor's output grows in steps of this size, never sized from the message length.
-constexpr std::size_t kDeflateOutputStep = 16U * 1024U;
+constexpr std::size_t kDeflateOutputStep = std::size_t{16} << 10U;  // 16 KiB
 // RFC 7692 section 7.2.1: a sync flush ends with an empty stored block; its last four bytes are
 // removed before sending and added back before inflating (section 7.2.2).
 constexpr std::array<std::byte, 4> kTail{
@@ -41,6 +43,25 @@ Bytef* zlib_bytes(std::byte* data) noexcept {
 
 bool in_window_range(int bits) noexcept {
     return bits >= kMinDeflateWindowBits && bits <= kMaxDeflateWindowBits;
+}
+
+// RFC 7692 section 7.2.3.6: an empty message is one empty stored block, 0x00 once the tail is
+// removed. zlib cannot make it: a second sync flush with no new input is a no-op that emits
+// nothing, which would be an invalid (empty) payload.
+Result<void> append_empty_message(std::vector<std::byte>& out) {
+    try {
+        out.push_back(std::byte{0x00});
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "deflate: out of memory while compressing");
+    }
+    return {};
+}
+
+// Did a sync flush that started at `start` end with the empty stored block (section 7.2.1)?
+bool ends_with_tail(const std::vector<std::byte>& out, std::size_t start) noexcept {
+    return out.size() - start >= kTail.size() &&
+           std::equal(
+               kTail.begin(), kTail.end(), out.end() - static_cast<std::ptrdiff_t>(kTail.size()));
 }
 
 class ZlibInflater final : public IMessageInflater {
@@ -187,16 +208,7 @@ public:
             return fail(ErrorCode::OutOfRange, "deflate: message too large to compress");
         }
         if (message.empty()) {
-            // RFC 7692 section 7.2.3.6: an empty message is one empty stored block, 0x00 once the
-            // tail is removed. zlib cannot make it: a second sync flush with no new input is a
-            // no-op that emits nothing, which would be an invalid (empty) payload.
-            try {
-                out.push_back(std::byte{0x00});
-            } catch (const std::bad_alloc&) {
-                return fail(ErrorCode::ResourceExhausted,
-                            "deflate: out of memory while compressing");
-            }
-            return {};
+            return append_empty_message(out);
         }
         if (auto ready = ensure_initialised(); !ready) {
             return ready;
@@ -204,31 +216,11 @@ public:
         const std::size_t start = out.size();
         stream_.next_in = zlib_bytes(message.data());
         stream_.avail_in = static_cast<uInt>(message.size());
-        try {
-            for (;;) {
-                const std::size_t used = out.size();
-                out.resize(used + kDeflateOutputStep);
-                stream_.next_out = zlib_bytes(out.data() + used);
-                stream_.avail_out = static_cast<uInt>(kDeflateOutputStep);
-                const int status = ::deflate(&stream_, Z_SYNC_FLUSH);
-                out.resize(used + kDeflateOutputStep - stream_.avail_out);
-                if (status != Z_OK && status != Z_BUF_ERROR) {
-                    out.resize(start);
-                    return fail(ErrorCode::InvalidArgument, "deflate: unexpected deflate status");
-                }
-                if (stream_.avail_out != 0) {
-                    break;  // the flush is complete when zlib leaves output space unused
-                }
-            }
-        } catch (const std::bad_alloc&) {
-            out.resize(start);
-            return fail(ErrorCode::ResourceExhausted, "deflate: out of memory while compressing");
+        if (const Result<void> flushed = flush_into(out); !flushed) {
+            out.resize(start);  // shrinking: cannot allocate
+            return flushed;
         }
-        const std::size_t produced = out.size() - start;
-        if (produced < kTail.size() ||
-            !std::equal(kTail.begin(),
-                        kTail.end(),
-                        out.end() - static_cast<std::ptrdiff_t>(kTail.size()))) {
+        if (!ends_with_tail(out, start)) {
             out.resize(start);
             return fail(ErrorCode::InvalidArgument, "deflate: sync flush marker missing");
         }
@@ -240,6 +232,29 @@ public:
     }
 
 private:
+    // Run Z_SYNC_FLUSH until zlib has emitted everything, growing `out` one step at a time. On
+    // failure `out` may hold partial output: the caller cuts it back.
+    Result<void> flush_into(std::vector<std::byte>& out) {
+        try {
+            for (;;) {
+                const std::size_t used = out.size();
+                out.resize(used + kDeflateOutputStep);
+                stream_.next_out = zlib_bytes(out.data() + used);
+                stream_.avail_out = static_cast<uInt>(kDeflateOutputStep);
+                const int status = ::deflate(&stream_, Z_SYNC_FLUSH);
+                out.resize(used + kDeflateOutputStep - stream_.avail_out);
+                if (status != Z_OK && status != Z_BUF_ERROR) {
+                    return fail(ErrorCode::InvalidArgument, "deflate: unexpected deflate status");
+                }
+                if (stream_.avail_out != 0) {
+                    return {};  // the flush is complete when zlib leaves output space unused
+                }
+            }
+        } catch (const std::bad_alloc&) {
+            return fail(ErrorCode::ResourceExhausted, "deflate: out of memory while compressing");
+        }
+    }
+
     Result<void> ensure_initialised() {
         if (initialised_) {
             return {};
