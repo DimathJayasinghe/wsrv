@@ -13,9 +13,10 @@ struct ZlibSettings {
 
 [[nodiscard]] bool valid(const ZlibSettings& settings) noexcept;
 
-/// IDeflateCodecFactory over system zlib. The z_stream state (about 44 KiB inflate, about 40 KiB
-/// deflate at window 12 / memLevel 6) is allocated by the first message that needs it and freed
-/// with the connection, so a connection that never sees a compressed message costs nothing.
+/// IDeflateCodecFactory over system zlib. The z_stream state (zconf.h: inflate about 2^15 bytes plus a
+/// few KiB; deflate 2^(windowBits+2) + 2^(memLevel+9) plus a few KiB, so about 48 KiB + a few KiB at
+/// window 12 / memLevel 6) is allocated by the first message that needs it and freed with the
+/// connection, so a connection that never sees a compressed message costs nothing.
 class ZlibCodecFactory final : public IDeflateCodecFactory {
 public:
     /// @pre valid(settings)
