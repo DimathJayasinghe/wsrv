@@ -16,6 +16,9 @@
 // UTF-8; after Closed nothing is written.
 #include "base/assert.hpp"
 #include "base/bytes.hpp"
+#if defined(WSRV_FUZZ_DEFLATE)
+#include "extensions/zlib_codec.hpp"
+#endif
 #include "protocol/frame.hpp"
 #include "protocol/frame_parser.hpp"
 #include "protocol/frame_writer.hpp"
@@ -28,6 +31,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -71,6 +75,16 @@ wsrv::SessionConfig make_config(std::uint8_t selector) {
     config.incomplete_message_timeout = 2000ms;
     config.max_control_frames_per_second = 6;
     config.max_data_frames_per_second = 12;
+#if defined(WSRV_FUZZ_DEFLATE)
+    if ((selector & 32U) != 0) {  // permessage-deflate negotiated (ADR-0020)
+        wsrv::SessionDeflate deflate;
+        deflate.codecs = std::make_shared<wsrv::ZlibCodecFactory>(wsrv::ZlibSettings{});
+        deflate.min_compress_size = 8;
+        deflate.max_inflate_ratio = 20;
+        deflate.params.server_no_context_takeover = (selector & 64U) != 0;
+        config.deflate = deflate;
+    }
+#endif
     return config;
 }
 
@@ -120,6 +134,8 @@ std::vector<std::byte> valid_frame(Script& script) {
     header.opcode = kOpcodes[selector & 7U];
     header.fin = (selector & 8U) == 0 || wsrv::is_control(header.opcode);
     header.masked = true;
+    header.rsv1 = (selector & 64U) != 0 && !wsrv::is_control(header.opcode) &&
+                  header.opcode != wsrv::Opcode::Continuation;  // compressed, if negotiated
     header.mask_key = wsrv::MaskKey{std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}};
     std::vector<std::byte> body;
     if (header.opcode == wsrv::Opcode::Close && (selector & 16U) == 0) {
@@ -148,6 +164,7 @@ std::vector<std::byte> valid_frame(Script& script) {
 void check_output(wsrv::ByteView output) {
     wsrv::FrameParserConfig config;
     config.expect_masked = false;
+    config.allow_rsv1 = true;  // compressed messages carry RSV1 on their first frame
     config.max_frame_payload = 1U << 20;
     wsrv::FrameParser parser{config};
     std::vector<std::byte> copy{output.begin(), output.end()};

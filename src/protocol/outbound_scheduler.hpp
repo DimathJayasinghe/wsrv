@@ -52,10 +52,16 @@ class OutboundScheduler {
 public:
     explicit OutboundScheduler(OutboundConfig config);
 
-    /// Queue one complete Text or Binary message.
+    /// Queue one complete Text or Binary message. `compressed` marks a payload that is already
+    /// permessage-deflate output (RFC 7692 section 6): its first frame, and only that one, carries
+    /// RSV1 (EC-D02).
     /// @return Error{Closing} after queue_close(); Error{Backpressure} if the queue is too full
     /// right now; Error{BufferFull} if the message could never fit. Nothing is queued on error.
-    [[nodiscard]] Result<void> enqueue_message(Opcode text_or_binary, ByteView payload);
+    [[nodiscard]] Result<void>
+    enqueue_message(Opcode text_or_binary, ByteView payload, bool compressed = false);
+    /// The error enqueue_message() would give for a payload of `size` bytes right now, or success.
+    /// Lets a caller that changes state to produce the payload (a compressor) find out first.
+    [[nodiscard]] Result<void> can_enqueue(std::size_t size) const;
 
     /// Streaming send (ADR-0015): open a message whose bytes arrive later. The message sits at the
     /// end of the data queue and is framed as its bytes become available: a non-final frame per
@@ -124,11 +130,12 @@ private:
     struct Queued {
         Opcode opcode;
         std::size_t length;
-        bool open = false;  // a streamed message that may still grow
+        bool open = false;        // a streamed message that may still grow
+        bool compressed = false;  // permessage-deflate output: RSV1 on the first frame
     };
 
     void refill();
-    [[nodiscard]] bool append_frame(Opcode opcode, bool fin, ByteView payload);
+    [[nodiscard]] bool append_frame(Opcode opcode, bool fin, ByteView payload, bool rsv1 = false);
     /// A data frame can be framed now: the front message has unframed bytes, or has ended.
     [[nodiscard]] bool data_ready() const noexcept;
     void append_control(Opcode opcode, Control& slot);

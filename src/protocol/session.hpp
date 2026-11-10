@@ -10,15 +10,19 @@
 #include "protocol/failure.hpp"
 #include "protocol/frame_parser.hpp"
 #include "protocol/message_assembler.hpp"
+#include "protocol/message_codec.hpp"
 #include "protocol/outbound_scheduler.hpp"
+#include "protocol/permessage_deflate.hpp"
 #include "protocol/utf8.hpp"
 
 #include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 namespace wsrv {
 
@@ -28,10 +32,32 @@ enum class SessionState : std::uint8_t {
     Closed,   ///< terminal: the transport can be shut down; nothing more is read or written
 };
 
+/// permessage-deflate as agreed in the handshake (RFC 7692, ADR-0020). Present only when the
+/// extension was negotiated; the session then accepts RSV1 and compresses large outbound messages.
+struct SessionDeflate {
+    DeflateParams params;                                ///< the agreed parameters
+    std::shared_ptr<const IDeflateCodecFactory> codecs;  ///< builds this connection's codecs
+    /// Outbound messages shorter than this go out uncompressed (always allowed, EC-D07).
+    std::size_t min_compress_size = 128;
+    /// Inflated bytes may not exceed this many times the compressed bytes received for the message
+    /// plus kInflateAllowance (SECURITY_DESIGN T6); more -> 1009.
+    std::uint32_t max_inflate_ratio = 100;
+};
+
+/// Slack added to the ratio limit so small messages that compress very well are not refused.
+inline constexpr std::size_t kInflateAllowance = 4096;
+/// Hard ceiling for SessionDeflate::max_inflate_ratio.
+inline constexpr std::uint32_t kMaxConfiguredInflateRatio = 1000;
+/// Inflated bytes are handed to the assembler in pieces of at most this size.
+inline constexpr std::size_t kInflatePiece = std::size_t{16} << 10U;  // 16 KiB
+
 struct SessionConfig {
     FrameParserConfig parser;
     AssemblerConfig assembler;
     OutboundConfig outbound;
+    /// Set when permessage-deflate was negotiated; the session then also sets
+    /// `parser.allow_rsv1` itself.
+    std::optional<SessionDeflate> deflate;
 
     /// 0 disables the timer. Defaults from docs/REQUIREMENTS.md section 4.
     std::chrono::milliseconds ping_interval{30000};  ///< quiet this long -> send a Ping
@@ -55,8 +81,10 @@ inline constexpr std::chrono::milliseconds kMaxConfiguredDuration = std::chrono:
 /// (larger values overflow clock arithmetic and mean "never" anyway); close_timeout and
 /// incomplete_message_timeout greater than zero because FR-C2 and FR-F11 make them mandatory
 /// (only ping_interval, pong_timeout and idle_timeout may be 0 = off); frame, message and queue
-/// sizes within (0, ceiling]; at least one fragment per message. The server builder calls this
-/// and reports the error; ProtocolSession asserts it as a backstop.
+/// sizes within (0, ceiling]; at least one fragment per message; with `deflate`: a codec factory,
+/// a server window 9..15, a client window 8..15 and an inflate ratio in
+/// [1, kMaxConfiguredInflateRatio]. The server builder
+/// calls this and reports the error; ProtocolSession asserts it as a backstop.
 /// @return Error{InvalidConfig} whose context names the offending field.
 [[nodiscard]] Result<void> validate(const SessionConfig& config);
 
@@ -109,7 +137,7 @@ public:
     /// The session starts Open; the HTTP handshake is already done. `now` is the start of time for
     /// every timer.
     /// Precondition (asserted): validate(config) succeeds.
-    ProtocolSession(SessionConfig config, TimePoint now);
+    ProtocolSession(const SessionConfig& config, TimePoint now);
 
     /// Consume bytes from the front of `input` (it is advanced past what was used and modified in
     /// place: frames are unmasked there) until one event is ready or the input is exhausted.
@@ -186,7 +214,31 @@ private:
     };
 
     [[nodiscard]] std::optional<SessionEvent> pump(MutableByteView& input);
+    /// False once the peer's Close arrived or the peer broke the protocol: input is not read then.
+    [[nodiscard]] bool reading() const noexcept {
+        return state_ != SessionState::Closed && !close_received_ && !failed_;
+    }
+    [[nodiscard]] std::optional<SessionEvent> or_queued(std::optional<SessionEvent> event);
     [[nodiscard]] std::optional<SessionEvent> on_frame(const FrameEvent& frame);
+    /// Hand one event to the assembler and turn its answer into a session event.
+    [[nodiscard]] std::optional<SessionEvent> feed_assembler(const FrameEvent& event,
+                                                             const FrameEvent& real);
+    // permessage-deflate, receive side (ADR-0020 section 4)
+    [[nodiscard]] bool frame_is_compressed(const FrameEvent& frame);
+    [[nodiscard]] std::optional<SessionEvent> on_compressed_frame(const FrameEvent& frame);
+    [[nodiscard]] std::optional<SessionEvent> run_inflate();
+    [[nodiscard]] Result<InflateStep> inflate_step();
+    [[nodiscard]] bool inflate_ratio_exceeded() const;
+    [[nodiscard]] std::optional<SessionEvent> end_inflated_frame();
+    [[nodiscard]] std::optional<SessionEvent> inflate_failure(const Error& error);
+    [[nodiscard]] Result<void> ensure_codecs();
+    /// The agreed settings. Only called where the extension is known to be negotiated (asserted).
+    [[nodiscard]] const SessionDeflate& deflate_config() const;
+    /// This connection's codecs. Only called after ensure_codecs() succeeded (asserted).
+    [[nodiscard]] DeflateCodecs& active_codecs();
+    // permessage-deflate, send side (ADR-0020 section 5)
+    [[nodiscard]] Result<void> send_message(Opcode text_or_binary, ByteView data);
+    [[nodiscard]] bool should_compress(std::size_t size) const noexcept;
     [[nodiscard]] std::optional<SessionEvent> translate(const MessageEvent& event);
     [[nodiscard]] std::optional<SessionEvent> on_control(const MessageEvent& event);
     [[nodiscard]] std::optional<SessionEvent> on_peer_close(ByteView payload);
@@ -206,7 +258,25 @@ private:
     FrameParser parser_;
     MessageAssembler assembler_;
     OutboundScheduler out_;
-    Utf8Validator stream_utf8_;  // the text message being streamed out; unused for binary
+    /// Where the receive path is in a compressed message. The assembler sees a synthetic frame
+    /// stream: one Header per real frame (length 0, RSV1 cleared), Payload events with the
+    /// inflated pieces, End with the real FIN.
+    enum class InflatePhase : std::uint8_t { Idle, Payload, Finish, End };
+    struct InflateState {
+        InflatePhase phase = InflatePhase::Idle;
+        bool message_compressed = false;  // the current data message started with RSV1
+        FrameHeader header;               // the real frame being processed
+        ByteView pending;                 // payload not yet fed to the inflater
+        std::uint64_t compressed_in = 0;  // bytes consumed by the inflater for this message
+        std::uint64_t inflated_out = 0;   // bytes it produced
+    };
+
+    std::optional<DeflateCodecs> codecs_;     // created by the first compressed message
+    std::vector<std::byte> inflate_buffer_;   // kInflatePiece, allocated with the codecs
+    std::vector<std::byte> deflate_scratch_;  // compressed output on its way to the queue
+    InflateState inflate_;
+    bool compress_disabled_ = false;  // the compressor may be out of step with the peer: stop
+    Utf8Validator stream_utf8_;       // the text message being streamed out; unused for binary
     bool stream_is_text_ = false;
     EventQueue queue_;
     SessionState state_ = SessionState::Open;

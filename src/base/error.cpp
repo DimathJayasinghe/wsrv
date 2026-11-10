@@ -45,6 +45,8 @@ std::string_view to_string(ErrorCode code) noexcept {
         return "InvalidFrame";
     case ErrorCode::TlsFailure:
         return "TlsFailure";
+    case ErrorCode::InvalidCompressedData:
+        return "InvalidCompressedData";
     }
     return "Unknown";
 }

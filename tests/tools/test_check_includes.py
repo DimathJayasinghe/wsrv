@@ -94,6 +94,17 @@ class CheckIncludes(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("a.hpp:4: server must not include <openssl/ssl.h> (only tls may, ADR-0019)", r.stdout)
 
+    def test_extensions_may_use_zlib(self):
+        # good/src/extensions/good.hpp includes <zlib.h>: allowed (ADR-0020).
+        r = run(FIXTURES / "good")
+        self.assertNotIn("zlib", r.stdout)
+
+    def test_zlib_outside_extensions_is_rejected(self):
+        # Only the extensions module may include zlib: protocol sees compression through interfaces.
+        r = run(FIXTURES / "bad_zlib")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("a.hpp:4: protocol must not include <zlib.h> (only extensions may, ADR-0020)", r.stdout)
+
     def test_tls_must_not_reach_into_the_server(self):
         r = run(FIXTURES / "bad_tls_deps")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)

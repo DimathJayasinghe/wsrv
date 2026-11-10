@@ -51,6 +51,10 @@ void validate_config(const HandshakeConfig& config) {
     if (std::ranges::any_of(config.user_rules, [](const auto& rule) { return rule == nullptr; })) {
         throw std::invalid_argument("HandshakeConfig: user rule must not be null");
     }
+    if (config.permessage_deflate && !valid(*config.permessage_deflate)) {
+        throw std::invalid_argument(
+            "HandshakeConfig: permessage-deflate window bits must be 9..15");
+    }
     for (std::size_t i = 0; i < config.subprotocols.size(); ++i) {
         const std::string& name = config.subprotocols[i];
         const bool repeated =
@@ -117,9 +121,15 @@ HandshakeDecision HandshakeNegotiator::negotiate(const HttpRequest& request) con
     }
     // check_key guaranteed exactly one valid key header.
     const std::string_view key = request.values("Sec-WebSocket-Key").front();
+    std::optional<DeflateAgreement> deflate;
+    if (config_.permessage_deflate) {  // RFC 7692: pure choice over the offers, never an error
+        deflate =
+            negotiate_permessage_deflate(context.extension_offers, *config_.permessage_deflate);
+    }
     return HandshakeAccept{compute_accept_key(key),
                            std::move(context.subprotocol),
                            std::move(context.extension_offers),
+                           std::move(deflate),
                            std::move(context.annotations)};
 }
 
@@ -132,6 +142,9 @@ HttpResponse to_response(const HandshakeDecision& decision) {
                             {"Sec-WebSocket-Accept", accept->accept_key}};
         if (!accept->subprotocol.empty()) {
             response.headers.push_back({"Sec-WebSocket-Protocol", accept->subprotocol});
+        }
+        if (accept->deflate) {  // the only extension text the server ever sends
+            response.headers.push_back({"Sec-WebSocket-Extensions", accept->deflate->response});
         }
         return response;
     }

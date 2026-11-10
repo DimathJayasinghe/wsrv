@@ -23,6 +23,7 @@ struct WireFrame {
     Opcode opcode = Opcode::Text;
     bool fin = true;
     std::string payload;
+    bool rsv1 = false;  // permessage-deflate: the message is compressed (first frame only)
 
     friend bool operator==(const WireFrame&, const WireFrame&) = default;
 };
@@ -39,9 +40,11 @@ inline constexpr MaskKey kTestMaskKey{
     std::byte{0x37}, std::byte{0xfa}, std::byte{0x21}, std::byte{0x3d}};
 
 /// A masked client->server frame (what a browser sends).
-inline std::vector<std::byte> client_frame(Opcode opcode, bool fin, std::string_view payload) {
+inline std::vector<std::byte>
+client_frame(Opcode opcode, bool fin, std::string_view payload, bool rsv1 = false) {
     FrameHeader header;
     header.fin = fin;
+    header.rsv1 = rsv1;
     header.opcode = opcode;
     header.masked = true;
     header.payload_length = payload.size();
@@ -83,6 +86,7 @@ inline std::vector<std::byte> oversized_control_frame(Opcode opcode, std::size_t
 inline ParsedOutput parse_server_output(ByteView bytes) {
     FrameParserConfig config;
     config.expect_masked = false;
+    config.allow_rsv1 = true;
     config.max_frame_payload = 1ULL << 30;
     FrameParser parser{config};
     std::vector<std::byte> copy{bytes.begin(), bytes.end()};
@@ -99,7 +103,7 @@ inline ParsedOutput parse_server_output(ByteView bytes) {
         }
         const FrameEvent& e = **event;
         if (e.kind == FrameEvent::Kind::Header) {
-            out.frames.push_back(WireFrame{e.header.opcode, e.header.fin, {}});
+            out.frames.push_back(WireFrame{e.header.opcode, e.header.fin, {}, e.header.rsv1});
         } else if (e.kind == FrameEvent::Kind::Payload) {
             out.frames.back().payload.append(as_chars(e.payload));
         }

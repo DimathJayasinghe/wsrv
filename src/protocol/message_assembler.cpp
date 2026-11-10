@@ -104,9 +104,14 @@ MessageAssembler::StepResult MessageAssembler::on_payload(const FrameEvent& even
         control_len_ += chunk.size();
         return std::optional<MessageEvent>{};
     }
+    // The header check already bounds a frame's declared length, so this only fires for payload
+    // that does not belong to a declared length: the inflated bytes of a compressed message
+    // (ADR-0020 section 4), where the limit must apply to what the application will see.
+    if (chunk.size() > config_.max_message_size - total_) {
+        return fail_with(CloseCode::MessageTooBig, "message exceeds the size limit");
+    }
     total_ += chunk.size();
     frame_received_ += chunk.size();
-    WSRV_ASSERT(total_ <= config_.max_message_size);  // guaranteed by the header check
     if (draining_) {
         return std::optional<MessageEvent>{};  // discarded message: counted, never delivered
     }

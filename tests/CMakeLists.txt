@@ -23,6 +23,10 @@ wsrv_add_test(NAME net_unix_listener_test SOURCES net/unix_listener_test.cpp LIN
 wsrv_add_test(NAME net_acceptor_test SOURCES net/acceptor_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_loopback_test SOURCES net/loopback_test.cpp LINK wsrv::net)
 
+if(WSRV_ENABLE_DEFLATE)
+    wsrv_add_test(NAME extensions_zlib_codec_test SOURCES extensions/zlib_codec_test.cpp LINK wsrv::extensions)
+    wsrv_add_test(NAME protocol_session_deflate_test SOURCES protocol/session_deflate_test.cpp LINK wsrv::protocol wsrv::extensions)
+endif()
 if(WSRV_ENABLE_TLS)
     wsrv_add_test(NAME tls_sni_test SOURCES tls/sni_test.cpp LINK wsrv::tls)
     wsrv_add_test(NAME tls_server_context_sni_test SOURCES tls/server_context_sni_test.cpp
@@ -119,6 +123,7 @@ wsrv_add_test(NAME http_response_test SOURCES http/response_test.cpp LINK wsrv::
 wsrv_add_test(NAME crypto_base64_test SOURCES crypto/base64_test.cpp LINK wsrv::crypto)
 wsrv_add_test(NAME crypto_sha1_test SOURCES crypto/sha1_test.cpp LINK wsrv::crypto)
 wsrv_add_test(NAME protocol_extension_offer_test SOURCES protocol/extension_offer_test.cpp LINK wsrv::protocol)
+wsrv_add_test(NAME protocol_permessage_deflate_test SOURCES protocol/permessage_deflate_test.cpp LINK wsrv::protocol)
 wsrv_add_test(NAME protocol_handshake_test SOURCES protocol/handshake_test.cpp LINK wsrv::protocol)
 wsrv_add_test(NAME protocol_handshake_driver_test SOURCES protocol/handshake_driver_test.cpp LINK wsrv::protocol)
 wsrv_add_test(NAME protocol_handshake_flow_test SOURCES protocol/handshake_flow_test.cpp LINK wsrv::protocol)

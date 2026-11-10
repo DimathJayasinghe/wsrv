@@ -32,6 +32,7 @@ enum class ErrorCode : std::uint8_t {
     WrongProcess,       ///< Called from a forked child of the process that created it (Internal).
     InvalidFrame,       ///< A peer's IPC frame is malformed (Protocol).
     TlsFailure,         ///< The TLS handshake or a TLS record failed; the stream is dead (Tls).
+    InvalidCompressedData,  ///< A permessage-deflate payload is not valid DEFLATE (Protocol).
 };
 
 /// A failure. `context` MUST be a string literal (static storage): it is never built from peer
@@ -49,6 +50,7 @@ struct Error {
     case ErrorCode::InvalidBase64:
     case ErrorCode::InvalidUtf8:
     case ErrorCode::InvalidFrame:
+    case ErrorCode::InvalidCompressedData:
         return ErrorCategory::Protocol;
     case ErrorCode::Overflow:
     case ErrorCode::BufferFull:
