@@ -98,12 +98,16 @@ namespace {
 }
 
 [[nodiscard]] Result<void> validate_deflate(const SessionDeflate& deflate) {
-    const auto window_ok = [](int bits) {
-        return bits >= kMinDeflateWindowBits && bits <= kMaxDeflateWindowBits;
+    const auto window_ok = [](int bits, int smallest) {
+        return bits >= smallest && bits <= kMaxDeflateWindowBits;
     };
-    if (deflate.codecs == nullptr || !window_ok(deflate.params.server_window_bits) ||
-        !window_ok(deflate.params.client_window_bits)) {
-        return std::unexpected{bad_config("deflate needs a codec factory and windows 9..15")};
+    // The server window is what zlib can compress with (9..15); the client window only bounds the
+    // peer's compressor and any RFC 7692 value (8..15) is fine for our 15-bit inflater.
+    if (deflate.codecs == nullptr ||
+        !window_ok(deflate.params.server_window_bits, kMinDeflateWindowBits) ||
+        !window_ok(deflate.params.client_window_bits, kMinClientWindowBits)) {
+        return std::unexpected{
+            bad_config("deflate needs a codec factory, server window 9..15, client window 8..15")};
     }
     if (deflate.max_inflate_ratio == 0 || deflate.max_inflate_ratio > kMaxConfiguredInflateRatio) {
         return std::unexpected{bad_config("max_inflate_ratio out of range")};

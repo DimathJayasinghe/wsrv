@@ -82,7 +82,8 @@ inline constexpr std::chrono::milliseconds kMaxConfiguredDuration = std::chrono:
 /// incomplete_message_timeout greater than zero because FR-C2 and FR-F11 make them mandatory
 /// (only ping_interval, pong_timeout and idle_timeout may be 0 = off); frame, message and queue
 /// sizes within (0, ceiling]; at least one fragment per message; with `deflate`: a codec factory,
-/// window sizes 9..15 and an inflate ratio in [1, kMaxConfiguredInflateRatio]. The server builder
+/// a server window 9..15, a client window 8..15 and an inflate ratio in
+/// [1, kMaxConfiguredInflateRatio]. The server builder
 /// calls this and reports the error; ProtocolSession asserts it as a backstop.
 /// @return Error{InvalidConfig} whose context names the offending field.
 [[nodiscard]] Result<void> validate(const SessionConfig& config);

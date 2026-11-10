@@ -537,4 +537,30 @@ TEST(SessionDeflate, TheConfigurationIsChecked) {
     EXPECT_FALSE(wsrv::validate(bad_window).has_value());
 }
 
+// RFC 7692 section 7.1.2.2 allows a client window of 8..15 and the negotiation agrees to it (our
+// inflater always uses 15 bits, which decodes any window), so the session must accept what the
+// negotiation can hand it: a rejected agreement would abort the server at the first handshake.
+TEST(SessionDeflate, EveryClientWindowTheNegotiationCanAgreeToIsAValidConfiguration) {
+    for (int bits = wsrv::kMinClientWindowBits; bits <= wsrv::kMaxDeflateWindowBits; ++bits) {
+        SessionConfig config = deflate_config();
+        config.deflate->params.client_window_bits = bits;
+        EXPECT_TRUE(wsrv::validate(config).has_value()) << "client window " << bits;
+    }
+    for (const int bits : {wsrv::kMinClientWindowBits - 1, wsrv::kMaxDeflateWindowBits + 1}) {
+        SessionConfig config = deflate_config();
+        config.deflate->params.client_window_bits = bits;
+        EXPECT_FALSE(wsrv::validate(config).has_value()) << "client window " << bits;
+    }
+}
+
+TEST(SessionDeflate, ASessionAgreedToAClientWindowOfEightInflatesNormally) {
+    SessionConfig config = deflate_config();
+    config.deflate->params.client_window_bits = 8;
+    PeerCompressor peer;
+    Rig rig{config};  // constructing the session asserts validate(config)
+    const std::string text = text_of(3000);
+    const auto seen = rig.feed(client_frame(wsrv::Opcode::Text, true, peer.compress(text), true));
+    EXPECT_EQ(messages(seen), std::vector<std::string>{text});
+}
+
 }  // namespace

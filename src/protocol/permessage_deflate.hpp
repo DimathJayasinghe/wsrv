@@ -14,6 +14,9 @@ namespace wsrv {
 /// server window of 8 (ADR-0020 section 2).
 inline constexpr int kMinDeflateWindowBits = 9;
 inline constexpr int kMaxDeflateWindowBits = 15;
+/// The client's window only bounds what the client's compressor may use. Our inflater always uses
+/// the full 15 bits, which decodes any smaller window, so every RFC 7692 value (8 to 15) is fine.
+inline constexpr int kMinClientWindowBits = 8;
 
 /// What the server is willing to do (operator configuration, ADR-0020 section 3).
 struct DeflatePolicy {
