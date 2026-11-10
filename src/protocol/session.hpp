@@ -55,8 +55,8 @@ struct SessionConfig {
     FrameParserConfig parser;
     AssemblerConfig assembler;
     OutboundConfig outbound;
-    /// Set when permessage-deflate was negotiated; the session then also sets
-    /// `parser.allow_rsv1` itself.
+    /// Set when permessage-deflate was negotiated. The session derives `parser.allow_rsv1` from
+    /// this alone (true exactly when it is set); whatever the caller put in that field is ignored.
     std::optional<SessionDeflate> deflate;
 
     /// 0 disables the timer. Defaults from docs/REQUIREMENTS.md section 4.
@@ -228,6 +228,7 @@ private:
     [[nodiscard]] std::optional<SessionEvent> on_compressed_frame(const FrameEvent& frame);
     [[nodiscard]] std::optional<SessionEvent> run_inflate();
     [[nodiscard]] Result<InflateStep> inflate_step();
+    [[nodiscard]] bool inflate_step_is_sound(const InflateStep& step, bool finishing) const;
     [[nodiscard]] bool inflate_ratio_exceeded() const;
     [[nodiscard]] std::optional<SessionEvent> end_inflated_frame();
     [[nodiscard]] std::optional<SessionEvent> inflate_failure(const Error& error);
@@ -238,6 +239,7 @@ private:
     [[nodiscard]] DeflateCodecs& active_codecs();
     // permessage-deflate, send side (ADR-0020 section 5)
     [[nodiscard]] Result<void> send_message(Opcode text_or_binary, ByteView data);
+    [[nodiscard]] Result<void> send_compressed(Opcode text_or_binary, ByteView data);
     [[nodiscard]] bool should_compress(std::size_t size) const noexcept;
     [[nodiscard]] std::optional<SessionEvent> translate(const MessageEvent& event);
     [[nodiscard]] std::optional<SessionEvent> on_control(const MessageEvent& event);
@@ -267,13 +269,14 @@ private:
         bool message_compressed = false;  // the current data message started with RSV1
         FrameHeader header;               // the real frame being processed
         ByteView pending;                 // payload not yet fed to the inflater
-        std::uint64_t compressed_in = 0;  // bytes consumed by the inflater for this message
+        std::uint64_t compressed_in = 0;  // compressed bytes RECEIVED for this message (ratio base)
         std::uint64_t inflated_out = 0;   // bytes it produced
     };
 
-    std::optional<DeflateCodecs> codecs_;     // created by the first compressed message
-    std::vector<std::byte> inflate_buffer_;   // kInflatePiece, allocated with the codecs
-    std::vector<std::byte> deflate_scratch_;  // compressed output on its way to the queue
+    std::optional<DeflateCodecs> codecs_;    // created by the first compressed message
+    std::vector<std::byte> inflate_buffer_;  // kInflatePiece, allocated with the codecs
+    std::vector<std::byte>
+        deflate_scratch_;  // compressed output on its way to the queue; empty between sends
     InflateState inflate_;
     bool compress_disabled_ = false;  // the compressor may be out of step with the peer: stop
     Utf8Validator stream_utf8_;       // the text message being streamed out; unused for binary
