@@ -59,6 +59,20 @@ TEST(EmbeddedServer, AskingForTlsInABuildWithoutTlsFailsInsteadOfServingPlainTex
 }
 #endif
 
+#ifndef WSRV_TEST_HAS_DEFLATE
+TEST(EmbeddedServer, AskingForDeflateInABuildWithoutZlibFailsInsteadOfServingUncompressed) {
+    EmbeddedConfig config = base_config();
+    ASSERT_TRUE(config.set("permessage_deflate", "true").has_value());
+    auto server = EmbeddedServer::create(config);
+    ASSERT_TRUE(server.has_value());
+    const auto started = (*server)->start();
+    ASSERT_FALSE(started.has_value());
+    EXPECT_EQ(started.error().code, ErrorCode::InvalidConfig);
+    EXPECT_NE((*server)->start_error().find("zlib"), std::string::npos);
+    EXPECT_FALSE((*server)->running());
+}
+#endif
+
 TEST(EmbeddedServer, StartListensOnTheChosenPortAndTheDestructorEndsTheThread) {
     const auto server = started();
     EXPECT_NE(server->port(), 0U);

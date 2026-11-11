@@ -4,6 +4,7 @@
 #include "http/token.hpp"
 
 #include <algorithm>
+#include <optional>
 
 namespace wsrv {
 
@@ -32,6 +33,22 @@ namespace {
     if (config.read.max_reads_per_event == 0 || config.read.max_bytes_per_event == 0 ||
         config.read.max_bytes_per_event > kMaxConfiguredReadBytes) {
         return std::unexpected{bad_config("read budget out of range")};
+    }
+    return {};
+}
+
+/// permessage-deflate needs both halves (ADR-0020): the handshake policy decides what is offered to
+/// clients, the session settings hold the codecs that serve it. A policy without codecs would
+/// advertise an extension the session cannot speak; codecs without a policy are dead weight that
+/// look like a working feature. Either way the operator meant something else, so refuse.
+[[nodiscard]] Result<void> validate_deflate_pairing(const ServerConfig& config) {
+    const std::optional<DeflatePolicy>& policy = config.handshake.permessage_deflate;
+    if (policy.has_value() != config.session.deflate.has_value()) {
+        return std::unexpected{bad_config("permessage_deflate: the handshake policy and the "
+                                          "session codecs must be set together (ADR-0020)")};
+    }
+    if (policy && !valid(*policy)) {
+        return std::unexpected{bad_config("permessage_deflate: window sizes must be 9..15")};
     }
     return {};
 }
@@ -82,6 +99,9 @@ Result<void> validate(const ServerConfig& config) {
     }
     if (const Result<void> hook = validate_hook(config); !hook) {
         return hook;
+    }
+    if (const Result<void> deflate = validate_deflate_pairing(config); !deflate) {
+        return deflate;
     }
     return validate(config.session);
 }

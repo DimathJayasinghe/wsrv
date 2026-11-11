@@ -217,10 +217,12 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | EC-N02 (partial write), N03 (EPIPE), N04 (EOF mid-message), N07/N08 (read budget, flooder), N09 (stall timer, slow-consumer policy), N11 (heartbeat) at connection level | done (M6) | `ConnectionTest.APartiallyWritten101*`, `AWriteToAGonePeer*`, `AnEofInTheMiddle*`, `ABudgetedRead*`, `APeerThatAcceptsNoBytes*`, `ASlowConsumer*`, `TheDropPolicy*`, `Integration.ASlowReader*`, `Integration.AFloodingClient*`, `Integration.ASilentPeer*` |
 | EC-H17, H19, H20, H21, H22 (refusal; the rate-limited log line is M10), H24 at connection level | done (M6) | `ConnectionTest.TheRequestMayArriveOneByte*`, `AMessageInTheSameRead*`, `AHandshakeThatNever*`, `ThePeerLeavingMid*`, `GarbageOnThePlainPort*`, `HandshakeDriverTest.*`, `Integration.ASlowloris*`, `Integration.GarbageAndATlsHello*` |
 | EC-A01, A03, A06 (handler exceptions, send after close, deferred close), EC-C11..C15 at connection level, FR-S1 (connection cap) | done (M6) | `ConnectionTest.AThrowingHandler*`, `ANonStandardThrow*`, `CloseIsIdempotent*`, `OnCloseMayNotSend*`, `Server.TheConnectionCap*`, `Server.Churn*`, `Integration.AThrowingHandler*` |
-| Autobahn sections 1-7, 9, 10 | harness written (M6); first full run pending, see `tests/autobahn/EXCLUDED.md` | `tests/autobahn/run.sh` |
+| Autobahn sections 1-7, 9, 10, 12, 13 | done: 517 cases, 0 FAILED (M8 and M9), see `tests/autobahn/EXCLUDED.md` | `tests/autobahn/run.sh` (`--wss` over TLS) |
 | EC-N13 (handle after the connection, the loop or the server is gone), EC-N14 (task queue full: `BufferFull`) | done (M7, `SessionHandle`) | `SessionHandleTest.*`, `SmallQueueTest.*`, `ServerHandle.*` |
 | EC-H26 | M10 (MAY) | - |
-| EC-F*, EC-C*, EC-N*, EC-A*, EC-T*, EC-D* | later milestones | - |
+| EC-D01 (negotiation permutations), D02 (fragmented compressed message, RSV1 on the first frame only), D03 (bomb: size and ratio), D04 (invalid stream: 1007), D06 (empty message), D07 (plain message while negotiated) | done (M9) | `PermessageDeflate.*`, `DeflatePolicyCheck.*`, `SessionDeflate.*`, `ZlibCodec.*`, `ServerDeflate.*`, `fuzz_inflate`, Autobahn 12.* and 13.* (216 cases) |
+| EC-D05 (memory per compressed connection: bounded, budgeted) | bound done (M9): window and level are range-checked, the per-connection figures are in `docs/OPERATIONS.md` section 1.1. **Gap:** the release of the send scratch buffer after every send is by design and review (ADR-0020 A1) and is not asserted by a test; a global budget across connections is M10 | `SessionDeflate.TheConfigurationIsChecked`, `ZlibCodec.TheFactoryRefusesWindowsAndLevelsZlibCannotDo`, `ServerDeflate.ImpossibleSettingsAreRefusedAtBuildTimeNamingTheFeature`, `ServerDeflate.ChurnOfCompressedConnectionsLeavesNoDescriptorsBehind` |
+| EC-F*, EC-C*, EC-N*, EC-A*, EC-T* (rows not listed above) | later milestones | - |
 
 ## 11. Maintenance
 

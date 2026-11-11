@@ -64,6 +64,26 @@ TEST(DaemonConfig,
     EXPECT_EQ(config.embedded().tls_sni()[0].key, "/k/app.pem");
 }
 
+TEST(DaemonConfig, PermessageDeflateComesInAsFlagsLikeAnyOtherKey) {  // ADR-0020 section 6
+    DaemonConfig config = with_socket();
+    ASSERT_TRUE(config.apply_argument("--permessage-deflate=true").has_value());
+    ASSERT_TRUE(config.apply_argument("--deflate-level=4").has_value());
+    ASSERT_TRUE(config.apply_argument("--deflate-server-max-window-bits=11").has_value());
+    ASSERT_TRUE(config.apply_argument("--deflate-max-ratio=50").has_value());
+    ASSERT_TRUE(config.finish().has_value());
+    EXPECT_TRUE(config.embedded().permessage_deflate());
+    EXPECT_EQ(config.embedded().deflate_options().level, 4);
+    EXPECT_EQ(config.embedded().deflate_options().policy.server_max_window_bits, 11);
+    EXPECT_EQ(config.embedded().deflate_options().max_inflate_ratio, 50U);
+}
+
+TEST(DaemonConfig, DeflateIsOffUnlessAskedFor) {
+    DaemonConfig config = with_socket();
+    ASSERT_TRUE(config.apply_argument("--deflate-level=4").has_value());  // tuning alone is inert
+    ASSERT_TRUE(config.finish().has_value());
+    EXPECT_FALSE(config.embedded().permessage_deflate());
+}
+
 TEST(DaemonConfig, AnUnknownKeyIsRefused) {
     DaemonConfig config;
     const auto done = config.set("no_such_key", "1");

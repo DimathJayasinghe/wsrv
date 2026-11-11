@@ -2,11 +2,14 @@
 #include "server/config.hpp"
 
 #include "server/handler.hpp"
+#include "server/server_builder.hpp"
 #include "server/session_handle.hpp"
+#include "support/identity_codecs.hpp"
 
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <memory>
 #include <string_view>
 
 namespace {
@@ -90,6 +93,60 @@ TEST(ServerConfig, ForwardedHeaderNamesMustBeHeaderTokens) {
     config.handshake_forward_headers.assign(65, "X-A");
     EXPECT_NE(complaint(config), "") << "the list itself is bounded";
 }
+
+// ADR-0020: the handshake policy and the session codecs belong together.
+ServerConfig deflate_config() {
+    ServerConfig config;
+    config.handshake.permessage_deflate = wsrv::DeflatePolicy{};
+    wsrv::SessionDeflate deflate;
+    deflate.codecs = std::make_shared<wsrv::test::IdentityCodecFactory>();
+    config.session.deflate = deflate;
+    return config;
+}
+
+TEST(ServerConfig, PermessageDeflateIsValidWithBothHalvesOrNeither) {
+    EXPECT_EQ(complaint(ServerConfig{}), "");
+    EXPECT_EQ(complaint(deflate_config()), "");
+}
+
+TEST(ServerConfig, APolicyWithoutCodecsIsRefusedBecauseItWouldAdvertiseWhatItCannotServe) {
+    ServerConfig config = deflate_config();
+    config.session.deflate.reset();
+    EXPECT_NE(complaint(config).find("permessage_deflate"), std::string_view::npos);
+}
+
+TEST(ServerConfig, CodecsWithoutAPolicyAreRefusedBecauseTheyLookLikeAWorkingFeature) {
+    ServerConfig config = deflate_config();
+    config.handshake.permessage_deflate.reset();
+    EXPECT_NE(complaint(config).find("permessage_deflate"), std::string_view::npos);
+}
+
+TEST(ServerConfig, ADeflatePolicyWithAnImpossibleWindowNamesItsField) {
+    for (const int bits : {8, 16}) {
+        ServerConfig server_window = deflate_config();
+        server_window.handshake.permessage_deflate->server_max_window_bits = bits;
+        EXPECT_NE(complaint(server_window).find("permessage_deflate"), std::string_view::npos)
+            << "server window " << bits;
+        ServerConfig client_window = deflate_config();
+        client_window.handshake.permessage_deflate->client_max_window_bits = bits;
+        EXPECT_NE(complaint(client_window).find("permessage_deflate"), std::string_view::npos)
+            << "client window " << bits;
+    }
+}
+
+#if !WSRV_TEST_HAS_DEFLATE
+// Fail closed (ADR-0020): a build without zlib must refuse the feature, never serve without it.
+TEST(ServerBuilder, PermessageDeflateIsRefusedWhenTheBuildHasNoZlib) {
+    wsrv::ServerBuilder builder;
+    builder.listen("127.0.0.1", 0).permessage_deflate(wsrv::DeflateOptions{});
+    try {
+        static_cast<void>(builder.build());
+        FAIL() << "build() accepted permessage_deflate without zlib";
+    } catch (const wsrv::ConfigError& error) {
+        EXPECT_NE(std::string_view{error.what()}.find("no zlib"), std::string_view::npos);
+    }
+}
+#endif
 
 TEST(ServerConfig, ARejectedValueNamesItsField) {
     ServerConfig config;

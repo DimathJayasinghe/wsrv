@@ -25,10 +25,11 @@ mkdir -p "$report_dir"
 rm -f "$report_dir"/*.html "$report_dir"/*.json
 
 docker compose up -d dev
-docker compose exec -T dev bash -c 'cmake --preset release -DWSRV_ENABLE_TLS=ON >/dev/null && cmake --build --preset release -j --target echo'
+docker compose exec -T dev bash -c 'cmake --preset release -DWSRV_ENABLE_TLS=ON -DWSRV_ENABLE_DEFLATE=ON >/dev/null && cmake --build --preset release -j --target echo'
 
 # --autobahn raises size/rate limits only (see examples/echo/main.cpp); --allow-missing-origin
-# because the suite is not a browser. Neither is a library default.
+# because the suite is not a browser; --deflate offers permessage-deflate (cases 12.* and 13.*; the
+# other cases never ask for it). None of these is a library default.
 tls_args=""
 if [[ "$wss" == 1 ]]; then
     # A self-signed certificate: the suite's client does not verify it, and TLS behaviour (not trust)
@@ -39,7 +40,7 @@ if [[ "$wss" == 1 ]]; then
     tls_args="--tls-cert /tmp/wss.pem --tls-key /tmp/wss.key"
 fi
 docker compose exec -T -d dev bash -c \
-    "./build/release/examples/echo --host 0.0.0.0 --port 9001 --autobahn --allow-missing-origin $tls_args"
+    "./build/release/examples/echo --host 0.0.0.0 --port 9001 --autobahn --deflate --allow-missing-origin $tls_args"
 trap 'docker compose exec -T dev pkill -INT -f build/release/examples/echo || true' EXIT
 sleep 1
 

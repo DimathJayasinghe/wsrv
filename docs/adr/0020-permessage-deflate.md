@@ -9,7 +9,7 @@ Browsers offer `permessage-deflate` on every WebSocket and servers that do not a
 
 The code base was prepared: `FrameParser` already accepts RSV1 on the first frame of a data message when told to (`allow_rsv1`), `parse_extension_offers` already parses and bounds the header, `HandshakeAccept` already carries the offers, and the `extensions/` module exists (empty, depends on `base` and `protocol`). FRAGMENTATION.md section 2.4 says: compress the whole message first, then fragment; RSV1 on the first frame only. SECURITY_DESIGN T6 (decompression bomb) and the REQUIREMENTS limits (message size after inflate, ratio 100:1 then close 1009) are fixed. EC-D01 to EC-D07 are the edge cases.
 
-Two facts shape the design. (1) A compressor costs memory per connection: zlib's deflate state is about `2^(windowBits+2) + 2^(memLevel+9)` bytes (about 256 KiB at 15/8, about 64 KiB at 11/6) plus about 44 KiB to inflate, so 10 000 connections with context takeover at the zlib defaults would hold 3 GB. (2) The input is hostile: a few kilobytes of deflate can expand to gigabytes.
+Two facts shape the design. (1) A compressor costs memory per connection: zlib's deflate state is about `2^(windowBits+2) + 2^(memLevel+9)` bytes (about 256 KiB at 15/8, about 40 KiB at 11/6) plus about 32 KiB (a 15-bit window) to inflate, so 10 000 connections with context takeover at the zlib defaults would hold about 3 GB. (2) The input is hostile: a few kilobytes of deflate can expand to gigabytes.
 
 ## Options considered
 1. **System zlib, linked dynamically, in `extensions/`, optional** (this ADR). Same shape as OpenSSL for TLS: a distribution library with security patches from the OS, one module includes its header.
@@ -32,7 +32,7 @@ Two facts shape the design. (1) A compressor costs memory per connection: zlib's
 - The answer header is built by one function (`render_extension_answer`) and is the only extension text ever sent.
 
 ### 3. Policy and defaults (all in one `DeflateConfig`)
-`enabled=false` (off by default: SECURITY_DESIGN section on CRIME/BREACH-class risk, below); `server_no_context_takeover=true`, `server_max_window_bits=12`, `memory_level=6`, `level=6`, `min_compress_size=128` (smaller messages go out uncompressed, which is always allowed: EC-D07), `max_inflate_ratio=100`. Per-connection memory with these defaults is about 40 KiB + 44 KiB, allocated lazily on the first compressed message and freed with the connection; no-context-takeover reuses the allocation (`deflateReset`/`inflateReset`) rather than freeing and allocating per message. Operators who want better ratios raise the window and allow takeover and accept the documented memory (`docs/OPERATIONS.md` table). Hard ceilings are validated like the other limits.
+`enabled=false` (off by default: SECURITY_DESIGN section on CRIME/BREACH-class risk, below); `server_no_context_takeover=true`, `server_max_window_bits=12`, `memory_level=6`, `level=6`, `min_compress_size=128` (smaller messages go out uncompressed, which is always allowed: EC-D07), `max_inflate_ratio=100`. Per-connection memory with these defaults is about 48 KiB to deflate and 32 KiB to inflate (plus a few KiB each and a 16 KiB inflate output buffer; the table is in OPERATIONS section 1.1), allocated lazily on the first compressed message and freed with the connection; no-context-takeover reuses the allocation (`deflateReset`/`inflateReset`) rather than freeing and allocating per message. Operators who want better ratios raise the window and allow takeover and accept the documented memory (`docs/OPERATIONS.md` table). Hard ceilings are validated like the other limits.
 
 ### 4. Inbound: inflate between the parser and the assembler, bounded
 The assembler already enforces `max_message_size`, fragment counts and UTF-8 on the bytes it is given. For a compressed message the bytes it should see are the **inflated** ones, so the inflater sits in front of the assembler's payload path:
@@ -65,10 +65,10 @@ Negotiation table (EC-D01: every parameter permutation, duplicates, bad values, 
 − Streaming sends are uncompressed for now; broadcast-style fan-out compression (compress once, send to many) is a follow-up with M10.
 
 ## Slices
-1. This ADR; pure negotiation and answer rendering in `protocol/`, wired into the handshake (`HandshakeAccept` carries the agreed parameters), tests.
-2. `extensions/`: zlib inflater and deflater behind the interfaces, limits, tests and `fuzz_inflate`.
-3. Session integration: RSV1, inflate in the receive path, compress in `send_*`, scheduler flag, tests.
-4. Server, config keys (library, C embedded config, `wsrvd`), end-to-end tests over TCP and TLS, Autobahn 12 and 13, OPERATIONS and lesson.
+1. This ADR; pure negotiation and answer rendering in `protocol/`, wired into the handshake (`HandshakeAccept` carries the agreed parameters), tests. **Done.**
+2. `extensions/`: zlib inflater and deflater behind the interfaces, limits, tests and `fuzz_inflate`. **Done.**
+3. Session integration: RSV1, inflate in the receive path, compress in `send_*`, scheduler flag, tests. **Done.**
+4. Server, config keys (library, C embedded config, `wsrvd`), end-to-end tests over TCP and TLS, Autobahn 12 and 13, OPERATIONS and lesson. **Done.** The one place that switches the feature on is `ServerBuilder::permessage_deflate(DeflateOptions)`: it creates the zlib factory and sets the handshake policy and the session settings together, so "offered but cannot compress" cannot be configured, and a build without zlib refuses to start with the feature requested. The text keys (`permessage_deflate`, `deflate_*`) only parse; the ranges are checked once, in `build()`. Autobahn: 216 cases of sections 12 and 13, all OK, at the library defaults (`tests/autobahn/EXCLUDED.md`).
 
 ## Amendments
 

@@ -31,6 +31,7 @@ We teach as we build. Each lesson answers three questions: **What** are we build
 | 24 | [Wiring TLS into the server](24-wiring-tls-into-the-server.md) | M8 | written (slice 4) |
 | 25 | [TLS from configuration: failing closed, reload](25-config-reload-and-failing-closed.md) | M8 | written (slice 5) |
 | 26 | [Choosing a certificate by name (SNI)](26-choosing-a-certificate-by-name.md) | M8 | written (slice 6) |
+| 27 | [Compressing messages safely (permessage-deflate)](27-compressing-messages-safely.md) | M9 | written (slices 1-4) |
 | 28 | [Lifetimes across callbacks (a use-after-free found by review)](28-lifetimes-across-callbacks.md) | M9 | written (security review) |
 
 Lesson template: *Goal → Background (the problem) → Design (why this way) → Walkthrough (code, small steps) → Tests (what proves it works) → Pitfalls → Exercises.*

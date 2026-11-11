@@ -4,10 +4,12 @@
 #include "base/bytes.hpp"
 #include "http/request_parser.hpp"
 #include "protocol/handshake.hpp"
+#include "protocol/permessage_deflate.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 
 namespace wsrv {
@@ -33,6 +35,10 @@ struct HandshakeOutcome {
     /// Accepted only: the Sec-WebSocket-Accept value, kept so a response can be rendered again
     /// later with another subprotocol (the application decides asynchronously, ADR-0018).
     std::string accept_key;
+    /// Accepted only: the permessage-deflate parameters both sides agreed on, if any (ADR-0020).
+    /// The connection builds the session's codecs from them and passes them back when it renders
+    /// the response again, so the Sec-WebSocket-Extensions header is never lost.
+    std::optional<DeflateAgreement> deflate;
 };
 
 /// The opening handshake as a pure function of bytes (ADR-0002): feeds the strict HTTP parser,

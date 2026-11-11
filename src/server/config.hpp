@@ -70,9 +70,10 @@ inline constexpr std::size_t kMaxForwardedHeaderNames = 64;
 /// Check a ServerConfig, including its SessionConfig and HttpLimits. Durations within
 /// (0, 24 h] for the three server timers (each is a mandatory defence: handshake timeout T2,
 /// write stall T3, shutdown grace FR-S5); max_connections in (0, kMaxConfiguredConnections];
-/// HTTP limits non-zero; read budget in (0, ceiling].
-/// @return Error{InvalidConfig} whose context names the offending field. The HandshakeConfig is
-/// not checked here: HandshakeNegotiator validates it when it is constructed.
+/// HTTP limits non-zero; read budget in (0, ceiling]; permessage-deflate set in both places or
+/// in neither (`handshake.permessage_deflate` and `session.deflate`, ADR-0020).
+/// @return Error{InvalidConfig} whose context names the offending field. The rest of the
+/// HandshakeConfig is not checked here: HandshakeNegotiator validates it when it is constructed.
 [[nodiscard]] Result<void> validate(const ServerConfig& config);
 
 /// The number of upgrades that may wait for the application at once: `max_pending_handshakes`,

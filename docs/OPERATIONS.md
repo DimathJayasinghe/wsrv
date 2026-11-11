@@ -44,6 +44,39 @@ format = "json"           # json | text
 
 Hard ceilings (compile-time) cap every limit to prevent dangerous values.
 
+### 1.1 Compression (permessage-deflate, RFC 7692, ADR-0020)
+
+Off by default. Switch it on with `permessage_deflate = true` (library and `wsrvd`; `wsrvd --permessage-deflate=true`). The handler or PHP code still sees whole, inflated messages and sends plain ones; compression happens inside the server. A build without zlib (`WSRV_ENABLE_DEFLATE=OFF`) refuses to start with the switch on instead of silently serving uncompressed.
+
+| Key | Default | Range | Meaning |
+|---|---|---|---|
+| `permessage_deflate` | `false` | bool | Offer the extension to clients that ask for it |
+| `deflate_server_max_window_bits` | `12` | 9..15 | Window of the server's compressor (memory against ratio). 8 is refused: zlib cannot compress with it |
+| `deflate_server_no_context_takeover` | `true` | bool | Reset the compressor after every message: less state, slightly worse ratio |
+| `deflate_level` | `6` | 1..9 | zlib level: CPU against ratio |
+| `deflate_min_size` | `128` | bytes | Shorter outgoing messages are sent uncompressed (always allowed) |
+| `deflate_max_ratio` | `100` | 1..1000 | An incoming message may inflate to at most this many times its compressed size (plus 4 KiB), else the connection is closed with 1009 |
+
+The tuning keys only matter while the switch is on, in any order; a value outside its range makes startup fail with the key's reason.
+
+**Memory per connection.** zlib's own formula (zconf.h): deflate takes `2^(windowBits+2) + 2^(memLevel+9)` bytes plus a few KiB of bookkeeping; inflate takes `2^15` bytes plus a few KiB (our inflater always uses a 15-bit window, which decodes whatever the client's window is). Nothing is allocated until the first compressed message in that direction, and the memory stays with the connection until it closes (the compressor is reset between messages, not freed). A 16 KiB buffer for inflated output is added by the first compressed message received. The send path keeps no buffer between messages.
+
+| Server window | deflate, memLevel 6 (default) | deflate, memLevel 8 (zlib's default) |
+|---|---|---|
+| 9 | 34 KiB | 130 KiB |
+| 10 | 36 KiB | 132 KiB |
+| 11 | 40 KiB | 136 KiB |
+| **12** (default) | **48 KiB** | 144 KiB |
+| 13 | 64 KiB | 160 KiB |
+| 14 | 96 KiB | 192 KiB |
+| 15 | 160 KiB | 256 KiB |
+
+(`memLevel` is not a configuration key: it is 6.) Add 32 KiB for the inflater and 16 KiB for its output buffer when the connection also receives compressed messages. So a connection that sends and receives compressed messages costs about **96 KiB + a few KiB at the defaults** and about 300 KiB at window 15 with memLevel 8. With `max_connections = 10000` and every client compressing, budget about 1 GB at the defaults; this is the number to put into `MemoryMax` and capacity planning, on top of the buffers in section 5.
+
+**Work per read.** The bomb limit is a ratio, so one 64 KiB read (the per-turn read budget) can legitimately inflate to about 6 MB at ratio 100 before the loop turns to the next connection. Real JSON compresses 5 to 20 times: if your messages do, lower `deflate_max_ratio` (for example 30) to shrink the worst case a hostile client can cause per read; the message size limit (`max_message_size`) applies to the inflated bytes regardless.
+
+**Security.** Compressing text that mixes a secret with attacker-influenced data in one message lets an observer of message sizes guess the secret (CRIME/BREACH class): leave compression off for such applications. There is no per-message opt-out yet. Messages sent through the streaming writer (`MessageWriter`) are not compressed.
+
 ## 2. Logging
 
 - Structured, one event per line. Fields: `ts` (RFC 3339 UTC), `level`, `conn` (ID), `peer`, `event`, `code`, `msg`.
@@ -96,7 +129,7 @@ Admin endpoints: `/metrics`, `/healthz` (liveness), `/readyz` (accepting & not s
 | High `loop_lag` | handler profile | blocking user code |
 | Rising outbound queue / slow-consumer drops | per-conn histogram | slow clients, broadcast too large |
 | Many `handshake_failed` | log sample, Origin list | wrong origin config / scanners |
-| Memory growth | pool metrics, deflate on? | context takeover memory, leak (run soak with heaptrack) |
+| Memory growth | pool metrics, deflate on? | zlib state per connection (section 1.1), leak (run soak with heaptrack) |
 | Clients dropping every N seconds | proxy idle timeout vs heartbeat | proxy timeout < ping interval |
 
 ## 7. Running `wsrvd` (the sidecar)
