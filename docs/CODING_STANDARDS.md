@@ -6,7 +6,7 @@ Baseline: **C++ Core Guidelines** (https://isocpp.github.io/CppCoreGuidelines). 
 
 - C++23, no compiler extensions (`CMAKE_CXX_EXTENSIONS OFF`). **[CI]**
 - Warnings (GCC/Clang): `-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Wcast-align -Woverloaded-virtual -Wnull-dereference -Wdouble-promotion -Wformat=2 -Wimplicit-fallthrough -Werror`. **[CI]**
-- Hardening in release: `-D_FORTIFY_SOURCE=3 -fstack-protector-strong -fstack-clash-protection -fcf-protection -fPIE -pie -Wl,-z,relro,-z,now`. **[CI]**
+- Hardening in release: `-D_FORTIFY_SOURCE=3 -D_GLIBCXX_ASSERTIONS` (libc++: `-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST`) `-fstack-protector-strong -fstack-clash-protection -fcf-protection -fPIE -pie -Wl,-z,relro,-z,now`. The library flags turn an out-of-range `std::span`/`vector` index into an abort instead of silent undefined behaviour. **[CI]**
 - No `-fno-exceptions` (user handlers may throw; we catch at the boundary) but no exceptions on internal runtime paths.
 - RTTI allowed but unused in logic (see DESIGN_PATTERNS §5).
 

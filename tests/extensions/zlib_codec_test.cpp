@@ -195,6 +195,35 @@ TEST(ZlibCodec, ByteAtATimeInputAndTinyOutputBuffersGiveTheSameResult) {
     EXPECT_EQ(*back, message);
 }
 
+/// finish() must give the same verdict whatever the output size. A stored block (LEN 4) whose four
+/// data bytes are the very tail the receiver appends (00 00 ff ff) is a valid message ending at a
+/// block boundary. With a 4-byte output buffer the first finish() call is exactly full, and the
+/// second call used to re-read zlib's block-boundary flag, which zlib clears on re-entry: a false
+/// "message ends inside a block".
+TEST(ZlibCodec, FinishGivesTheSameVerdictWhateverTheOutputBufferSize) {
+    const auto stored_header = bytes_of({0x00, 0x04, 0x00, 0xfb, 0xff});  // non-final, LEN 4
+    for (const std::size_t out_size : {std::size_t{1}, std::size_t{4}, std::size_t{5}}) {
+        auto receiver = make_codecs(params());
+        std::vector<std::byte> big(1024);
+        const auto first = receiver.inflater->inflate(stored_header, big);
+        ASSERT_TRUE(first.has_value());
+        ASSERT_EQ(first->produced, 0U);
+        std::vector<std::byte> out(out_size);
+        std::vector<std::byte> all;
+        bool done = false;
+        for (int calls = 0; !done && calls < 16; ++calls) {
+            const auto step = receiver.inflater->finish(out);
+            ASSERT_TRUE(step.has_value())
+                << "out_size " << out_size << ": " << std::string{step.error().context};
+            all.insert(
+                all.end(), out.begin(), out.begin() + static_cast<std::ptrdiff_t>(step->produced));
+            done = step->done;
+        }
+        EXPECT_TRUE(done) << "out_size " << out_size;
+        EXPECT_EQ(all, bytes_of({0x00, 0x00, 0xff, 0xff})) << "out_size " << out_size;
+    }
+}
+
 TEST(ZlibCodec, TheInflaterIsReusableForTheNextMessageAfterFinish) {
     auto sender = make_codecs(params());
     auto receiver = make_codecs(params());

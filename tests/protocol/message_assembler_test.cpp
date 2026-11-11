@@ -511,6 +511,45 @@ TEST(MessageAssembler, StaysFailedUntilReset) {
     EXPECT_TRUE(assembler.handle(header).has_value());
 }
 
+/// A handler may close() from inside its callback; the session then discards the message while the
+/// handler still reads the view it was given. The view must survive until the next handle(), and
+/// the NEXT message must still arrive intact (the deferred clear must not eat it). 20 KiB is above
+/// ByteBuffer's retained capacity, so a premature clear would free the storage (ASan).
+TEST(MessageAssembler, ADeliveredViewSurvivesDiscardMessageUntilTheNextHandle) {
+    wsrv::FrameParser parser;
+    wsrv::MessageAssembler assembler{buffered()};
+    const std::string first(20 * 1024, 'k');
+    const std::string second = "next";
+    auto bytes = wire({Spec{Opcode::Text, true, first}, Spec{Opcode::Text, true, second}});
+    wsrv::MutableByteView input{bytes};
+    std::optional<MessageEvent> delivered;
+    std::vector<std::string> texts;
+    bool discarded = false;
+    for (;;) {
+        const auto frame_event = parser.next(input);
+        ASSERT_TRUE(frame_event.has_value());
+        if (!frame_event->has_value()) {
+            break;
+        }
+        const auto step = assembler.handle(**frame_event);
+        ASSERT_TRUE(step.has_value());
+        if (!step->has_value()) {
+            continue;
+        }
+        delivered = **step;
+        if (!discarded) {
+            assembler.discard_message();  // what ProtocolSession::begin_close does
+            discarded = true;
+            EXPECT_EQ(std::string{wsrv::as_chars(delivered->data)}, first);  // still valid
+            continue;
+        }
+        texts.emplace_back(wsrv::as_chars(delivered->data));
+    }
+    ASSERT_TRUE(discarded);
+    ASSERT_EQ(texts.size(), 1U);
+    EXPECT_EQ(texts[0], second);  // the deferred clear ran before this message, not during it
+}
+
 // ---- property: any fragmentation and any chunking
 // -------------------------------------------------------
 

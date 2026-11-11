@@ -141,10 +141,13 @@ namespace {
 
 namespace {
 
-/// RSV1 is legal on the first frame of a data message exactly when permessage-deflate was agreed.
+/// RSV1 is legal on the first frame of a data message exactly when permessage-deflate was agreed
+/// (RFC 7692 section 6). The flag is derived from `deflate` and from nothing else: a caller's own
+/// `parser.allow_rsv1` is overwritten, because RSV1 accepted without an inflater would hand
+/// compressed bytes to the application as plain data.
 [[nodiscard]] FrameParserConfig parser_config(const SessionConfig& config) {
     FrameParserConfig parser = config.parser;
-    parser.allow_rsv1 = parser.allow_rsv1 || config.deflate.has_value();
+    parser.allow_rsv1 = config.deflate.has_value();
     return parser;
 }
 
@@ -291,6 +294,13 @@ std::optional<SessionEvent> ProtocolSession::on_compressed_frame(const FrameEven
         return feed_assembler(FrameEvent{frame.kind, inflated_header(frame.header), {}}, frame);
     }
     case FrameEvent::Kind::Payload:
+        // The ratio base is what the peer has SENT, credited when it arrives. Counting what zlib
+        // has consumed instead made the limit depend on the order of the content (zeros first
+        // consume almost nothing) and refused honest messages; the bound is unchanged: all of this
+        // chunk is consumed before the next one is credited.
+        inflate_.compressed_in =
+            checked_add<std::uint64_t>(inflate_.compressed_in, frame.payload.size())
+                .value_or(std::numeric_limits<std::uint64_t>::max());
         inflate_.pending = frame.payload;
         inflate_.phase = InflatePhase::Payload;
         return run_inflate();
@@ -315,7 +325,9 @@ std::optional<SessionEvent> ProtocolSession::inflate_failure(const Error& error)
 /// piece produces an event; the phase and `pending` remember where to resume (pump() calls again).
 std::optional<SessionEvent> ProtocolSession::run_inflate() {
     const FrameHeader header = inflated_header(inflate_.header);
-    const FrameEvent real{FrameEvent::Kind::End, inflate_.header, {}};
+    // The frame is still on the wire while pieces come out of it, so the timer sees a Payload
+    // event here; the real End is reported by end_inflated_frame() (see track_message()).
+    const FrameEvent real{FrameEvent::Kind::Payload, inflate_.header, {}};
     while (inflate_.phase != InflatePhase::Idle) {
         if (inflate_.phase == InflatePhase::End) {
             return end_inflated_frame();
@@ -344,9 +356,9 @@ std::optional<SessionEvent> ProtocolSession::run_inflate() {
 }
 
 /// One call into the inflater for the current phase, then the bookkeeping of what it used:
-/// `compressed_in` feeds the ratio limit, `pending` is where the next call resumes, and the phase
-/// moves on when this frame's input is used up with no output waiting (Payload -> Idle) or the
-/// inflater says the message is complete (Finish -> End).
+/// `pending` is where the next call resumes, and the phase moves on when this frame's input is
+/// used up with no output waiting (Payload -> Idle) or the inflater says the message is complete
+/// (Finish -> End).
 Result<InflateStep> ProtocolSession::inflate_step() {
     IMessageInflater& inflater = *active_codecs().inflater;
     const bool finishing = inflate_.phase == InflatePhase::Finish;
@@ -356,7 +368,9 @@ Result<InflateStep> ProtocolSession::inflate_step() {
     if (!step) {
         return step;
     }
-    inflate_.compressed_in += step->consumed;
+    if (!inflate_step_is_sound(*step, finishing)) {
+        return fail(ErrorCode::InvalidArgument, "deflate: the inflater broke its contract");
+    }
     inflate_.pending = inflate_.pending.subspan(step->consumed);
     if (finishing) {
         if (step->done) {
@@ -366,6 +380,26 @@ Result<InflateStep> ProtocolSession::inflate_step() {
         inflate_.phase = InflatePhase::Idle;
     }
     return step;
+}
+
+/// The codecs are injected, so what an inflater reports is checked, not trusted: the numbers
+/// index the input and the output buffer (out of range would be undefined behaviour, and release
+/// builds have no library assertions), and a call that neither takes input, nor produces output,
+/// nor finishes would make run_inflate() spin for ever. finish() takes no caller input, so only
+/// its output and progress are checked. Both are defects of the codec, not of the peer: the
+/// caller closes the connection with 1011.
+bool ProtocolSession::inflate_step_is_sound(const InflateStep& step, bool finishing) const {
+    if (step.produced > inflate_buffer_.size()) {
+        return false;
+    }
+    if (finishing) {
+        return step.produced != 0 || step.done;
+    }
+    if (step.consumed > inflate_.pending.size()) {
+        return false;
+    }
+    const bool input_waiting = !inflate_.pending.empty();
+    return step.consumed != 0 || step.produced != 0 || !input_waiting;
 }
 
 /// SECURITY_DESIGN T6: the inflated size may not outgrow the compressed size by more than the
@@ -448,6 +482,7 @@ std::optional<SessionEvent> ProtocolSession::on_peer_close(ByteView payload) {
 /// peer from now on (RFC 6455 section 7.1.7 "Fail the WebSocket Connection").
 std::optional<SessionEvent> ProtocolSession::fail_connection(const ProtocolFailure& failure) {
     failed_ = true;
+    inflate_ = InflateState{};  // nothing more is read; do not keep a view into the caller's input
     failure_reason_ = failure.reason;
     failure_close_sent_ = !close_sent_;
     if (!close_sent_) {
@@ -564,20 +599,29 @@ Result<void> ProtocolSession::send_message(Opcode text_or_binary, ByteView data)
         return out_.enqueue_message(text_or_binary, data);
     }
     if (const Result<void> room = out_.can_enqueue(compressed_bound(data.size())); !room) {
-        if (room.error().code != ErrorCode::BufferFull) {
-            return room;
+        const ErrorCode why = room.error().code;
+        if (why != ErrorCode::BufferFull && why != ErrorCode::Backpressure) {
+            return room;  // closing, or a streamed message is open: plain would be refused too
         }
-        // The worst case of compression would not fit, the plain message might: send it plain.
-        if (const Result<void> plain = out_.can_enqueue(data.size()); !plain) {
-            return plain;
-        }
+        // The worst case of compression does not fit (never, or not now); the message itself might.
+        // Uncompressed is always allowed (EC-D07), and the compressor never saw it, so the peer's
+        // history stays in step. If it does not fit either, enqueue_message reports that verdict.
         return out_.enqueue_message(text_or_binary, data);
     }
+    const Result<void> sent = send_compressed(text_or_binary, data);
+    // Release the buffer on every path: an idle connection must not keep compression memory that a
+    // peer can make it allocate by asking for big messages (zlib's own state is the only
+    // per-connection cost of an idle compressed connection).
+    std::vector<std::byte>().swap(deflate_scratch_);
+    return sent;
+}
+
+/// Compress `data` into the scratch buffer and queue it; the room was checked by the caller.
+Result<void> ProtocolSession::send_compressed(Opcode text_or_binary, ByteView data) {
     if (const Result<void> ready = ensure_codecs(); !ready) {
         compress_disabled_ = true;  // nothing was compressed yet: plain is consistent
         return out_.enqueue_message(text_or_binary, data);
     }
-    deflate_scratch_.clear();
     const Result<void> compressed = active_codecs().deflater->deflate(data, deflate_scratch_);
     if (!compressed) {
         compress_disabled_ = true;  // the compressor's history is in doubt: never use it again
@@ -592,9 +636,6 @@ Result<void> ProtocolSession::send_message(Opcode text_or_binary, ByteView data)
                                     : out_.enqueue_message(text_or_binary, deflate_scratch_, true);
     if (!queued && !plain_is_better) {
         compress_disabled_ = true;  // compressed but not queued: history diverged from the peer's
-    }
-    if (deflate_scratch_.capacity() > 4 * kInflatePiece) {
-        std::vector<std::byte>{}.swap(deflate_scratch_);  // do not keep a big buffer per connection
     }
     return queued;
 }

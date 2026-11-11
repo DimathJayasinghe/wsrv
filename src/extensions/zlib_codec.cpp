@@ -105,6 +105,11 @@ public:
         }
         tail_fed_ += result->consumed;
         step.produced = result->produced;  // `consumed` counts our own bytes: not reported
+        if (result->consumed != 0 || result->produced != 0) {
+            // zlib clears the boundary flag when it is entered again with nothing to do, so the
+            // verdict is taken from the last call that moved, whatever the output buffer size.
+            at_boundary_ = (stream_.data_type & kAtBlockBoundary) != 0;
+        }
         if (stream_ended_) {
             end_message();
             step.done = true;
@@ -112,7 +117,7 @@ public:
         }
         if (tail_fed_ == kTail.size() && step.produced < out.size()) {
             // All input used and no output waiting: the message must have ended between blocks.
-            if ((stream_.data_type & kAtBlockBoundary) == 0) {
+            if (!at_boundary_) {
                 return fail(ErrorCode::InvalidCompressedData,
                             "deflate: message ends inside a block");
             }
@@ -177,12 +182,14 @@ private:
         }
         stream_ended_ = false;
         tail_fed_ = 0;
+        at_boundary_ = false;
     }
 
     z_stream stream_{};
     bool no_context_takeover_;
     bool initialised_ = false;
     bool stream_ended_ = false;
+    bool at_boundary_ = false;  // finish(): zlib stood between blocks after its last useful call
     std::size_t tail_fed_ = 0;
 };
 
