@@ -102,7 +102,7 @@ At every **frame boundary** the scheduler picks from the control queue first; a 
 
 ### 2.4 Broadcast and compression
 - Broadcast frames are built once and shared (`shared_ptr<const FrameList>`); with auto-fragmentation the shared object is the whole fragment list (immutable), so N subscribers cost zero extra framing/copies. A slow subscriber's queue limit applies independently (EC-N10).
-- permessage-deflate (RFC 7692): compress the **whole message first**, then fragment the compressed bytes; `RSV1` is set on the first frame only (EC-D02). Streaming writers use a flushed deflate block per `write` only if `no_context_takeover` is negotiated; otherwise the compressor state is carried per connection (memory-budgeted, EC-D05).
+- permessage-deflate (RFC 7692): compress the **whole message first**, then fragment the compressed bytes; `RSV1` is set on the first frame only (EC-D02). Messages sent through the streaming writer (`MessageWriter`) are **not compressed** (ADR-0020 section 5): a stream is not known in advance, and the whole-message rule above is what keeps the compressor's history in step with the peer's. Compressing streams, and compressing a broadcast once for all subscribers, are follow-ups (M10). The compressor state of the buffered sends is per connection and memory-budgeted (EC-D05, `docs/OPERATIONS.md` section 1.1).
 
 ## 3. API summary (additions)
 
