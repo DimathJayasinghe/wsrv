@@ -57,6 +57,11 @@ wsrv_add_test(NAME capi_host_bridge_test SOURCES capi/host_bridge_test.cpp LINK 
 wsrv_add_test(NAME capi_handshake_blob_test SOURCES capi/handshake_blob_test.cpp LINK wsrv::capi)
 wsrv_add_test(NAME capi_embedded_config_test SOURCES capi/embedded_config_test.cpp LINK wsrv::capi)
 wsrv_add_test(NAME capi_embedded_server_test SOURCES capi/embedded_server_test.cpp LINK wsrv::capi)
+if(WSRV_ENABLE_DEFLATE)
+    target_compile_definitions(capi_embedded_server_test PRIVATE WSRV_TEST_HAS_DEFLATE=1)
+    wsrv_add_test(NAME capi_embedded_deflate_test SOURCES capi/embedded_deflate_test.cpp
+                  LINK wsrv::capi wsrv::extensions)
+endif()
 if(WSRV_ENABLE_TLS)
     target_compile_definitions(capi_embedded_server_test PRIVATE WSRV_TEST_HAS_TLS=1)
     wsrv_add_test(NAME capi_embedded_tls_test SOURCES capi/embedded_tls_test.cpp

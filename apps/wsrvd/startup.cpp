@@ -79,6 +79,12 @@ std::string_view usage() noexcept {
            "  --config=FILE              read 'key = value' lines (later arguments override)\n"
            "  --listen-host=ADDR  --listen-port=PORT  --threads=N  --allow-origin=ORIGIN\n"
            "  --max-message-size=BYTES  --max-connections=N  --shutdown-grace-ms=MS\n"
+           "  --permessage-deflate=true  compress messages (RFC 7692; off by default, costs memory\n"
+           "                             per connection: see docs/OPERATIONS.md); tuning, only used\n"
+           "                             with the switch on:\n"
+           "  --deflate-server-max-window-bits=9..15 (12)  --deflate-level=1..9 (6)\n"
+           "  --deflate-server-no-context-takeover=BOOL (true)  --deflate-min-size=BYTES (128)\n"
+           "  --deflate-max-ratio=1..1000 (100)  inflated size limit, times the compressed size\n"
            "\n"
            "The token is never accepted on the command line: it would show in `ps`.\n";
 }

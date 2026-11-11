@@ -43,6 +43,13 @@ struct TlsSniSetting {
 /// tls_sni (repeatable "name=cert_file:key_file", at most 64: a certificate for one host name or
 /// one
 /// "*.example.com" wildcard; the paths must not contain a colon).
+/// and for permessage-deflate (ADR-0020 section 6, off by default): permessage_deflate (bool),
+/// deflate_server_max_window_bits (9..15, default 12), deflate_server_no_context_takeover (bool,
+/// default true), deflate_level (1..9, default 6), deflate_min_size (bytes, default 128),
+/// deflate_max_ratio (1..1000, default 100). The tuning keys only matter once permessage_deflate is
+/// true, in any order; set() checks the number is well formed and fits its field, the ranges are
+/// checked where the settings are used (ServerBuilder::build). A build without zlib refuses to
+/// start with permessage_deflate=true instead of quietly serving uncompressed.
 /// max_message_size also sizes the outbound queue at twice that, so a message that can be received
 /// can be sent back (as in the echo example).
 /// Thread-affinity: not thread-safe; configure on one thread before starting.
@@ -84,6 +91,15 @@ public:
         return !tls_cert_.empty() || !tls_key_.empty() || !tls_sni_.empty();
     }
 
+    /// permessage-deflate (ADR-0020): asked for with permessage_deflate=true; the options are the
+    /// tuning keys' values (defaults until set) and only apply when it is on.
+    [[nodiscard]] bool permessage_deflate() const noexcept {
+        return deflate_enabled_;
+    }
+    [[nodiscard]] const DeflateOptions& deflate_options() const noexcept {
+        return deflate_;
+    }
+
     /// Copy the listen address and the server settings into `builder`.
     void apply_to(ServerBuilder& builder) const;
 
@@ -105,6 +121,12 @@ private:
     [[nodiscard]] Result<void> set_tls_cert(std::string_view value);
     [[nodiscard]] Result<void> set_tls_key(std::string_view value);
     [[nodiscard]] Result<void> add_tls_sni(std::string_view value);
+    [[nodiscard]] Result<void> set_permessage_deflate(std::string_view value);
+    [[nodiscard]] Result<void> set_deflate_server_max_window_bits(std::string_view value);
+    [[nodiscard]] Result<void> set_deflate_server_no_context_takeover(std::string_view value);
+    [[nodiscard]] Result<void> set_deflate_level(std::string_view value);
+    [[nodiscard]] Result<void> set_deflate_min_size(std::string_view value);
+    [[nodiscard]] Result<void> set_deflate_max_ratio(std::string_view value);
 
     std::string host_ = "127.0.0.1";  // loopback unless the operator opts into exposure
     std::uint16_t port_ = 0;
@@ -114,6 +136,8 @@ private:
     std::string tls_cert_;
     std::string tls_key_;
     std::vector<TlsSniSetting> tls_sni_;
+    bool deflate_enabled_ = false;
+    DeflateOptions deflate_;  ///< tuning; used only when deflate_enabled_
 };
 
 }  // namespace wsrv

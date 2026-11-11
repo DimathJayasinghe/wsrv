@@ -103,4 +103,17 @@ TEST_F(StartupTest, BadInputIsRefusedBeforeAnythingStarts) {
     EXPECT_FALSE(run({"--ipc-socket=/run/x.sock", "--ipc-token=s3cret"}).has_value());
 }
 
+TEST(Usage, NamesThePermessageDeflateFlagsAndSaysItIsOffByDefault) {  // ADR-0020 section 6
+    const std::string_view text = wsrv::wsrvd::usage();
+    for (const char* flag : {"--permessage-deflate",
+                             "--deflate-level",
+                             "--deflate-min-size",
+                             "--deflate-max-ratio",
+                             "--deflate-server-max-window-bits",
+                             "--deflate-server-no-context-takeover"}) {
+        EXPECT_NE(text.find(flag), std::string_view::npos) << flag;
+    }
+    EXPECT_NE(text.find("off by default"), std::string_view::npos);
+}
+
 }  // namespace

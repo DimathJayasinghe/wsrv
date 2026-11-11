@@ -112,6 +112,23 @@ WSRV_API void wsrv_config_free(wsrv_config *config); /* NULL is fine */
  *                        wildcards. Clients that send no name, an unknown name or a malformed one
  *                        get the tls_cert certificate (never an error). Needs tls_cert and tls_key.
  *                        The paths must not contain ':'. Reloaded with the rest.
+ *   permessage_deflate   "true"/"false"/"1"/"0", default false. Offer permessage-deflate (RFC 7692)
+ *                        to clients that ask for it. Your handlers still see whole, inflated
+ *                        messages and send plain ones; compression happens inside the server.
+ *                        Costs CPU and memory per connection (see docs/OPERATIONS.md) and mixing
+ *                        secrets with attacker-controlled text in one message is risky
+ *                        (CRIME/BREACH class), so it is opt-in. A build without zlib makes the
+ *                        start fail with WSRV_ERR_INVALID_CONFIG; it never falls back silently.
+ *   deflate_server_max_window_bits  9..15, default 12: window of the server's compressor.
+ *   deflate_server_no_context_takeover  boolean, default true: reset the compressor after each
+ *                        message (less memory and CPU state, slightly worse ratio).
+ *   deflate_level        1..9, default 6: zlib level (CPU against ratio).
+ *   deflate_min_size     bytes, default 128: shorter outgoing messages are sent uncompressed.
+ *   deflate_max_ratio    1..1000, default 100: an incoming message may inflate to at most this
+ *                        many times its compressed size (plus a small allowance), else the
+ *                        connection is closed with 1009. The deflate_* keys are only used when
+ *                        permessage_deflate is true (any order); a value outside its range makes
+ *                        wsrv_server_start() fail with WSRV_ERR_INVALID_CONFIG.
  * Any thread, but not concurrently with another call on the same config. */
 WSRV_API wsrv_status wsrv_config_set(wsrv_config *config,
                                      const char *key,

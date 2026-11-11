@@ -83,6 +83,14 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
         KeyEntry{"tls_cert", &EmbeddedConfig::set_tls_cert},
         KeyEntry{"tls_key", &EmbeddedConfig::set_tls_key},
         KeyEntry{"tls_sni", &EmbeddedConfig::add_tls_sni},
+        KeyEntry{"permessage_deflate", &EmbeddedConfig::set_permessage_deflate},
+        KeyEntry{"deflate_server_max_window_bits",
+                 &EmbeddedConfig::set_deflate_server_max_window_bits},
+        KeyEntry{"deflate_server_no_context_takeover",
+                 &EmbeddedConfig::set_deflate_server_no_context_takeover},
+        KeyEntry{"deflate_level", &EmbeddedConfig::set_deflate_level},
+        KeyEntry{"deflate_min_size", &EmbeddedConfig::set_deflate_min_size},
+        KeyEntry{"deflate_max_ratio", &EmbeddedConfig::set_deflate_max_ratio},
     };
     for (const KeyEntry& entry : kKeys) {
         if (entry.name == key) {
@@ -95,6 +103,9 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
 void EmbeddedConfig::apply_to(ServerBuilder& builder) const {
     builder.listen(host_, port_);
     builder.config() = server_;
+    if (deflate_enabled_) {
+        builder.permessage_deflate(deflate_);  // build() checks the ranges and the zlib build
+    }
 }
 
 Result<void> EmbeddedConfig::set_listen_host(std::string_view value) {
@@ -283,6 +294,65 @@ Result<void> EmbeddedConfig::add_tls_sni(std::string_view value) {
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::ResourceExhausted, "config: out of memory");
     }
+    return {};
+}
+
+// ---- permessage-deflate (ADR-0020 section 6) ----------------------------------------------------
+
+Result<void> EmbeddedConfig::set_permessage_deflate(std::string_view value) {
+    const std::optional<bool> flag = parse_bool(value);
+    if (!flag) {
+        return fail(ErrorCode::InvalidConfig, "config: a boolean is true, false, 1 or 0");
+    }
+    deflate_enabled_ = *flag;
+    return {};
+}
+
+// A window or level is read as an unsigned byte: "-1", "256" and "x" are refused here, so the
+// value that reaches the int field has not wrapped. Whether it is in range is build()'s verdict.
+Result<void> EmbeddedConfig::set_deflate_server_max_window_bits(std::string_view value) {
+    const auto bits = parse_number<std::uint8_t>(value);
+    if (!bits) {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: deflate_server_max_window_bits needs a number");
+    }
+    deflate_.policy.server_max_window_bits = *bits;
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_deflate_server_no_context_takeover(std::string_view value) {
+    const std::optional<bool> flag = parse_bool(value);
+    if (!flag) {
+        return fail(ErrorCode::InvalidConfig, "config: a boolean is true, false, 1 or 0");
+    }
+    deflate_.policy.server_no_context_takeover = *flag;
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_deflate_level(std::string_view value) {
+    const auto level = parse_number<std::uint8_t>(value);
+    if (!level) {
+        return fail(ErrorCode::InvalidConfig, "config: deflate_level needs a number");
+    }
+    deflate_.level = *level;
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_deflate_min_size(std::string_view value) {
+    const Result<std::size_t> number = parse_size(value, "config: deflate_min_size needs a number");
+    if (!number) {
+        return std::unexpected{number.error()};
+    }
+    deflate_.min_compress_size = *number;
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_deflate_max_ratio(std::string_view value) {
+    const auto ratio = parse_number<std::uint32_t>(value);
+    if (!ratio) {
+        return fail(ErrorCode::InvalidConfig, "config: deflate_max_ratio needs a number");
+    }
+    deflate_.max_inflate_ratio = *ratio;
     return {};
 }
 

@@ -146,6 +146,69 @@ TEST(EmbeddedConfig, TheEventQueueLimitsAreCheckedWhenTheQueueIsBuiltNotHere) {
     EXPECT_EQ(config.queue().max_events, 1U);
 }
 
+TEST(EmbeddedConfig, PermessageDeflateIsOffByDefaultAndItsKeysAreStored) {  // ADR-0020 section 6
+    EmbeddedConfig config;
+    EXPECT_FALSE(config.permessage_deflate()) << "compression is opt-in (CRIME/BREACH class risk)";
+    ASSERT_TRUE(config.set("permessage_deflate", "true").has_value());
+    ASSERT_TRUE(config.set("deflate_server_max_window_bits", "11").has_value());
+    ASSERT_TRUE(config.set("deflate_server_no_context_takeover", "false").has_value());
+    ASSERT_TRUE(config.set("deflate_level", "3").has_value());
+    ASSERT_TRUE(config.set("deflate_min_size", "256").has_value());
+    ASSERT_TRUE(config.set("deflate_max_ratio", "50").has_value());
+    EXPECT_TRUE(config.permessage_deflate());
+    const DeflateOptions& options = config.deflate_options();
+    EXPECT_EQ(options.policy.server_max_window_bits, 11);
+    EXPECT_FALSE(options.policy.server_no_context_takeover);
+    EXPECT_EQ(options.level, 3);
+    EXPECT_EQ(options.min_compress_size, 256U);
+    EXPECT_EQ(options.max_inflate_ratio, 50U);
+}
+
+TEST(EmbeddedConfig, TheDeflateDefaultsAreTheAdrDefaults) {  // ADR-0020 section 3
+    EmbeddedConfig config;
+    ASSERT_TRUE(config.set("permessage_deflate", "1").has_value());
+    const DeflateOptions& options = config.deflate_options();
+    EXPECT_TRUE(options.policy.server_no_context_takeover);
+    EXPECT_EQ(options.policy.server_max_window_bits, 12);
+    EXPECT_EQ(options.level, 6);
+    EXPECT_EQ(options.min_compress_size, 128U);
+    EXPECT_EQ(options.max_inflate_ratio, 100U);
+}
+
+TEST(EmbeddedConfig, DeflateTuningKeysDoNotDependOnTheOrderTheyAreGivenIn) {
+    EmbeddedConfig config;
+    ASSERT_TRUE(config.set("deflate_level", "9").has_value());  // before the switch
+    ASSERT_TRUE(config.set("permessage_deflate", "true").has_value());
+    EXPECT_EQ(config.deflate_options().level, 9);
+    ASSERT_TRUE(config.set("permessage_deflate", "false").has_value());
+    EXPECT_FALSE(config.permessage_deflate());
+    EXPECT_EQ(config.deflate_options().level, 9) << "switching off keeps the tuning";
+}
+
+TEST(EmbeddedConfig, MalformedDeflateValuesAreRefusedAndChangeNothing) {
+    EmbeddedConfig config;
+    // Each value must fit the field it is stored in: a wrapped number would be a silent setting.
+    for (const char* key : {"deflate_server_max_window_bits", "deflate_level"}) {
+        for (const char* bad : {"", "x", "-1", " 9", "256", "99999999999999999999"}) {
+            const Result<void> set = config.set(key, bad);
+            ASSERT_FALSE(set.has_value()) << key << " '" << bad << "'";
+            EXPECT_EQ(set.error().code, ErrorCode::InvalidConfig);
+        }
+    }
+    for (const char* bad : {"", "-1", "4294967296", "1e2"}) {
+        EXPECT_FALSE(config.set("deflate_max_ratio", bad).has_value()) << "'" << bad << "'";
+    }
+    EXPECT_FALSE(config.set("deflate_min_size", "-1").has_value());
+    EXPECT_FALSE(config.set("permessage_deflate", "yes").has_value());
+    EXPECT_FALSE(config.set("deflate_server_no_context_takeover", "maybe").has_value());
+    const DeflateOptions defaults;
+    EXPECT_FALSE(config.permessage_deflate());
+    EXPECT_EQ(config.deflate_options().level, defaults.level);
+    EXPECT_EQ(config.deflate_options().max_inflate_ratio, defaults.max_inflate_ratio);
+    EXPECT_EQ(config.deflate_options().policy.server_max_window_bits,
+              defaults.policy.server_max_window_bits);
+}
+
 TEST(EmbeddedConfig, TheHandshakeHookIsOffByDefaultAndItsKeysAreChecked) {  // ADR-0018
     EmbeddedConfig config;
     EXPECT_FALSE(config.handshake_hook());
