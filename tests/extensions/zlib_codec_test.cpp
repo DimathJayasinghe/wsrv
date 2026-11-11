@@ -213,11 +213,10 @@ TEST(ZlibCodec, FinishGivesTheSameVerdictWhateverTheOutputBufferSize) {
         bool done = false;
         for (int calls = 0; !done && calls < 16; ++calls) {
             const auto step = receiver.inflater->finish(out);
-            ASSERT_TRUE(step.has_value()) << "out_size " << out_size << ": "
-                                          << std::string{step.error().context};
-            all.insert(all.end(),
-                       out.begin(),
-                       out.begin() + static_cast<std::ptrdiff_t>(step->produced));
+            ASSERT_TRUE(step.has_value())
+                << "out_size " << out_size << ": " << std::string{step.error().context};
+            all.insert(
+                all.end(), out.begin(), out.begin() + static_cast<std::ptrdiff_t>(step->produced));
             done = step->done;
         }
         EXPECT_TRUE(done) << "out_size " << out_size;
