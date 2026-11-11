@@ -4,7 +4,7 @@
 // backend of the browser demo (examples/demo).
 //
 //   echo [--host IP] [--port N] [--threads N] [--allow-origin URL]... [--allow-missing-origin]
-//        [--tls-cert FILE --tls-key FILE] [--autobahn]
+//        [--tls-cert FILE --tls-key FILE] [--deflate] [--autobahn]
 #include "base/logger.hpp"
 #include "server/server_builder.hpp"
 
@@ -34,19 +34,21 @@ struct Options {
     std::vector<std::string> allowed_origins;
     bool allow_missing_origin = false;  // non-browser clients (Autobahn, curl-like tools)
     bool autobahn = false;
+    bool deflate = false;  // offer permessage-deflate (RFC 7692, ADR-0020)
     std::string tls_cert;  // both set = serve wss:// (ADR-0019)
     std::string tls_key;
 };
 
 constexpr std::string_view kUsage =
     "usage: echo [--host IP] [--port N] [--threads N] [--allow-origin URL]... "
-    "[--allow-missing-origin] [--tls-cert FILE --tls-key FILE] [--autobahn]\n"
+    "[--allow-missing-origin] [--tls-cert FILE --tls-key FILE] [--deflate] [--autobahn]\n"
     "  --threads N              event loops, one thread each (default 1)\n"
     "  --allow-origin URL       accept browsers on this Origin (repeatable), e.g. "
     "http://localhost:8000\n"
     "  --allow-missing-origin   accept clients that send no Origin header\n"
     "  --tls-cert FILE          serve wss://: PEM certificate chain (needs --tls-key)\n"
     "  --tls-key FILE           PEM private key, not readable by others\n"
+    "  --deflate                offer permessage-deflate (RFC 7692); off by default\n"
     "  --autobahn               raise size and rate limits for the conformance suite (test use "
     "only)\n";
 
@@ -103,6 +105,8 @@ std::optional<Options> parse_args(const std::vector<std::string_view>& args) {
             options.allow_missing_origin = true;
         } else if (args[i] == "--autobahn") {
             options.autobahn = true;
+        } else if (args[i] == "--deflate") {
+            options.deflate = true;
         } else if (i + 1 >= args.size()) {
             report_unknown(args[i]);
             return std::nullopt;
@@ -160,6 +164,9 @@ wsrv::ServerBuilder make_builder(const Options& options, EchoFactory& factory) {
     config.session.outbound.max_queued_bytes = 2 * config.session.assembler.max_message_size;
     if (options.autobahn) {
         raise_limits_for_autobahn(config);
+    }
+    if (options.deflate) {
+        builder.permessage_deflate(wsrv::DeflateOptions{});  // library defaults, ratio included
     }
     return builder;
 }
