@@ -162,6 +162,11 @@ bool HostBridge::unpark(ConnectionId id) {
 
 /// Resume every parked connection. Their handles are copied out first so that no call into a
 /// loop happens under the mutex; a connection that ended meanwhile is simply not found.
+///
+/// A resume the loop refuses (its task queue is full: BufferFull, or out of memory) is not lost:
+/// the connection goes back to the parked set and the next poll() tries again. Forgetting it would
+/// leave the connection read-paused until the idle or pong timer ended it. Only Closing means "it
+/// is gone, nothing to resume".
 void HostBridge::resume_parked() {
     std::vector<SessionHandle> to_resume;
     {
@@ -173,8 +178,20 @@ void HostBridge::resume_parked() {
         }
         parked_.clear();
     }
+    std::vector<ConnectionId> refused;
     for (const SessionHandle& handle : to_resume) {
-        static_cast<void>(handle.resume_reads().has_value());  // Closing: it ended, nothing to do
+        const Result<void> resumed = handle.resume_reads();
+        if (!resumed && resumed.error().code != ErrorCode::Closing) {
+            refused.push_back(handle.id());
+        }
+    }
+    if (!refused.empty()) {
+        const std::lock_guard lock{mutex_};
+        for (const ConnectionId id : refused) {
+            if (handles_.contains(id)) {  // it may have ended meanwhile (remove() erased it)
+                parked_.insert(id);
+            }
+        }
     }
 }
 

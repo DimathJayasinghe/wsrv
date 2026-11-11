@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -83,7 +84,39 @@ private:
     std::vector<wsrv::SessionHandle> handles_;
 };
 
-wsrv::ServerBuilder builder_for(RecordingFactory& factory, std::size_t threads) {
+/// Counts what the host would see: one Open and, owed for every Open, exactly one Close.
+class CountingFactory final : public wsrv::IHandlerFactory {
+public:
+    std::unique_ptr<wsrv::IWebSocketHandler> create(const wsrv::ConnectionInfo& /*info*/) override {
+        return std::make_unique<Handler>(*this);
+    }
+    [[nodiscard]] std::size_t opened() const {
+        return opened_.load();
+    }
+    [[nodiscard]] std::size_t closed() const {
+        return closed_.load();
+    }
+
+private:
+    class Handler final : public wsrv::IWebSocketHandler {
+    public:
+        explicit Handler(CountingFactory& owner) : owner_{owner} {}
+        void on_open(Session& /*session*/) override {
+            owner_.opened_.fetch_add(1);
+        }
+        void on_close(Session& /*session*/, const wsrv::CloseInfo& /*info*/) override {
+            owner_.closed_.fetch_add(1);
+        }
+
+    private:
+        CountingFactory& owner_;
+    };
+
+    std::atomic<std::size_t> opened_{0};
+    std::atomic<std::size_t> closed_{0};
+};
+
+wsrv::ServerBuilder builder_for(wsrv::IHandlerFactory& factory, std::size_t threads) {
     wsrv::ServerBuilder builder;
     builder.listen("127.0.0.1", 0).handler_factory(factory);
     builder.config().threads = threads;
@@ -193,6 +226,37 @@ TEST(MultiLoop, StopEndsEveryLoopEvenWithClientsConnected) {
     for (const auto& client : clients) {
         EXPECT_TRUE(client->wait_for_eof());
     }
+}
+
+// FR-S2 / wsrv.h: every Open is followed by exactly one Close, also when the server is cut short.
+// The reviewer's claim (read from the code, never run): a forced shutdown reports the Close of the
+// connections on loop 0 only; the other loops destroy theirs silently.
+TEST(MultiLoop, AForcedShutdownReportsTheCloseOfEveryConnectionOnEveryLoop) {
+    CountingFactory factory;
+    wsrv::ServerBuilder builder = builder_for(factory, 3);
+    builder.config().shutdown_grace = 100ms;
+    RunningServer running{builder};
+    auto clients = connect_clients(running, 6);  // two per loop, round-robin
+    ASSERT_TRUE(eventually([&] { return factory.opened() == 6; }));
+    ASSERT_TRUE(running.server().request_shutdown().has_value());
+    for (const auto& client : clients) {
+        ASSERT_TRUE(client->read_frame().has_value());  // the 1001, ignored
+    }
+    ASSERT_TRUE(eventually([&] { return running.finished(); }));  // run() returned: loops are gone
+    EXPECT_EQ(factory.closed(), factory.opened());
+}
+
+TEST(MultiLoop, StopReportsTheCloseOfEveryConnectionOnEveryLoop) {
+    CountingFactory factory;
+    {
+        RunningServer running{builder_for(factory, 3)};
+        auto clients = connect_clients(running, 6);
+        ASSERT_TRUE(eventually([&] { return factory.opened() == 6; }));
+        running.server()
+            .stop();  // what EmbeddedServer::stop does when the loop cannot take a request
+        ASSERT_TRUE(eventually([&] { return running.finished(); }));
+    }  // the server object is gone: loop 0's shard died with it, the workers' when run() returned
+    EXPECT_EQ(factory.closed(), factory.opened());
 }
 
 TEST(MultiLoop, AServerThatNeverRunsIsDestroyedCleanly) {

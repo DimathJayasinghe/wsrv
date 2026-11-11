@@ -124,6 +124,7 @@ private:
 
     // reading
     void on_readable();
+    void on_read_failed(const Error& error);
     void on_bytes(MutableByteView chunk);
     void on_handshake_bytes(MutableByteView chunk);
     void establish(HandshakeOutcome& outcome, MutableByteView leftover);
