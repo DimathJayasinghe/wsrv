@@ -65,10 +65,10 @@ Negotiation table (EC-D01: every parameter permutation, duplicates, bad values, 
 − Streaming sends are uncompressed for now; broadcast-style fan-out compression (compress once, send to many) is a follow-up with M10.
 
 ## Slices
-1. This ADR; pure negotiation and answer rendering in `protocol/`, wired into the handshake (`HandshakeAccept` carries the agreed parameters), tests.
-2. `extensions/`: zlib inflater and deflater behind the interfaces, limits, tests and `fuzz_inflate`.
-3. Session integration: RSV1, inflate in the receive path, compress in `send_*`, scheduler flag, tests.
-4. Server, config keys (library, C embedded config, `wsrvd`), end-to-end tests over TCP and TLS, Autobahn 12 and 13, OPERATIONS and lesson.
+1. This ADR; pure negotiation and answer rendering in `protocol/`, wired into the handshake (`HandshakeAccept` carries the agreed parameters), tests. **Done.**
+2. `extensions/`: zlib inflater and deflater behind the interfaces, limits, tests and `fuzz_inflate`. **Done.**
+3. Session integration: RSV1, inflate in the receive path, compress in `send_*`, scheduler flag, tests. **Done.**
+4. Server, config keys (library, C embedded config, `wsrvd`), end-to-end tests over TCP and TLS, Autobahn 12 and 13, OPERATIONS and lesson. **Done.** The one place that switches the feature on is `ServerBuilder::permessage_deflate(DeflateOptions)`: it creates the zlib factory and sets the handshake policy and the session settings together, so "offered but cannot compress" cannot be configured, and a build without zlib refuses to start with the feature requested. The text keys (`permessage_deflate`, `deflate_*`) only parse; the ranges are checked once, in `build()`. Autobahn: 216 cases of sections 12 and 13, all OK, at the library defaults (`tests/autobahn/EXCLUDED.md`).
 
 ## Amendments
 
