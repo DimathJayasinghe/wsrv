@@ -505,6 +505,25 @@ TEST_F(ConnectionTest, ASlowConsumerIsClosedWith1008ByDefault) {  // EC-N09
     EXPECT_TRUE(policy_close);
 }
 
+/// Same hazard through the other close path: here the SERVER closes (slow consumer policy) from
+/// inside Session::send_text, again while the handler holds its message view (EC-A06, EC-N09).
+TEST_F(ConnectionTest, AMessageViewStaysValidWhenTheSlowConsumerPolicyClosesInsideTheCallback) {
+    config.session.outbound.max_queued_bytes = 200;
+    establish();
+    const std::string big(20 * 1024, 'z');
+    std::string seen_after_close;
+    script.on_text = [&](Session& s, std::string_view text) {
+        script.last_send = s.send_text(std::string(150, 'a'));
+        script.last_send = s.send_text(std::string(150, 'b'));  // Backpressure: the server closes
+        seen_after_close.assign(text);
+    };
+    transport->set_write_capacity(0);
+    send_frame(Opcode::Text, big);
+    ASSERT_FALSE(script.last_send.has_value());
+    EXPECT_EQ(script.last_send.error().code, ErrorCode::Backpressure);
+    EXPECT_EQ(seen_after_close, big);
+}
+
 TEST_F(ConnectionTest, TheDropPolicyKeepsTheConnectionOpen) {
     config.session.outbound.max_queued_bytes = 200;
     config.slow_consumer = wsrv::SlowConsumerPolicy::DropMessage;
@@ -895,6 +914,26 @@ TEST_F(ConnectionTest, CloseIsIdempotentAndSendAfterCloseIsRefused) {  // EC-C14
     EXPECT_EQ(script.last_send.error().code, ErrorCode::Closing);
     const auto out = output();
     ASSERT_EQ(out.frames.size(), 1U);  // exactly one Close frame, nothing after it
+    EXPECT_EQ(out.frames[0].opcode, Opcode::Close);
+}
+
+/// The text view given to on_text points into the assembler's buffer. close() inside the callback
+/// must not free that buffer: the handler is still allowed to read what it was handed (EC-A06).
+/// Above ByteBuffer's retained capacity (16 KiB) clear() really releases the storage, so under
+/// ASan a premature clear is a heap-use-after-free, not just a stale read.
+TEST_F(ConnectionTest, AMessageViewStaysValidAfterTheHandlerClosesInsideTheCallback) {  // EC-A06
+    establish();
+    const std::string big(20 * 1024, 'q');
+    std::string seen_after_close;
+    script.on_text = [&](Session& s, std::string_view text) {
+        s.close(CloseCode::Normal, "enough");
+        seen_after_close.assign(text);  // reads the view AFTER close()
+    };
+    send_frame(Opcode::Text, big);
+    ASSERT_EQ(script.texts.size(), 1U);
+    EXPECT_EQ(seen_after_close, big);
+    const auto out = output();
+    ASSERT_EQ(out.frames.size(), 1U);
     EXPECT_EQ(out.frames[0].opcode, Opcode::Close);
 }
 

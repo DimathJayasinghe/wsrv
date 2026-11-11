@@ -21,6 +21,13 @@ set(_wsrv_opt "$<CONFIG:Release,RelWithDebInfo,MinSizeRel>")
 add_compile_options(
     "$<${_wsrv_opt}:-U_FORTIFY_SOURCE;-D_FORTIFY_SOURCE=3;-fstack-protector-strong;-fstack-clash-protection>")
 
+# The standard library's own bounds checks: an out-of-range std::span / vector / string_view access
+# aborts instead of being silent undefined behaviour (the debug presets already have them). libstdc++
+# reads _GLIBCXX_ASSERTIONS, libc++ reads its hardening mode; each ignores the other's macro. Global for
+# the same reason as above: the macro changes class layouts' checks, so every object must agree.
+add_compile_options(
+    "$<${_wsrv_opt}:-D_GLIBCXX_ASSERTIONS;-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST>")
+
 # Control-flow protection is architecture specific.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|i[3-6]86)$")
     add_compile_options("$<${_wsrv_opt}:-fcf-protection>")
