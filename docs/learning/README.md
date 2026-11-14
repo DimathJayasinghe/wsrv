@@ -39,5 +39,6 @@ We teach as we build. Each lesson answers three questions: **What** are we build
 | 32 | [Counting without a lock (metrics)](32-counting-without-a-lock.md) | M10 | written (slice 2) |
 | 33 | [One message, many readers (the pub/sub broker)](33-one-message-many-readers.md) | M10 | written (slice 3) |
 | 34 | [An application on the broker (chat example)](34-an-application-on-the-broker.md) | M10 | written (slice 4a) |
+| 35 | [Evidence, not adjectives (release readiness)](35-evidence-not-adjectives.md) | M10 | written (slice 4c) |
 
 Lesson template: *Goal → Background (the problem) → Design (why this way) → Walkthrough (code, small steps) → Tests (what proves it works) → Pitfalls → Exercises.*

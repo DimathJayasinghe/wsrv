@@ -125,10 +125,9 @@
     },
     {
       "name": "bench",
-      "displayName": "GCC, Release, benchmarks (from M3)",
-      "inherits": "gcc",
+      "displayName": "GCC, Release with LTO, benchmarks (from M3)",
+      "inherits": "release",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
         "WSRV_BUILD_BENCH": "ON"
       }
     }

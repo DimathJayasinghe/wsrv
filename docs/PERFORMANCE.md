@@ -2,11 +2,11 @@
 
 Measured numbers, how to reproduce them, and what they do **not** show. Numbers come from one
 development machine and are for comparing loop counts, not for sizing a deployment. Nothing here is
-a regression gate yet (that is M10).
+a speed gate (see "Regression gates" at the end).
 
 ## Tool
 
-`tests/bench/load.cpp`, target `wsrv_load` (build with the `bench` preset: Release, benchmarks on).
+`tests/bench/load.cpp`, target `wsrv_load` (build with the `bench` preset: Release with LTO, benchmarks on).
 It starts the echo server in its own process and runs blocking client threads against it over
 loopback. Each client thread owns K connections and works in rounds: send on all, then read all.
 
@@ -68,3 +68,56 @@ Status: finished 2026-10-30 (exit 0).
 | Run | Result |
 |-----|--------|
 | 2026-10-30, 1 h, 4 loops, 32 churning connections (64-byte echoes, 60 samples, dev container, ASan/UBSan-free `bench` build) | 0 failures; 119,107 messages/s over the hour; latency p50 39 us, p99 104 us; open descriptors stayed between 78 and 86 (no growth); RSS peaked at 6.1 MiB early on, settled at 2.4 MiB and stayed flat for the rest of the hour (no leak trend). The soak ran while other builds were using the same machine, so the throughput is a floor, not a benchmark. |
+
+## Pub/sub fan-out (2026-11-14, M10)
+
+`tests/bench/fanout.cpp`, target `wsrv_fanout` (same `bench` preset). An in-process server with a
+`Broker` (ADR-0024); N subscriber connections read by 8 blocking client threads; the main thread
+publishes one text message, waits until every subscriber has read it, then repeats. A round time is
+therefore "publish until the last subscriber has the message".
+
+```sh
+cmake --preset bench && cmake --build --preset bench -j --target wsrv_fanout
+./build/bench/tests/bench/wsrv_fanout --threads 4 --subscribers 1000 --rounds 2000 --size 128
+```
+
+Same machine and build as the scaling table above (i7-13700H, Docker Desktop VM, GCC Release with
+LTO), taken after the M10 review fixes, 2000 rounds, 128-byte payload unless stated, `refused` and
+failures all 0:
+
+| Loops | Subscribers | Deliveries per second | Round p50 | Round p99 |
+|------:|------------:|----------------------:|----------:|----------:|
+| 1 | 10 | 171 000 | 48 us | 153 us |
+| 1 | 100 | 247 000 | 372 us | 798 us |
+| 1 | 1000 | 212 000 | 4.3 ms | 9.9 ms |
+| 4 | 10 | 193 000 | 49 us | 132 us |
+| 4 | 100 | 493 000 | 199 us | 285 us |
+| 4 | 1000 | 484 000 | 2.0 ms | 3.6 ms |
+| 4 | 1000, 4 KiB payload | 243 000 | 4.0 ms | 7.4 ms |
+
+**Read the shape, not the digits.** An earlier run of the same code before the review fixes gave
+227 k, 166 k and 119 k deliveries per second for one loop at 10, 100 and 1000 subscribers, against
+171 k, 247 k and 212 k here, so a single configuration varies by up to a factor of two between
+runs on this machine (shared cores, a VM, 8 client threads doing the reading). What is stable:
+a publish to 1000 subscribers on 4 loops reaches all of them in about 2 ms (one `post` per
+subscriber, each loop copying the shared payload into its connections' queues); four loops deliver
+about twice the rate of one at 100 and 1000 subscribers; with 10 subscribers the hand-off costs
+about what it saves. The payload is shared (ADR-0024 section 3), so the larger message costs the
+per-connection copy and the socket write, not an allocation per subscriber.
+
+What it does **not** show: the clients are 8 threads that read their connections one after the
+other, so the round time includes the reading side and the numbers are a floor for the server; one
+publisher thread only (publishing from several threads contends on the registry mutex, which is held
+for a table lookup and a copy of the handle list, not shown here); lockstep rounds, so queues never
+fill (the refusal path is covered by `SmallQueueBrokerTest`, not measured); loopback in a VM; plain
+TCP, no TLS, no compression.
+
+## Regression gates
+
+The two tools fail (exit 1) on **correctness**, not speed: `wsrv_load` on any failed echo and on a
+leak in soak mode (descriptors, resident memory), `wsrv_fanout` on a failed read or any refused
+delivery. There is no CI gate on throughput or latency: shared CI runners vary by more than the
+differences that matter, and a flaky gate trains people to ignore it. The numbers above are the
+baseline to compare against by hand on one machine before and after a change to the hot path
+(`Connection`, `EventLoop`, `Broker`); a deployment that wants an automatic gate should run the tools
+on a dedicated machine and keep their own thresholds.

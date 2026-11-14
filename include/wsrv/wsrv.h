@@ -235,7 +235,8 @@ typedef struct wsrv_event {
 
 /* Wait up to timeout_ms for the next event (0 = only look). WSRV_OK fills *event, which you must
  * pass to wsrv_event_release() when you have copied what you need. WSRV_TIMEOUT: nothing arrived.
- * One thread at a time may call this per server. */
+ * One thread at a time may call this per server. On WSRV_TIMEOUT (or any error) *event is left
+ * untouched: release only an event that was filled by WSRV_OK, or one you zeroed yourself. */
 WSRV_API wsrv_status wsrv_poll(wsrv_server *server, wsrv_event *event, uint32_t timeout_ms);
 WSRV_API void wsrv_event_release(wsrv_event *event); /* safe on a released or zeroed event */
 

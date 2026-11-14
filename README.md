@@ -3,8 +3,12 @@
 A from-scratch, standards-compliant **RFC 6455** WebSocket server written in modern C++.
 No Boost, no Asio, no third-party WebSocket libraries. Quality over feature count.
 
-> Status: **Phase 0 — planning & standards.** No product code yet. The documents below are the
-> contract the code must satisfy. Read them before writing code.
+> Status: **1.0 release candidate for evaluation (end of M10).** RFC 6455 + permessage-deflate +
+> TLS, multi-loop server, per-IP limits, pub/sub broker, Prometheus metrics, C ABI, `wsrvd` sidecar
+> and a pure-PHP client are built, tested under ASan/UBSan/TSan, fuzzed, and Autobahn-clean
+> (517 cases, 0 failed). Linux only. What is not done, and what stands between this and a public
+> 1.0, is listed in [docs/RELEASE.md](docs/RELEASE.md). The documents below are the contract the
+> code satisfies; read them before changing code.
 
 ## Why this exists
 
@@ -35,6 +39,8 @@ replaceable shell around it. Every design choice is traceable to an ADR in [docs
 | [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md) | Test pyramid, fuzzing, Autobahn, sanitizers, perf | Writing tests |
 | [docs/BUILD_AND_TOOLING.md](docs/BUILD_AND_TOOLING.md) | CMake, presets, CI, linters, dependency policy | Setting up / changing build |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Config, logging, metrics, shutdown, deployment hardening | Shipping / running |
+| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Measured scaling, fan-out and soak numbers and their limits | Sizing or touching a hot path |
+| [docs/RELEASE.md](docs/RELEASE.md) | 1.0-rc claims, evidence, known limitations, release checklist | Deciding whether to ship |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Workflow, commit rules, PR checklist, Definition of Done | Every PR |
 | [SECURITY.md](SECURITY.md) | Vulnerability reporting policy | Found a vuln |
 | [CLAUDE.md](CLAUDE.md) | Rules for AI coding agents working in this repo | Using an agent |
@@ -67,6 +73,17 @@ cmake --build --preset dev --target format-check check-banned check-includes hea
 
 Other presets: `dev-clang`, `release`, `tsan`, `tidy`, `coverage` (see [Lesson 01](docs/learning/01-build-system-and-quality-gates.md)).
 If a build ignores an edit you can see on the host, run `make restart` (Docker Desktop bind-mount quirk, see docs/BUILD_AND_TOOLING.md §10).
+
+## Try it
+
+```bash
+# inside the container, after the build above
+build/dev/examples/echo --port 9001 --allow-missing-origin           # echo server (Autobahn target, browser demo backend)
+build/dev/examples/chat --port 9002 --admin-port 9100 --allow-missing-origin   # rooms: join / say / members / rooms / leave
+curl http://127.0.0.1:9100/metrics                                     # Prometheus text, includes wsrv_broker_*
+```
+
+Browser demo: [examples/demo/README.md](examples/demo/README.md). Chat protocol: header of `examples/chat/chat.hpp`.
 
 ## Toolchain baseline
 
