@@ -148,9 +148,7 @@ void Connection::on_readable() {
         const Result<std::size_t> got = transport_->read(ctx_.scratch);
         ++reads;
         if (!got) {
-            if (got.error().code != ErrorCode::WouldBlock) {
-                transport_failed(got.error());
-            }
+            on_read_failed(got.error());
             return;
         }
         if (*got == 0) {
@@ -160,6 +158,17 @@ void Connection::on_readable() {
         bytes += *got;
         on_bytes(ctx_.scratch.first(*got));
     }
+}
+
+/// A read that returned no bytes. Usually the kernel is empty and its next edge wakes us. A
+/// transport that buffers (TLS) also answers WouldBlock when it yields after its per-call bound,
+/// with input left that the kernel will not announce again: come back by ourselves.
+void Connection::on_read_failed(const Error& error) {
+    if (error.code != ErrorCode::WouldBlock) {
+        transport_failed(error);
+        return;
+    }
+    schedule_reread();
 }
 
 void Connection::on_bytes(MutableByteView chunk) {
@@ -210,6 +219,9 @@ void Connection::establish(HandshakeOutcome& outcome, MutableByteView leftover) 
     } else {
         log(LogLevel::Error, "no handler for the connection");
         close(CloseCode::InternalError, "internal error");
+    }
+    if (phase_ == Phase::Finished) {
+        return;  // on_open itself ended the connection (a pause whose registration change failed)
     }
     if (!arm(tick_timer_, kTickInterval, &Connection::on_tick)) {
         drop_transport();
@@ -775,6 +787,10 @@ void Connection::release() noexcept {
 bool Connection::arm(TimerHandle& slot,
                      std::chrono::milliseconds delay,
                      void (Connection::*action)()) {
+    if (released_) {
+        slot = TimerHandle{};  // a timer on a released connection would fire on freed memory
+        return false;
+    }
     const Result<TimerHandle> timer =
         ctx_.host.run_after(delay, [this, action] { (this->*action)(); });
     if (!timer) {

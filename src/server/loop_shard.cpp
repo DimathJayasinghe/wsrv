@@ -65,7 +65,14 @@ LoopShard::LoopShard(Key /*unused*/,
 }
 
 LoopShard::~LoopShard() {
+    // A connection that is still open here (forced shutdown, stop(), a loop that failed) owes its
+    // handler one on_close: "every Open is followed by exactly one Close" is part of the host
+    // contract (wsrv.h). Only this thread may run the handler, so each shard reports its own
+    // connections, whatever way the server ended. The loop is no longer running: the retirements
+    // this queues are never executed, the table below frees the connections. The link is closed
+    // first (see the class comment): a foreign thread's handle gets Closing from now on.
     link_->close();
+    abort_all();
 }
 
 void LoopShard::adopt(Fd client, const Endpoint& peer, ConnectionId id) {

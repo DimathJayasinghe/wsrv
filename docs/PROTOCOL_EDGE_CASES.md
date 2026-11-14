@@ -147,6 +147,10 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | EC-N19 | Listen backlog full / SYN flood | Kernel-level; document `somaxconn`, `tcp_syncookies` |
 | EC-N20 | Port already in use / permission denied at startup | Clear config error, non-zero exit |
 | EC-N21 | PROXY protocol / X-Forwarded-For (if enabled) | Only from trusted proxies list; otherwise ignored |
+| EC-N22 | Forced shutdown or `stop()` with connections on worker loops | Every Open is followed by exactly one Close on every loop (each shard reports its own connections when it ends) |
+| EC-N23 | The loop refuses a command (task queue full) that lifts a read pause | Not forgotten: retried at the next poll; the connection is never left read-paused |
+| EC-N24 | A connection ends inside `on_open` (a pause whose registration change fails) | No timer is armed on the finished connection; `arm()` refuses on a released one |
+| EC-N25 | A buffering transport (TLS) yields with input left and answers `WouldBlock` | The connection reads again on a later turn of the loop, not at the idle timeout |
 
 ## 6. Handler / application (EC-A)
 
@@ -219,6 +223,7 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | EC-A01, A03, A06 (handler exceptions, send after close, deferred close), EC-C11..C15 at connection level, FR-S1 (connection cap) | done (M6) | `ConnectionTest.AThrowingHandler*`, `ANonStandardThrow*`, `CloseIsIdempotent*`, `OnCloseMayNotSend*`, `Server.TheConnectionCap*`, `Server.Churn*`, `Integration.AThrowingHandler*` |
 | Autobahn sections 1-7, 9, 10, 12, 13 | done: 517 cases, 0 FAILED (M8 and M9), see `tests/autobahn/EXCLUDED.md` | `tests/autobahn/run.sh` (`--wss` over TLS) |
 | EC-N13 (handle after the connection, the loop or the server is gone), EC-N14 (task queue full: `BufferFull`) | done (M7, `SessionHandle`) | `SessionHandleTest.*`, `SmallQueueTest.*`, `ServerHandle.*` |
+| EC-N22..N25 (found by the second security review, M9/M10) | done | `MultiLoop.AForcedShutdownReports*`, `MultiLoop.StopReports*`, `EmbeddedServer.ClientsThatIgnoreTheShutdown*`, `HostBridgeResume.*`, `ConnectionTest.AConnectionThatEndedInsideOnOpen*`, `ConnectionTest.ATransportThatYielded*` |
 | EC-H26 | M10 (MAY) | - |
 | EC-D01 (negotiation permutations), D02 (fragmented compressed message, RSV1 on the first frame only), D03 (bomb: size and ratio), D04 (invalid stream: 1007), D06 (empty message), D07 (plain message while negotiated) | done (M9) | `PermessageDeflate.*`, `DeflatePolicyCheck.*`, `SessionDeflate.*`, `ZlibCodec.*`, `ServerDeflate.*`, `fuzz_inflate`, Autobahn 12.* and 13.* (216 cases) |
 | EC-D05 (memory per compressed connection: bounded, budgeted) | bound done (M9): window and level are range-checked, the per-connection figures are in `docs/OPERATIONS.md` section 1.1. **Gap:** the release of the send scratch buffer after every send is by design and review (ADR-0020 A1) and is not asserted by a test; a global budget across connections is M10 | `SessionDeflate.TheConfigurationIsChecked`, `ZlibCodec.TheFactoryRefusesWindowsAndLevelsZlibCannotDo`, `ServerDeflate.ImpossibleSettingsAreRefusedAtBuildTimeNamingTheFeature`, `ServerDeflate.ChurnOfCompressedConnectionsLeavesNoDescriptorsBehind` |

@@ -313,6 +313,20 @@ TEST_F(ConnectionTest, ABudgetedReadYieldsAndTheRestIsReportedAgain) {  // EC-N0
 // ---- a transport that buffers (TLS, ADR-0019 section 3)
 // -------------------------------------------
 
+// The reviewer's claim (read from the code): a TLS read that yields after its per-call bound
+// answers WouldBlock with input still buffered; the connection took that for "kernel empty" and
+// never came back, so the peer's data waited until the idle timer closed the connection.
+TEST_F(ConnectionTest, ATransportThatYieldedWithInputLeftIsReadAgainOnALaterTurn) {
+    establish();
+    const auto frame = client_frame(Opcode::Text, true, "late");
+    transport->feed(wsrv::ByteView{frame});
+    transport->yield_next_read();  // the first read answers WouldBlock with the frame still inside
+    readable();
+    EXPECT_TRUE(script.texts.empty());
+    host.advance(2ms, 1ms);  // the next turn of the loop, long before any idle or tick timer
+    EXPECT_EQ(script.texts, std::vector<std::string>{"late"});
+}
+
 TEST_F(ConnectionTest, OutputHeldByTheTransportArmsWriteInterestUntilItIsPushedOut) {
     establish();
     transport->hold_output(true);
@@ -1040,6 +1054,22 @@ TEST_F(ConnectionTest, ResumingRestoresReadInterestAndRearmsTheEdge) {
     EXPECT_TRUE(wsrv::has(host.interest_now, PollEvents::Read));
     readable();  // what the loop delivers after the re-arm
     EXPECT_EQ(script.texts, (std::vector<std::string>{"a", "b", "c"}));
+}
+
+// The reviewer's claim (read from the code): a pause inside on_open whose registration change
+// fails ends the connection re-entrantly; establish() then armed the tick timer on a connection
+// that was already finished and released, a timer that would fire on a destroyed object.
+TEST_F(ConnectionTest, AConnectionThatEndedInsideOnOpenArmsNoTimerBehindItself) {
+    open();
+    host.fail_rewatch = true;
+    script.on_open = [](Session& session) { session.pause_reads(); };
+    send_bytes(kRequest);
+    EXPECT_TRUE(conn->finished());
+    EXPECT_EQ(script.opened, 1);
+    EXPECT_EQ(script.closed, 1) << "the Open it was told about is followed by its Close";
+    EXPECT_EQ(host.retired, std::vector<wsrv::ConnectionId>{7});
+    EXPECT_EQ(host.pending_timers(), 0U)
+        << "a timer on a finished connection fires on freed memory";
 }
 
 TEST_F(ConnectionTest, PausingTwiceAndResumingWithoutAPauseAreHarmless) {

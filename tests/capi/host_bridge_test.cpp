@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "capi/host_bridge.hpp"
 
+#include "base/clock.hpp"
+#include "net/event_loop.hpp"
+#include "net/syscalls.hpp"
 #include "support/running_server.hpp"
 #include "support/tcp_client.hpp"
 
@@ -310,6 +313,102 @@ TEST_F(HostBridgeTest, ManyHostThreadsSendingToOneConnectionLoseNothing) {
 // ---- the asynchronous handshake decision (ADR-0018) -------------------------------------------
 
 /// A bridge that is also the server's decider, as the embedded server wires it.
+// ---- a resume the loop could not take
+// --------------------------------------------------------------
+
+/// A Session that only counts pauses and resumes, and whose handle reaches a loop that can be made
+/// to refuse tasks (its queue is full). No server, no sockets: the bridge's own bookkeeping.
+class PausableSession final : public Session {
+public:
+    PausableSession(ConnectionId id, std::shared_ptr<LoopLink> link)
+        : id_{id}, link_{std::move(link)} {}
+    [[nodiscard]] ConnectionId id() const noexcept override {
+        return id_;
+    }
+    [[nodiscard]] const Endpoint& peer() const noexcept override {
+        return peer_;
+    }
+    [[nodiscard]] Result<void> send_text(std::string_view /*text*/) override {
+        return {};
+    }
+    [[nodiscard]] Result<void> send_binary(ByteView /*data*/) override {
+        return {};
+    }
+    [[nodiscard]] Result<MessageWriter> begin_text() override {
+        return fail(ErrorCode::Closing, "stub");
+    }
+    [[nodiscard]] Result<MessageWriter> begin_binary() override {
+        return fail(ErrorCode::Closing, "stub");
+    }
+    void pause_reads() override {
+        ++pauses;
+    }
+    void resume_reads() override {
+        ++resumes;
+    }
+    void close(CloseCode /*code*/, std::string_view /*reason*/) override {}
+    [[nodiscard]] SessionHandle handle() const override {
+        return SessionHandle{link_, id_};
+    }
+
+    int pauses = 0;
+    int resumes = 0;
+
+private:
+    ConnectionId id_;
+    Endpoint peer_;
+    std::shared_ptr<LoopLink> link_;
+};
+
+class OneSessionDirectory final : public ISessionDirectory {
+public:
+    void run(ConnectionId /*id*/, const SessionCommand& command) override {
+        command(*session);
+    }
+    void decide(ConnectionId /*id*/, const HandshakeVerdict& /*verdict*/) override {}
+    Session* session = nullptr;
+};
+
+// The reviewer's claim (read from the code): resume_parked() forgot a connection whose resume the
+// loop refused (task queue full), so it stayed read-paused until the idle or pong timer ended it.
+TEST(HostBridgeResume, AResumeTheLoopRefusedIsRetriedByTheNextPoll) {
+    LinuxSyscalls sys;
+    SteadyClock clock;
+    EventLoopConfig loop_config;
+    loop_config.max_queued_tasks = 1;
+    auto loop = EventLoop::create(sys, clock, loop_config);
+    ASSERT_TRUE(loop.has_value());
+    OneSessionDirectory directory;
+    auto link = std::make_shared<LoopLink>(**loop, directory);
+    auto bridge = HostBridge::make(sys, {.max_events = 16, .max_bytes = 4096});
+    ASSERT_TRUE(bridge.has_value());
+    PausableSession session{7, link};
+    directory.session = &session;
+
+    auto handler = (*bridge)->create(
+        ConnectionInfo{.id = 7, .peer = {}, .subprotocol = {}, .annotations = {}});
+    handler->on_open(session);
+    for (int i = 0; i < 11; ++i) {
+        handler->on_text(session, "m");
+    }
+    ASSERT_TRUE((*bridge)->events().pressured());
+    ASSERT_GE(session.pauses, 1) << "the slow host paused the connection";
+
+    ASSERT_TRUE(
+        (*loop)->post([] {}).has_value());  // the loop's only slot is taken: a resume is refused
+    while ((*bridge)->poll()) {
+        // the host drains the queue; the resume it triggers is refused with BufferFull
+    }
+    EXPECT_EQ(session.resumes, 0);
+
+    ASSERT_TRUE((*loop)->run_once(10ms).has_value());  // the loop catches up: the slot is free
+    EXPECT_FALSE((*bridge)->poll().has_value());  // the host asks again; the safety net must retry
+    ASSERT_TRUE((*loop)->run_once(10ms).has_value());
+    EXPECT_EQ(session.resumes, 1) << "the connection must not stay paused";
+
+    handler->on_close(session, CloseInfo{});
+}
+
 class HostBridgeHookTest : public HostBridgeTest {
 protected:
     void start_hook(EventQueueConfig queue = {},

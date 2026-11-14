@@ -187,6 +187,37 @@ TEST(EmbeddedServer, AGracefulStopClosesEveryClientAndTheHostSeesEveryClose) {
     EXPECT_TRUE(server->stop().has_value());  // idempotent, also after the server ended
 }
 
+// wsrv.h: every OPEN is followed by exactly one CLOSE. Clients that ignore the shutdown are dropped
+// after the grace period, on every loop, and the host must still see all their Closes.
+TEST(EmbeddedServer, ClientsThatIgnoreTheShutdownStillGiveTheHostOneCloseEachOnEveryLoop) {
+    EmbeddedConfig config = base_config();
+    ASSERT_TRUE(config.set("threads", "2").has_value());
+    ASSERT_TRUE(config.set("shutdown_grace_ms", "100").has_value());
+    const auto server = started(config);
+    std::vector<std::unique_ptr<TcpClient>> clients;
+    for (int i = 0; i < 4; ++i) {  // round-robin: two per loop
+        clients.push_back(std::make_unique<TcpClient>(server->port()));
+        ASSERT_TRUE(clients.back()->upgrade());
+    }
+    int opens = 0;
+    while (opens < 4) {
+        const auto event = server->poll(3000ms);
+        ASSERT_TRUE(event.has_value()) << "opens seen: " << opens;
+        opens += event->type == HostEventType::Open ? 1 : 0;
+    }
+    ASSERT_TRUE(server->stop().has_value());
+    for (const auto& client : clients) {
+        ASSERT_TRUE(client->read_frame().has_value());  // the 1001, which it ignores
+    }
+    int closes = 0;
+    while (closes < 4) {
+        const auto event = server->poll(3000ms);
+        ASSERT_TRUE(event.has_value()) << "closes seen: " << closes;
+        closes += event->type == HostEventType::Close ? 1 : 0;
+    }
+    EXPECT_EQ(closes, 4);
+}
+
 TEST(EmbeddedServer, ASecondServerCanBeStartedAfterTheFirstIsGone) {
     std::uint16_t port = 0;
     {

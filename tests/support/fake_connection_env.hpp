@@ -45,6 +45,11 @@ public:
         if (read_error_) {
             return fail(*read_error_, "fake read");
         }
+        if (yield_next_read_) {  // like TLS after its per-call bound: input left, nothing handed
+                                 // out
+            yield_next_read_ = false;
+            return fail(ErrorCode::WouldBlock, "fake read: yielding");
+        }
         if (incoming_.empty()) {
             return eof_ ? Result<std::size_t>{0} : fail(ErrorCode::WouldBlock, "fake read");
         }
@@ -89,14 +94,21 @@ public:
         held_output_ = held;
     }
     /// Like TLS records already taken from the descriptor: the kernel will not announce them.
+    /// Buffered only while input is left, as a real transport stops reporting it once drained.
     void hold_input(bool held) {
         held_input_ = held;
+    }
+    /// The next read() answers WouldBlock although input is waiting, like a TLS read that yields
+    /// after its per-call bound; the transport then reports buffered_input() until it is drained.
+    void yield_next_read() {
+        yield_next_read_ = true;
+        held_input_ = true;
     }
     [[nodiscard]] bool wants_write() const noexcept override {
         return held_output_;
     }
     [[nodiscard]] bool buffered_input() const noexcept override {
-        return held_input_;
+        return held_input_ && !incoming_.empty();
     }
 
     [[nodiscard]] std::string written_text() const {
@@ -120,6 +132,7 @@ private:
     std::optional<ErrorCode> write_error_;
     bool held_output_ = false;
     bool held_input_ = false;
+    bool yield_next_read_ = false;
     static constexpr std::size_t kUnlimited = static_cast<std::size_t>(-1);
     std::size_t write_capacity_ = kUnlimited;
 };
@@ -135,6 +148,9 @@ public:
     }
     [[nodiscard]] Result<void> rewatch(WatchHandle /*handle*/, PollEvents interest) override {
         ++rewatch_calls;
+        if (fail_rewatch) {
+            return fail(ErrorCode::Io, "fake host: cannot change the registration");
+        }
         interest_now = interest;
         return {};
     }
@@ -180,6 +196,7 @@ public:
     bool watching = false;
     PollEvents interest_now = PollEvents::None;
     std::size_t rewatch_calls = 0;
+    bool fail_rewatch = false;  // the loop refuses to change the registration (EC-N, memory)
     std::vector<ConnectionId> retired;
     std::vector<RecordingLogger::Entry> logs;
 
