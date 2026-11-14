@@ -11,6 +11,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <chrono>
 #include <functional>
 #include <memory>
@@ -126,6 +127,7 @@ struct ConnectionTest : public ::testing::Test {
     std::vector<std::byte> scratch = std::vector<std::byte>(16 * 1024);
     FakeTransport* transport = nullptr;
     std::unique_ptr<Connection> conn;
+    wsrv::CounterBank bank;  // what the connection counts (ADR-0023)
 
     void open(std::size_t scratch_size = 16 * 1024) {
         scratch.resize(scratch_size);
@@ -139,7 +141,10 @@ struct ConnectionTest : public ::testing::Test {
                                                                     *active_negotiator,
                                                                     factory,
                                                                     wsrv::MutableByteView{scratch},
-                                                                    nullptr});
+                                                                    nullptr,
+                                                                    nullptr,
+                                                                    nullptr,
+                                                                    &bank});
         ASSERT_TRUE(conn->start().has_value());
     }
     void readable() {
@@ -483,6 +488,8 @@ TEST_F(ConnectionTest, APeerThatAcceptsNoBytesIsDroppedByTheStallTimer) {  // EC
     EXPECT_TRUE(conn->finished());
     EXPECT_TRUE(transport->closed);
     EXPECT_EQ(script.closed, 1);
+    EXPECT_EQ(bank.read(wsrv::Metric::SlowConsumerDrops), 1U);  // ADR-0023
+    EXPECT_EQ(bank.read(wsrv::Metric::CloseAbnormal), 1U);
 }
 
 TEST_F(ConnectionTest, AWriteToAGonePeerEndsTheConnectionUncleanlyOnce) {  // EC-N03
@@ -517,6 +524,47 @@ TEST_F(ConnectionTest, ASlowConsumerIsClosedWith1008ByDefault) {  // EC-N09
             frame.opcode == Opcode::Close && code_of(frame) == std::string("\x03\xf0", 2);
     }
     EXPECT_TRUE(policy_close);
+    EXPECT_EQ(bank.read(wsrv::Metric::SlowConsumerDrops), 1U);  // ADR-0023
+}
+
+TEST_F(ConnectionTest, TheDropPolicyIsNotCountedAsADroppedConnection) {  // nothing was dropped
+    config.session.outbound.max_queued_bytes = 200;
+    config.slow_consumer = wsrv::SlowConsumerPolicy::DropMessage;
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        static_cast<void>(s.send_text(std::string(150, 'a')).has_value());
+        static_cast<void>(s.send_text(std::string(150, 'b')).has_value());
+    };
+    transport->set_write_capacity(0);
+    send_frame(Opcode::Text, "go");
+    EXPECT_FALSE(conn->finished());
+    EXPECT_EQ(bank.read(wsrv::Metric::SlowConsumerDrops), 0U);
+}
+
+TEST_F(ConnectionTest, ATlsFailureBeforeTheUpgradeIsCounted) {  // ADR-0023
+    open();
+    transport->fail_reads(ErrorCode::TlsFailure);
+    readable();
+    EXPECT_TRUE(conn->finished());
+    EXPECT_EQ(bank.read(wsrv::Metric::TlsHandshakeFailures), 1U);
+}
+
+TEST_F(ConnectionTest, MessagesAndBytesAreCountedPerDirectionAndType) {  // ADR-0023
+    script.on_open =
+        [](Session& session) {  // one binary message out, sent when the upgrade is done
+            const std::array<std::byte, 2> data{std::byte{1}, std::byte{2}};
+            static_cast<void>(session.send_binary(wsrv::ByteView{data}).has_value());
+        };
+    establish();
+    script.echo = true;
+    send_frame(Opcode::Text, "abc");
+    send_frame(Opcode::Binary, "defg");
+    EXPECT_EQ(bank.read(wsrv::Metric::MessagesInText), 1U);
+    EXPECT_EQ(bank.read(wsrv::Metric::MessagesInBinary), 1U);
+    EXPECT_EQ(bank.read(wsrv::Metric::MessagesOutText), 1U);
+    EXPECT_EQ(bank.read(wsrv::Metric::MessagesOutBinary), 1U);
+    EXPECT_GT(bank.read(wsrv::Metric::BytesIn), 0U);
+    EXPECT_GT(bank.read(wsrv::Metric::BytesOut), 0U);
 }
 
 /// Same hazard through the other close path: here the SERVER closes (slow consumer policy) from
@@ -1172,6 +1220,7 @@ struct HookTest : public ConnectionTest {
             host, config, *hook_active, factory, wsrv::MutableByteView{scratch}, nullptr};
         context.decider = &decider;
         context.pending = which_gate;
+        context.metrics = &bank;
         auto connection =
             std::make_unique<Connection>(static_cast<wsrv::ConnectionId>(host.retired.size() + 20),
                                          wsrv::Endpoint{},

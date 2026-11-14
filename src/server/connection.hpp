@@ -2,6 +2,7 @@
 #pragma once
 
 #include "base/bytes.hpp"
+#include "base/metrics.hpp"
 #include "net/endpoint.hpp"
 #include "net/event_loop.hpp"
 #include "net/transport.hpp"
@@ -38,6 +39,8 @@ struct ConnectionContext {
     /// upgrade is accepted at once. A decider without a gate is a wiring mistake and fails closed.
     IHandshakeDecider* decider = nullptr;
     PendingGate* pending = nullptr;
+    /// Where events are counted (ADR-0023): this loop's bank. Null (tests) counts nothing.
+    IMetrics* metrics = nullptr;
 };
 
 /// One client, from accept to close: the glue between a transport, the handshake, the
@@ -185,6 +188,7 @@ private:
     void guarded(Call&& call);
 
     void log(LogLevel level, std::string_view message) const;
+    void count(Metric metric, std::uint64_t amount = 1) const noexcept;
 
     ConnectionId id_;
     Endpoint peer_;

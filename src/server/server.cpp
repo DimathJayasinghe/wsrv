@@ -109,6 +109,7 @@ Result<void> Server::init() {
         if (const Result<void> limits = make_ip_limits(); !limits) {
             return limits;
         }
+        banks_ = std::make_unique<MetricBanks>(config_.threads);
         shared_ = std::make_unique<ShardShared>(ShardShared{config_,
                                                             *negotiator_,
                                                             factory_,
@@ -119,7 +120,8 @@ Result<void> Server::init() {
                                                             decider_,
                                                             pending_.get(),
                                                             wrapper_,
-                                                            ip_limits_.get()});
+                                                            ip_limits_.get(),
+                                                            *banks_});
     } catch (const std::invalid_argument&) {
         return fail(ErrorCode::InvalidConfig, "server: invalid handshake configuration");
     } catch (const std::bad_alloc&) {
@@ -142,7 +144,7 @@ Result<void> Server::init() {
         *listener_,
         sys_,
         [this](Fd client, Endpoint peer) { on_accept(std::move(client), peer); },
-        AcceptorConfig{});
+        AcceptorConfig{.metrics = &main_->metrics()});
     return acceptor_->start();
 }
 
@@ -238,7 +240,8 @@ Endpoint Server::local_endpoint() const {
 /// which must not throw.
 void Server::on_accept(Fd client, const Endpoint& peer) {
     if (live_.load() >= config_.max_connections) {
-        const std::uint64_t total = rejected_.fetch_add(1) + 1;
+        main_->metrics().add(Metric::RejectedGlobalCap);
+        const std::uint64_t total = main_->metrics().read(Metric::RejectedGlobalCap);
         if ((total & (total - 1)) == 0) {  // log the 1st, 2nd, 4th, 8th...: rate-limited
             logger_.log(LogLevel::Warn, "server: connection limit reached, refusing clients");
         }
@@ -269,11 +272,30 @@ constexpr std::string_view kAnswer503 = "HTTP/1.1 503 Service Unavailable\r\nRet
                                         "1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
 }  // namespace
 
+/// Which counter a refusal belongs to (ADR-0023): the reason is a closed set, never peer data.
+Metric Server::refusal_metric(Admission verdict) noexcept {
+    switch (verdict) {
+    case Admission::TooManyConnections:
+        return Metric::RejectedIpConnections;
+    case Admission::RateExceeded:
+        return Metric::RejectedIpRate;
+    case Admission::TableFull:
+    case Admission::Admitted:  // never refused; counted with the table, the strictest reading
+        return Metric::RejectedIpTable;
+    }
+    return Metric::RejectedIpTable;
+}
+
 /// An address over its limit: tell it so in one send and close. Best effort by design: a client
 /// that already sent its request may see a reset instead; the close is what counts. The table
 /// being full (an address-spraying flood) is a 503, the limits themselves are a 429.
 void Server::refuse_for_ip_limit(Fd client, Admission verdict) {
-    const std::uint64_t total = ip_limited_.fetch_add(1) + 1;
+    const Metric reason = refusal_metric(verdict);
+    main_->metrics().add(reason);
+    const MetricsSnapshot now = banks_->snapshot();
+    const std::uint64_t total = now.value(Metric::RejectedIpConnections) +
+                                now.value(Metric::RejectedIpRate) +
+                                now.value(Metric::RejectedIpTable);
     if ((total & (total - 1)) == 0) {  // log the 1st, 2nd, 4th, 8th...: rate-limited
         logger_.log(LogLevel::Warn, "server: per-IP limit reached, refusing clients");
     }
@@ -301,7 +323,7 @@ void Server::hand_off(std::size_t worker, Fd client, const Endpoint& peer, Conne
         if (ip_limits_ != nullptr) {
             ip_limits_->release(peer);
         }
-        rejected_.fetch_add(1);
+        main_->metrics().add(Metric::RejectedGlobalCap);  // shed like a full table: no loop took it
         logger_.log(LogLevel::Warn, "server: a loop is overloaded, refusing a client");
     }
 }

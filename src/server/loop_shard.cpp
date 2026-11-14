@@ -49,7 +49,8 @@ LoopShard::LoopShard(Key /*unused*/,
                      const ShardShared& shared,
                      std::unique_ptr<EventLoop> loop,
                      std::function<void()> on_drained)
-    : shared_{shared}, on_drained_{std::move(on_drained)}, loop_{std::move(loop)} {
+    : shared_{shared}, bank_{shared.banks.claim()}, on_drained_{std::move(on_drained)},
+      loop_{std::move(loop)} {
     table_ = std::make_unique<ConnectionTable>(*loop_,
                                                [this](const Endpoint& peer) { on_removed(peer); });
     host_ = std::make_unique<LoopHost>(*loop_, shared_.clock, shared_.logger, *table_);
@@ -62,7 +63,8 @@ LoopShard::LoopShard(Key /*unused*/,
                                                                      MutableByteView{scratch_},
                                                                      link_,
                                                                      shared_.decider,
-                                                                     shared_.pending});
+                                                                     shared_.pending,
+                                                                     &bank_});
 }
 
 LoopShard::~LoopShard() {
@@ -96,6 +98,7 @@ void LoopShard::adopt(Fd client, const Endpoint& peer, ConnectionId id) {
         shared_.logger.log(LogLevel::Error, "server: out of memory accepting a connection");
         return;
     }
+    bank_.add(Metric::ConnectionsAccepted);
     static_cast<void>(connection->start().has_value());  // on failure it is already retired
 }
 

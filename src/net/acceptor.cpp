@@ -73,7 +73,7 @@ void Acceptor::deliver(Fd client, const sockaddr_storage& peer) noexcept {
     try {
         on_accept_(std::move(client), from.value_or(Endpoint{}));
     } catch (const std::exception&) {
-        ++error_count_;  // the callback broke its contract; the connection is lost, the loop is not
+        note_error();  // the callback broke its contract; the connection is lost, the loop is not
     }
 }
 
@@ -97,11 +97,14 @@ void Acceptor::accept_burst() noexcept {
             continue;  // that client is gone; try the next one (EC-N06)
         case EMFILE:
         case ENFILE:
+            if (config_.metrics != nullptr) {
+                config_.metrics->add(Metric::AcceptErrorsEmfile);
+            }
             shed_pending();
             pause();
             return;
         default:
-            ++error_count_;
+            note_error();
             pause();
             return;
         }
@@ -109,8 +112,15 @@ void Acceptor::accept_burst() noexcept {
     // Budget used up: connections may still be queued but the edge was consumed. Re-arm so the
     // kernel reports them again in the next iteration.
     if (watch_ && !loop_.rewatch(*watch_, PollEvents::Read)) {
-        ++error_count_;
+        note_error();
         pause();  // cannot re-arm the listener: back off instead of leaving queued clients deaf
+    }
+}
+
+void Acceptor::note_error() noexcept {
+    ++error_count_;
+    if (config_.metrics != nullptr) {
+        config_.metrics->add(Metric::AcceptErrorsOther);
     }
 }
 
@@ -150,7 +160,7 @@ void Acceptor::schedule_backoff() noexcept {
             backoff_ = *timer;
             return;
         }
-        ++error_count_;
+        note_error();
         const std::weak_ptr<char> token = epoch_;
         const Result<void> queued = loop_.post([this, token] {
             if (token.lock()) {
@@ -158,10 +168,10 @@ void Acceptor::schedule_backoff() noexcept {
             }
         });
         if (!queued) {
-            ++error_count_;  // nothing left to try: stay paused until stop() / start()
+            note_error();  // nothing left to try: stay paused until stop() / start()
         }
     } catch (const std::exception&) {
-        ++error_count_;  // allocating the callback failed: same outcome, stay paused
+        note_error();  // allocating the callback failed: same outcome, stay paused
     }
 }
 
@@ -169,7 +179,7 @@ void Acceptor::resume() noexcept {
     backoff_.reset();
     const Result<WatchHandle> watch = loop_.watch(listener_.fd(), PollEvents::Read, *this);
     if (!watch) {
-        ++error_count_;
+        note_error();
         pause();
         return;
     }
