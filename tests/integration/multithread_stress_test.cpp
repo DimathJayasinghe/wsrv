@@ -113,6 +113,8 @@ TEST(MultiThreadStress, ChurnPushesAndAShutdownInTheMiddleOfTraffic) {
     builder.listen("127.0.0.1", 0).handler_factory(factory);
     builder.config().threads = 4;
     builder.config().max_connections = 256;
+    builder.config().max_connections_per_ip = 0;  // one address churns on purpose (ADR-0021)
+    builder.config().max_new_connections_per_ip_per_second = 0;
     builder.config().shutdown_grace = 1s;
     builder.config().handshake.allowed_origins = {"https://app.example.com"};
     RunningServer running{builder};

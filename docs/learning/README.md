@@ -34,5 +34,6 @@ We teach as we build. Each lesson answers three questions: **What** are we build
 | 27 | [Compressing messages safely (permessage-deflate)](27-compressing-messages-safely.md) | M9 | written (slices 1-4) |
 | 28 | [Lifetimes across callbacks (a use-after-free found by review)](28-lifetimes-across-callbacks.md) | M9 | written (security review) |
 | 29 | [Who reports the end? (four small bugs from a code review)](29-who-reports-the-end.md) | M10 | written (slice 0) |
+| 30 | [One client, one budget (per-IP limits)](30-one-client-one-budget.md) | M10 | written (slice 1) |
 
 Lesson template: *Goal → Background (the problem) → Design (why this way) → Walkthrough (code, small steps) → Tests (what proves it works) → Pitfalls → Exercises.*

@@ -116,4 +116,11 @@ TEST(Usage, NamesThePermessageDeflateFlagsAndSaysItIsOffByDefault) {  // ADR-002
     EXPECT_NE(text.find("off by default"), std::string_view::npos);
 }
 
+TEST(Usage, NamesThePerIpLimitFlagsWithTheirDefaults) {  // ADR-0021 section 5
+    const std::string_view text = wsrv::wsrvd::usage();
+    EXPECT_NE(text.find("--max-connections-per-ip"), std::string_view::npos);
+    EXPECT_NE(text.find("--max-new-connections-per-ip-per-second"), std::string_view::npos);
+    EXPECT_NE(text.find("0 = no limit"), std::string_view::npos);
+}
+
 }  // namespace

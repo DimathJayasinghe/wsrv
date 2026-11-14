@@ -64,6 +64,15 @@ TEST(DaemonConfig,
     EXPECT_EQ(config.embedded().tls_sni()[0].key, "/k/app.pem");
 }
 
+TEST(DaemonConfig, ThePerIpLimitsComeInAsFlagsLikeAnyOtherKey) {  // ADR-0021 section 5
+    DaemonConfig config = with_socket();
+    ASSERT_TRUE(config.apply_argument("--max-connections-per-ip=20").has_value());
+    ASSERT_TRUE(config.apply_argument("--max-new-connections-per-ip-per-second=0").has_value());
+    ASSERT_TRUE(config.finish().has_value());
+    EXPECT_EQ(config.embedded().server().max_connections_per_ip, 20U);
+    EXPECT_EQ(config.embedded().server().max_new_connections_per_ip_per_second, 0U);
+}
+
 TEST(DaemonConfig, PermessageDeflateComesInAsFlagsLikeAnyOtherKey) {  // ADR-0020 section 6
     DaemonConfig config = with_socket();
     ASSERT_TRUE(config.apply_argument("--permessage-deflate=true").has_value());

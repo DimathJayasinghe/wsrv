@@ -87,6 +87,11 @@ WSRV_API void wsrv_config_free(wsrv_config *config); /* NULL is fine */
  *   allow_missing_origin "true"/"false"/"1"/"0": accept clients that send no Origin header
  *   max_message_size     largest message in bytes, both directions
  *   max_connections      simultaneous connections
+ *   max_connections_per_ip  simultaneous connections from one client address (IPv4, or the /64
+ *                        of an IPv6 address), default 100; 0 = no limit. Over it: HTTP 429.
+ *   max_new_connections_per_ip_per_second  new connections per second from one client address,
+ *                        default 50; 0 = no limit. Over it: HTTP 429. Behind a reverse proxy every
+ *                        user is one address: raise or switch off.
  *   shutdown_grace_ms    graceful shutdown deadline
  *   event_queue_events   most events waiting for the host
  *   event_queue_bytes    most payload bytes waiting for the host

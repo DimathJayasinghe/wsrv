@@ -226,7 +226,11 @@ TEST(ServerDeflate, ABadOfferIsDeclinedNotFatalAndTheConnectionWorksUncompressed
 // checked here.
 TEST(ServerDeflate, ChurnOfCompressedConnectionsLeavesNoDescriptorsBehind) {
     EchoFactory factory;
-    RunningServer server{deflate_builder(factory)};
+    wsrv::ServerBuilder builder = deflate_builder(factory);
+    // This test is about the global cap and descriptor hygiene, not the per-IP limits (ADR-0021).
+    builder.config().max_connections_per_ip = 0;
+    builder.config().max_new_connections_per_ip_per_second = 0;
+    RunningServer server{builder};
     const std::size_t before = open_descriptors();
     const std::string text = json_like(2000);
     for (int i = 0; i < 100; ++i) {

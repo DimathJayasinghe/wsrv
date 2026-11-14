@@ -218,6 +218,19 @@ TEST(EmbeddedServer, ClientsThatIgnoreTheShutdownStillGiveTheHostOneCloseEachOnE
     EXPECT_EQ(closes, 4);
 }
 
+// ADR-0021: the limit is a text key like every other, so the C API, PHP and wsrvd get it for free.
+TEST(EmbeddedServer, ThePerIpCapKeyRefusesTheNextConnectionFromTheSameAddressWith429) {
+    EmbeddedConfig config = base_config();
+    ASSERT_TRUE(config.set("max_connections_per_ip", "1").has_value());
+    const auto server = started(config);
+    TcpClient first{server->port()};
+    ASSERT_TRUE(first.upgrade());
+    TcpClient second{server->port()};
+    const std::string head = second.read_http_head();
+    EXPECT_EQ(head.rfind("HTTP/1.1 429 ", 0), 0U) << head;
+    EXPECT_TRUE(second.wait_for_eof());
+}
+
 TEST(EmbeddedServer, ASecondServerCanBeStartedAfterTheFirstIsGone) {
     std::uint16_t port = 0;
     {

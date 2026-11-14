@@ -36,12 +36,13 @@ struct TlsSniSetting {
 /// EventQueue::create() validate once, so the rules live in one place each.
 ///
 /// Keys: listen_host, listen_port, threads, allow_origin (repeatable), allow_missing_origin,
-/// max_message_size, max_connections, shutdown_grace_ms, event_queue_events, event_queue_bytes,
-/// and for the handshake hook (ADR-0018): handshake_hook (bool, off), handshake_forward_header
-/// (repeatable header name), handshake_decision_timeout_ms (> 0), max_pending_handshakes (> 0).
-/// and for TLS (ADR-0019): tls_cert (certificate chain file, PEM), tls_key (private key file, PEM),
-/// tls_sni (repeatable "name=cert_file:key_file", at most 64: a certificate for one host name or
-/// one
+/// max_message_size, max_connections, max_connections_per_ip (default 100) and
+/// max_new_connections_per_ip_per_second (default 50), both 0 = no limit (ADR-0021),
+/// shutdown_grace_ms, event_queue_events, event_queue_bytes, and for the handshake hook (ADR-0018):
+/// handshake_hook (bool, off), handshake_forward_header (repeatable header name),
+/// handshake_decision_timeout_ms (> 0), max_pending_handshakes (> 0). and for TLS (ADR-0019):
+/// tls_cert (certificate chain file, PEM), tls_key (private key file, PEM), tls_sni (repeatable
+/// "name=cert_file:key_file", at most 64: a certificate for one host name or one
 /// "*.example.com" wildcard; the paths must not contain a colon).
 /// and for permessage-deflate (ADR-0020 section 6, off by default): permessage_deflate (bool),
 /// deflate_server_max_window_bits (9..15, default 12), deflate_server_no_context_takeover (bool,
@@ -111,6 +112,8 @@ private:
     [[nodiscard]] Result<void> set_allow_missing_origin(std::string_view value);
     [[nodiscard]] Result<void> set_max_message_size(std::string_view value);
     [[nodiscard]] Result<void> set_max_connections(std::string_view value);
+    [[nodiscard]] Result<void> set_max_connections_per_ip(std::string_view value);
+    [[nodiscard]] Result<void> set_max_new_connections_per_ip_per_second(std::string_view value);
     [[nodiscard]] Result<void> set_shutdown_grace_ms(std::string_view value);
     [[nodiscard]] Result<void> set_event_queue_events(std::string_view value);
     [[nodiscard]] Result<void> set_event_queue_bytes(std::string_view value);

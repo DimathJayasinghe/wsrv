@@ -126,6 +126,31 @@ TEST(EmbeddedConfig, ValuesThatAreNotCleanNumbersOrBooleansAreRefusedAndChangeNo
     EXPECT_FALSE(config.server().handshake.allow_missing_origin);
 }
 
+TEST(EmbeddedConfig, ThePerIpLimitKeysAreStoredAndZeroSwitchesThemOff) {  // ADR-0021 section 5
+    EmbeddedConfig config;
+    EXPECT_EQ(config.server().max_connections_per_ip, 100U);  // the documented defaults
+    EXPECT_EQ(config.server().max_new_connections_per_ip_per_second, 50U);
+    EXPECT_TRUE(config.set("max_connections_per_ip", "7").has_value());
+    EXPECT_TRUE(config.set("max_new_connections_per_ip_per_second", "9").has_value());
+    EXPECT_EQ(config.server().max_connections_per_ip, 7U);
+    EXPECT_EQ(config.server().max_new_connections_per_ip_per_second, 9U);
+    EXPECT_TRUE(config.set("max_connections_per_ip", "0").has_value());
+    EXPECT_EQ(config.server().max_connections_per_ip, 0U);
+}
+
+TEST(EmbeddedConfig, MalformedPerIpLimitsAreRefusedAndChangeNothing) {
+    EmbeddedConfig config;
+    for (const char* key : {"max_connections_per_ip", "max_new_connections_per_ip_per_second"}) {
+        for (const char* bad : {"", "-1", "12x", " 5"}) {
+            EXPECT_FALSE(config.set(key, bad).has_value()) << key << "='" << bad << "'";
+        }
+    }
+    EXPECT_FALSE(config.set("max_new_connections_per_ip_per_second", "4294967296").has_value())
+        << "does not fit the 32-bit field: refused, not wrapped";
+    EXPECT_EQ(config.server().max_connections_per_ip, 100U);
+    EXPECT_EQ(config.server().max_new_connections_per_ip_per_second, 50U);
+}
+
 TEST(EmbeddedConfig, BooleansAcceptOnlyTrueFalseOneZero) {
     EmbeddedConfig config;
     for (const char* yes : {"true", "1"}) {

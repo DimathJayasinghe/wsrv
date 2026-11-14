@@ -15,6 +15,7 @@
 #include "server/connection_table.hpp"
 #include "server/handler.hpp"
 #include "server/handshake_decider.hpp"
+#include "server/ip_limits.hpp"
 #include "server/loop_host.hpp"
 #include "server/pending_gate.hpp"
 #include "server/session_handle.hpp"
@@ -40,6 +41,7 @@ struct ShardShared {
     IHandshakeDecider* decider = nullptr;  // null = valid upgrades are accepted at once
     PendingGate* pending = nullptr;        // the bound on upgrades waiting for the decider
     ITransportWrapper* wrapper = nullptr;  // null = plain TCP; else wraps each accepted transport
+    IpLimits* ip_limits = nullptr;         // null = no per-IP limits; else its slot is given back
 };
 
 /// Everything that belongs to one loop thread: the loop, the connections it serves and what they
@@ -92,7 +94,8 @@ public:
               std::function<void()> on_drained);
 
 private:
-    void on_removed();
+    void on_removed(const Endpoint& peer);
+    void give_back(const Endpoint& peer);
     void report_drained();
 
     const ShardShared shared_;

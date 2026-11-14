@@ -2,6 +2,7 @@
 #include "server/server.hpp"
 
 #include "base/assert.hpp"
+#include "net/system_random.hpp"
 
 #include <array>
 #include <csignal>
@@ -9,7 +10,10 @@
 #include <memory>
 #include <new>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
+
+#include <sys/socket.h>
 
 namespace wsrv {
 
@@ -47,6 +51,9 @@ Result<void> Server::init() {
     try {
         negotiator_ = std::make_unique<HandshakeNegotiator>(config_.handshake);
         pending_ = std::make_unique<PendingGate>(effective_max_pending_handshakes(config_));
+        if (const Result<void> limits = make_ip_limits(); !limits) {
+            return limits;
+        }
         shared_ = std::make_unique<ShardShared>(ShardShared{config_,
                                                             *negotiator_,
                                                             factory_,
@@ -56,7 +63,8 @@ Result<void> Server::init() {
                                                             live_,
                                                             decider_,
                                                             pending_.get(),
-                                                            wrapper_});
+                                                            wrapper_,
+                                                            ip_limits_.get()});
     } catch (const std::invalid_argument&) {
         return fail(ErrorCode::InvalidConfig, "server: invalid handshake configuration");
     } catch (const std::bad_alloc&) {
@@ -81,6 +89,33 @@ Result<void> Server::init() {
         [this](Fd client, Endpoint peer) { on_accept(std::move(client), peer); },
         AcceptorConfig{});
     return acceptor_->start();
+}
+
+/// The per-IP table (ADR-0021), unless both limits are off. Its hash is keyed from the OS random
+/// source: source addresses are chosen by the peer, so an unkeyed hash could be made to collide.
+/// No random source means no table, and no table would mean no limits, so that fails the start.
+Result<void> Server::make_ip_limits() {
+    if (config_.max_connections_per_ip == 0 && config_.max_new_connections_per_ip_per_second == 0) {
+        return {};
+    }
+    std::array<std::byte, sizeof(std::uint64_t)> seed_bytes{};
+    SystemRandom random;
+    if (const Result<void> filled = random.fill(MutableByteView{seed_bytes}); !filled) {
+        return fail(ErrorCode::RandomUnavailable, "server: no random source for the per-IP table");
+    }
+    IpLimitsConfig limits;
+    limits.max_connections_per_ip = config_.max_connections_per_ip;
+    limits.max_new_connections_per_second = config_.max_new_connections_per_ip_per_second;
+    limits.max_tracked = 2 * config_.max_connections;  // each live connection holds one address
+    for (const std::byte b : seed_bytes) {
+        limits.hash_seed = (limits.hash_seed << 8U) | std::to_integer<std::uint64_t>(b);
+    }
+    try {
+        ip_limits_ = std::make_unique<IpLimits>(limits, clock_);
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "server: out of memory");
+    }
+    return {};
 }
 
 // ---- running ------------------------------------------------------------------------------------
@@ -154,6 +189,12 @@ void Server::on_accept(Fd client, const Endpoint& peer) {
         }
         return;
     }
+    if (ip_limits_ != nullptr) {
+        if (const Admission verdict = ip_limits_->admit(peer); verdict != Admission::Admitted) {
+            refuse_for_ip_limit(std::move(client), verdict);
+            return;
+        }
+    }
     live_.fetch_add(1);  // only this thread adds, so the check above cannot be overtaken
     const ConnectionId id = ++last_id_;
     const std::size_t target = next_shard_++ % (1 + workers_.size());
@@ -163,6 +204,28 @@ void Server::on_accept(Fd client, const Endpoint& peer) {
         hand_off(target - 1, std::move(client), peer, id);
     }
 }
+
+namespace {
+// Prebuilt answers for a refused address: one non-blocking send on a fresh socket (its send buffer
+// is empty, so these few bytes always fit), no allocation, no connection object (ADR-0021).
+constexpr std::string_view kAnswer429 = "HTTP/1.1 429 Too Many Requests\r\nRetry-After: "
+                                        "1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+constexpr std::string_view kAnswer503 = "HTTP/1.1 503 Service Unavailable\r\nRetry-After: "
+                                        "1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+}  // namespace
+
+/// An address over its limit: tell it so in one send and close. Best effort by design: a client
+/// that already sent its request may see a reset instead; the close is what counts. The table
+/// being full (an address-spraying flood) is a 503, the limits themselves are a 429.
+void Server::refuse_for_ip_limit(Fd client, Admission verdict) {
+    const std::uint64_t total = ip_limited_.fetch_add(1) + 1;
+    if ((total & (total - 1)) == 0) {  // log the 1st, 2nd, 4th, 8th...: rate-limited
+        logger_.log(LogLevel::Warn, "server: per-IP limit reached, refusing clients");
+    }
+    const std::string_view answer = verdict == Admission::TableFull ? kAnswer503 : kAnswer429;
+    static_cast<void>(
+        sys_.send(client.get(), answer.data(), answer.size(), MSG_NOSIGNAL | MSG_DONTWAIT));
+}  // the descriptor is closed here
 
 /// Give the descriptor to another loop. The task must be copyable, so the move-only Fd travels in
 /// a shared_ptr; if the task is never run (the loop is gone) the Fd is closed with it.
@@ -180,6 +243,9 @@ void Server::hand_off(std::size_t worker, Fd client, const Endpoint& peer, Conne
     }
     if (!handed_over) {
         live_.fetch_sub(1);
+        if (ip_limits_ != nullptr) {
+            ip_limits_->release(peer);
+        }
         rejected_.fetch_add(1);
         logger_.log(LogLevel::Warn, "server: a loop is overloaded, refusing a client");
     }

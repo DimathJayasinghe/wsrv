@@ -7,7 +7,7 @@
 
 namespace wsrv {
 
-ConnectionTable::ConnectionTable(EventLoop& loop, std::function<void()> on_removed)
+ConnectionTable::ConnectionTable(EventLoop& loop, std::function<void(const Endpoint&)> on_removed)
     : loop_{loop}, on_removed_{std::move(on_removed)} {}
 
 Connection& ConnectionTable::insert(std::unique_ptr<Connection> connection) {
@@ -21,9 +21,14 @@ Connection& ConnectionTable::insert(std::unique_ptr<Connection> connection) {
 void ConnectionTable::retire(ConnectionId id) {
     // Erase later, not now: the connection is still executing the call that retired it.
     const Result<void> queued = loop_.defer([this, id] {
-        connections_.erase(id);
+        const auto found = connections_.find(id);
+        if (found == connections_.end()) {
+            return;  // retired twice: nothing left to give back
+        }
+        const Endpoint peer = found->second->peer();  // copied: the connection is destroyed next
+        connections_.erase(found);
         if (on_removed_) {
-            on_removed_();
+            on_removed_(peer);
         }
     });
     WSRV_ASSERT(queued.has_value());  // sized from max_connections: one retire per connection

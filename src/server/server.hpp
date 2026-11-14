@@ -15,6 +15,7 @@
 #include "server/config.hpp"
 #include "server/handler.hpp"
 #include "server/handshake_decider.hpp"
+#include "server/ip_limits.hpp"
 #include "server/loop_shard.hpp"
 #include "server/pending_gate.hpp"
 #include "server/worker_thread.hpp"
@@ -93,6 +94,11 @@ public:
     [[nodiscard]] std::uint64_t rejected_connections() const noexcept {
         return rejected_.load();
     }
+    /// Connections refused by a per-IP limit (ADR-0021), not counted in rejected_connections().
+    /// Any-thread.
+    [[nodiscard]] std::uint64_t ip_limited_connections() const noexcept {
+        return ip_limited_.load();
+    }
 
     /// Construction goes through create() (passkey, so make_unique can call it).
     class Key {
@@ -103,9 +109,11 @@ public:
 
 private:
     [[nodiscard]] Result<void> init();
+    [[nodiscard]] Result<void> make_ip_limits();
     [[nodiscard]] Result<void> start_workers();
     void stop_workers();
     void on_accept(Fd client, const Endpoint& peer);
+    void refuse_for_ip_limit(Fd client, Admission verdict);
     void hand_off(std::size_t worker, Fd client, const Endpoint& peer, ConnectionId id);
     void begin_shutdown();
     void force_shutdown();
@@ -129,6 +137,7 @@ private:
     // shards die on their own threads), then loop 0's shard, which everything above may use.
     std::atomic<std::size_t> live_{0};      // connections alive in every shard: the global cap
     std::unique_ptr<PendingGate> pending_;  // upgrades waiting for the decider; outlives the shards
+    std::unique_ptr<IpLimits> ip_limits_;   // null = no per-IP limits; outlives the shards
     std::unique_ptr<HandshakeNegotiator> negotiator_;
     std::unique_ptr<ShardShared> shared_;
     std::unique_ptr<LoopShard> main_;  // shard 0, on the thread that created the server
@@ -146,6 +155,7 @@ private:
 
     std::atomic<std::size_t> drained_{0};
     std::atomic<std::uint64_t> rejected_{0};
+    std::atomic<std::uint64_t> ip_limited_{0};
 };
 
 }  // namespace wsrv
