@@ -116,6 +116,24 @@ TEST_F(AcceptorTest, AnUnexpectedAcceptErrorIsCountedAndDoesNotSpin) {
     EXPECT_LE(sys.calls(Call::Accept4), 4U);  // no busy loop on a persistent error
 }
 
+TEST_F(AcceptorTest, AcceptErrorsAreCountedByKindWhenAMetricsSinkIsGiven) {  // ADR-0023
+    wsrv::CounterBank bank;
+    AcceptorConfig config;
+    config.metrics = &bank;
+    auto acceptor = make(config);
+    sys.fail(Call::Accept4, EMFILE);
+    const Fd shed = connect_to(listener.local_endpoint());
+    pump();
+    EXPECT_EQ(bank.read(wsrv::Metric::AcceptErrorsEmfile), 1U);
+    EXPECT_EQ(bank.read(wsrv::Metric::AcceptErrorsOther), 0U);
+    clock.advance(150ms);  // the back-off ends
+    sys.fail(Call::Accept4, EIO);
+    const Fd next = connect_to(listener.local_endpoint());
+    pump(2);
+    EXPECT_EQ(bank.read(wsrv::Metric::AcceptErrorsOther), 1U);
+    EXPECT_EQ(bank.read(wsrv::Metric::AcceptErrorsEmfile), 1U);
+}
+
 TEST_F(AcceptorTest, OutOfDescriptorsShedsTheWaitingClientBacksOffAndThenResumes) {  // EC-N05
     AcceptorConfig config;
     config.emfile_backoff = 100ms;

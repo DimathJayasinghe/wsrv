@@ -98,22 +98,25 @@ Two limits keep one client address from taking the whole server: `max_connection
 
 ## 3. Metrics (Prometheus text exposition on a separate admin listener, loopback by default)
 
-| Metric | Type |
-|---|---|
-| `wsrv_connections_current` | gauge |
-| `wsrv_connections_total{result="accepted|rejected_limit|handshake_failed|…"}` | counter |
-| `wsrv_messages_total{direction,type}` | counter |
-| `wsrv_bytes_total{direction}` | counter |
-| `wsrv_close_total{code}` | counter |
-| `wsrv_handshake_seconds` | histogram |
-| `wsrv_loop_lag_seconds{loop}` | histogram (detects blocking handlers) |
-| `wsrv_outbound_queue_bytes` | histogram |
-| `wsrv_slow_consumer_drops_total` | counter |
-| `wsrv_accept_errors_total{errno}` | counter |
-| `wsrv_tls_handshake_failures_total` | counter |
-| `wsrv_config_reload_total{result}` | counter |
+ADR-0023. Counters live in one bank per loop (relaxed atomics, no lock) and are summed when read; every label value is a compile-time constant, so peer data can never create a time series. A scrape is a snapshot taken counter by counter (not atomic across counters). Embedders read the page with `Server::metrics_text()`; the admin listener that serves it over HTTP is the next slice (section 3.1).
 
-Admin endpoints: `/metrics`, `/healthz` (liveness), `/readyz` (accepting & not shutting down). Admin port never exposed publicly (documented).
+| Metric | Type | Status |
+|---|---|---|
+| `wsrv_connections_current` | gauge | done |
+| `wsrv_connections_total{result}` | counter | done: `accepted`, `rejected_global_cap` (also a loop too overloaded to take a client), `rejected_ip_connections`, `rejected_ip_rate`, `rejected_ip_table`, `handshake_failed` |
+| `wsrv_messages_total{direction,type}` | counter | done: `in`/`out` x `text`/`binary` (a streamed message counts when it starts) |
+| `wsrv_bytes_total{direction}` | counter | done: bytes at the socket (ciphertext under TLS); `out` counts bytes the transport accepted |
+| `wsrv_close_total{class}` | counter | done: `normal` (1000, 1001), `protocol_error` (1002, 1003, 1007, 1009, 1010), `policy` (1008), `abnormal` (no Close frame: 1005, 1006, 1015), `other` (1011-1014 and application codes) |
+| `wsrv_slow_consumer_drops_total` | counter | done: slow-consumer close (1008) plus write-stall drops |
+| `wsrv_accept_errors_total{errno}` | counter | done: `emfile` (out of descriptors, the reserve-fd trick ran), `other` |
+| `wsrv_tls_handshake_failures_total` | counter | done: TLS failures before the upgrade |
+| `wsrv_handshake_seconds` | histogram | planned (ADR-0023 section 5) |
+| `wsrv_loop_lag_seconds{loop}` | histogram (detects blocking handlers) | planned |
+| `wsrv_outbound_queue_bytes` | histogram | planned |
+| `wsrv_config_reload_total{result}` | counter | planned (`wsrvd` reload) |
+
+### 3.1 Admin endpoint
+Planned in the next slice: `/metrics`, `/healthz` (liveness), `/readyz` (accepting & not shutting down) on a separate listener, loopback by default, off unless configured. The admin port is never exposed publicly (documented).
 
 ## 4. Lifecycle
 
@@ -138,6 +141,7 @@ Admin endpoints: `/metrics`, `/healthz` (liveness), `/readyz` (accepting & not s
 |---|---|---|
 | Start fails with `FdLimit` | log line "needs N descriptors ... soft / hard" | `ulimit -Hn` or systemd `LimitNOFILE=` below `max_connections` + reserve: raise it or lower `max_connections` |
 | Accept errors `EMFILE` | `wsrv_accept_errors_total`, `ulimit -n` | descriptor leak, or other code in an embedding process using the headroom |
+| Many refusals | `wsrv_connections_total{result="rejected_*"}` | global cap, per-IP limits (section 1.2) or an address-spraying flood (`rejected_ip_table`) |
 | High `loop_lag` | handler profile | blocking user code |
 | Rising outbound queue / slow-consumer drops | per-conn histogram | slow clients, broadcast too large |
 | Real users get 429 | client address behind one proxy/NAT? | per-address limits (section 1.2): raise or set to 0, limit at the proxy |

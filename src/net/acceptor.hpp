@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "base/metrics.hpp"
 #include "net/endpoint.hpp"
 #include "net/event_loop.hpp"
 #include "net/fd.hpp"
@@ -22,6 +23,8 @@ struct AcceptorConfig {
     /// How long accepting pauses after running out of descriptors (or after an unexpected accept
     /// error), so the loop does not spin on a condition that cannot clear instantly (EC-N05).
     std::chrono::milliseconds emfile_backoff{100};
+    /// Where accept errors are counted (ADR-0023); null counts nothing. Borrowed.
+    IMetrics* metrics = nullptr;
 };
 
 /// Accepts connections from a listener inside the event loop and hands each one to a callback.
@@ -73,6 +76,7 @@ public:
     void on_event(PollEvents events) noexcept override;
 
 private:
+    void note_error() noexcept;
     [[nodiscard]] SysResult accept_one(sockaddr_storage& peer);
     void accept_burst() noexcept;
     void deliver(Fd client, const sockaddr_storage& peer) noexcept;

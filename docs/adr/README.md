@@ -26,5 +26,6 @@ One decision per file, immutable once *Accepted* (supersede with a new ADR). Use
 | [0020](0020-permessage-deflate.md) | permessage-deflate (RFC 7692) over system zlib | Accepted |
 | [0021](0021-per-ip-limits.md) | Per-IP connection and connection-rate limits | Accepted |
 | [0022](0022-descriptor-budget-check.md) | Descriptor budget check at start (RLIMIT_NOFILE) | Accepted |
+| [0023](0023-metrics-and-admin-endpoint.md) | Metrics and the admin endpoint | Accepted |
 
 Statuses: Proposed → Accepted → (Deprecated | Superseded by ADR-NNNN). The project owner moves Proposed → Accepted.

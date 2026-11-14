@@ -4,6 +4,7 @@
 #include "base/clock.hpp"
 #include "base/error.hpp"
 #include "base/logger.hpp"
+#include "base/metrics.hpp"
 #include "net/acceptor.hpp"
 #include "net/endpoint.hpp"
 #include "net/event_loop.hpp"
@@ -24,6 +25,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace wsrv {
@@ -92,12 +94,27 @@ public:
     [[nodiscard]] Endpoint local_endpoint() const;
     /// Connections refused because max_connections was reached. Any-thread.
     [[nodiscard]] std::uint64_t rejected_connections() const noexcept {
-        return rejected_.load();
+        return metrics().value(Metric::RejectedGlobalCap);
     }
     /// Connections refused by a per-IP limit (ADR-0021), not counted in rejected_connections().
     /// Any-thread.
     [[nodiscard]] std::uint64_t ip_limited_connections() const noexcept {
-        return ip_limited_.load();
+        const MetricsSnapshot now = metrics();
+        return now.value(Metric::RejectedIpConnections) + now.value(Metric::RejectedIpRate) +
+               now.value(Metric::RejectedIpTable);
+    }
+    /// The counters of every loop summed (ADR-0023): a snapshot taken counter by counter.
+    /// Any-thread.
+    [[nodiscard]] MetricsSnapshot metrics() const noexcept {
+        return banks_->snapshot();
+    }
+    /// The values that are state, not events. Any-thread.
+    [[nodiscard]] MetricsGauges metrics_gauges() const noexcept {
+        return MetricsGauges{live_.load()};
+    }
+    /// Prometheus text of metrics() and metrics_gauges(), what the admin endpoint serves.
+    [[nodiscard]] std::string metrics_text() const {
+        return render_prometheus(metrics(), metrics_gauges());
     }
 
     /// Construction goes through create() (passkey, so make_unique can call it).
@@ -113,6 +130,7 @@ private:
     [[nodiscard]] Result<void> start_workers();
     void stop_workers();
     void on_accept(Fd client, const Endpoint& peer);
+    [[nodiscard]] static Metric refusal_metric(Admission verdict) noexcept;
     void refuse_for_ip_limit(Fd client, Admission verdict);
     void hand_off(std::size_t worker, Fd client, const Endpoint& peer, ConnectionId id);
     void begin_shutdown();
@@ -138,6 +156,7 @@ private:
     std::atomic<std::size_t> live_{0};      // connections alive in every shard: the global cap
     std::unique_ptr<PendingGate> pending_;  // upgrades waiting for the decider; outlives the shards
     std::unique_ptr<IpLimits> ip_limits_;   // null = no per-IP limits; outlives the shards
+    std::unique_ptr<MetricBanks> banks_;    // one counter bank per loop; outlives the shards
     std::unique_ptr<HandshakeNegotiator> negotiator_;
     std::unique_ptr<ShardShared> shared_;
     std::unique_ptr<LoopShard> main_;  // shard 0, on the thread that created the server
@@ -154,8 +173,6 @@ private:
     std::optional<TimerHandle> grace_timer_;
 
     std::atomic<std::size_t> drained_{0};
-    std::atomic<std::uint64_t> rejected_{0};
-    std::atomic<std::uint64_t> ip_limited_{0};
 };
 
 }  // namespace wsrv

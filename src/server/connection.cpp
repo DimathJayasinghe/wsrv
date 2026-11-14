@@ -16,6 +16,35 @@ namespace {
 /// measured in ticks.
 constexpr std::chrono::milliseconds kTickInterval{1000};
 
+/// How a connection ended, as a class of the close code: a closed set, so the number of time
+/// series never depends on the peer (ADR-0023 section 1). 1005/1006/1015 are never sent on the
+/// wire: they mean "no Close frame arrived", an abnormal end.
+[[nodiscard]] Metric close_metric(CloseCode code) noexcept {
+    switch (code) {
+    case CloseCode::Normal:
+    case CloseCode::GoingAway:
+        return Metric::CloseNormal;
+    case CloseCode::ProtocolError:
+    case CloseCode::UnsupportedData:
+    case CloseCode::InvalidPayload:
+    case CloseCode::MessageTooBig:
+    case CloseCode::MandatoryExtension:
+        return Metric::CloseProtocolError;
+    case CloseCode::PolicyViolation:
+        return Metric::ClosePolicy;
+    case CloseCode::NoStatusReceived:
+    case CloseCode::AbnormalClosure:
+    case CloseCode::TlsHandshake:
+        return Metric::CloseAbnormal;
+    case CloseCode::InternalError:
+    case CloseCode::ServiceRestart:
+    case CloseCode::TryAgainLater:
+    case CloseCode::BadGateway:
+        return Metric::CloseOther;
+    }
+    return Metric::CloseOther;  // an application code (3000-4999) or anything else
+}
+
 /// The configuration of ONE connection's session: the server-wide one, with permessage-deflate on
 /// only if this handshake agreed to it (ADR-0020), and with the parameters it agreed to. Without an
 /// agreement the extension is switched off, which keeps RSV1 illegal (RFC 6455 section 5.2): a
@@ -156,6 +185,7 @@ void Connection::on_readable() {
             return;
         }
         bytes += *got;
+        count(Metric::BytesIn, *got);
         on_bytes(ctx_.scratch.first(*got));
     }
 }
@@ -186,6 +216,7 @@ void Connection::on_handshake_bytes(MutableByteView chunk) {
     case HandshakeStep::Finished:
         return;
     case HandshakeStep::Rejected:
+        count(Metric::HandshakeFailed);
         disarm(handshake_timer_);
         head_out_ = std::move(outcome.response);
         close_after_head_ = true;
@@ -325,6 +356,7 @@ void Connection::end_wait() noexcept {
 }
 
 void Connection::refuse(int status) {
+    count(Metric::HandshakeFailed);
     disarm(handshake_timer_);
     end_wait();
     phase_ =
@@ -365,6 +397,8 @@ void Connection::dispatch(const SessionEvent& event) {
             if (handler_ == nullptr) {
                 return;
             }
+            count(event.type == MessageType::Text ? Metric::MessagesInText
+                                                  : Metric::MessagesInBinary);
             if (event.type == MessageType::Text) {
                 handler_->on_text(*this, as_chars(event.data));
             } else {
@@ -460,6 +494,7 @@ Connection::WriteStep Connection::write_once() {
         }
         return WriteStep::Stopped;
     }
+    count(Metric::BytesOut, *sent);
     consume_output(*sent);
     note_write_progress();
     return WriteStep::Progress;
@@ -618,6 +653,7 @@ Result<void> Connection::apply_send_policy(Result<void> result) {
     }
     if (ctx_.config.slow_consumer == SlowConsumerPolicy::Close) {
         log(LogLevel::Warn, "slow consumer, closing");
+        count(Metric::SlowConsumerDrops);
         close(CloseCode::PolicyViolation, "slow consumer");  // the Close has its own queue slot
     } else {
         writable_owed_ = true;  // the handler may retry once the queue has drained
@@ -639,14 +675,22 @@ Result<void> Connection::send_text(std::string_view text) {
     if (phase_ != Phase::Established || !session_) {
         return fail(ErrorCode::Closing, "connection closed");
     }
-    return apply_send_policy(session_->send_text(text));
+    Result<void> sent = session_->send_text(text);
+    if (sent) {
+        count(Metric::MessagesOutText);
+    }
+    return apply_send_policy(std::move(sent));
 }
 
 Result<void> Connection::send_binary(ByteView data) {
     if (phase_ != Phase::Established || !session_) {
         return fail(ErrorCode::Closing, "connection closed");
     }
-    return apply_send_policy(session_->send_binary(data));
+    Result<void> sent = session_->send_binary(data);
+    if (sent) {
+        count(Metric::MessagesOutBinary);
+    }
+    return apply_send_policy(std::move(sent));
 }
 
 // ---- streaming writer ---------------------------------------------------------------------------
@@ -674,6 +718,7 @@ Result<MessageWriter> Connection::begin_message(Opcode type) {
     if (const Result<void> opened = session_->begin_message(type); !opened) {
         return std::unexpected{opened.error()};
     }
+    count(type == Opcode::Text ? Metric::MessagesOutText : Metric::MessagesOutBinary);
     return MessageWriter{stream_link_};
 }
 
@@ -726,6 +771,9 @@ void Connection::close(CloseCode code, std::string_view reason) {
 // ---- ending -------------------------------------------------------------------------------------
 
 void Connection::transport_failed(const Error& error) {
+    if (error.code == ErrorCode::TlsFailure && phase_ != Phase::Established) {
+        count(Metric::TlsHandshakeFailures);
+    }
     if (error.code == ErrorCode::Io && opened_ && handler_) {
         guarded([&] { handler_->on_error(*this, error); });
     }
@@ -754,6 +802,7 @@ void Connection::finish(const std::optional<CloseInfo>& info) {
     if (opened_) {
         opened_ = false;
         const CloseInfo reported = info.value_or(CloseInfo{});
+        count(close_metric(reported.code));
         guarded([&] { handler_->on_close(*this, reported); });
     }
     ctx_.host.retire(id_);
@@ -851,7 +900,14 @@ void Connection::on_write_stall() {
     stall_timer_ = TimerHandle{};
     if (phase_ != Phase::Finished) {
         log(LogLevel::Warn, "peer accepts no data, dropping the connection");
+        count(Metric::SlowConsumerDrops);
         drop_transport();
+    }
+}
+
+void Connection::count(Metric metric, std::uint64_t amount) const noexcept {
+    if (ctx_.metrics != nullptr) {
+        ctx_.metrics->add(metric, amount);
     }
 }
 

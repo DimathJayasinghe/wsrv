@@ -36,5 +36,6 @@ We teach as we build. Each lesson answers three questions: **What** are we build
 | 29 | [Who reports the end? (four small bugs from a code review)](29-who-reports-the-end.md) | M10 | written (slice 0) |
 | 30 | [One client, one budget (per-IP limits)](30-one-client-one-budget.md) | M10 | written (slice 1) |
 | 31 | [Fail at start, not under load (descriptor budget)](31-fail-at-start-not-under-load.md) | M10 | written (slice 1b) |
+| 32 | [Counting without a lock (metrics)](32-counting-without-a-lock.md) | M10 | written (slice 2) |
 
 Lesson template: *Goal → Background (the problem) → Design (why this way) → Walkthrough (code, small steps) → Tests (what proves it works) → Pitfalls → Exercises.*

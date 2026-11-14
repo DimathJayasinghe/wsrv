@@ -4,6 +4,7 @@
 #include "base/clock.hpp"
 #include "base/error.hpp"
 #include "base/logger.hpp"
+#include "base/metrics.hpp"
 #include "net/endpoint.hpp"
 #include "net/event_loop.hpp"
 #include "net/fd.hpp"
@@ -42,6 +43,7 @@ struct ShardShared {
     PendingGate* pending = nullptr;        // the bound on upgrades waiting for the decider
     ITransportWrapper* wrapper = nullptr;  // null = plain TCP; else wraps each accepted transport
     IpLimits* ip_limits = nullptr;         // null = no per-IP limits; else its slot is given back
+    MetricBanks& banks;                    // each shard claims one bank for its counters
 };
 
 /// Everything that belongs to one loop thread: the loop, the connections it serves and what they
@@ -72,6 +74,10 @@ public:
     [[nodiscard]] EventLoop& loop() noexcept {
         return *loop_;
     }
+    /// This loop's counters (ADR-0023); the loop thread writes, any thread may read.
+    [[nodiscard]] CounterBank& metrics() noexcept {
+        return bank_;
+    }
 
     /// Serve an accepted client. The caller already counted it in `shared.live`; if it cannot be
     /// served (out of memory) the count is given back and the descriptor closed.
@@ -99,6 +105,7 @@ private:
     void report_drained();
 
     const ShardShared shared_;
+    CounterBank& bank_;  // claimed from shared_.banks; owned by the server, which outlives us
     std::function<void()> on_drained_;
     std::unique_ptr<EventLoop> loop_;
     std::vector<std::byte> scratch_;
