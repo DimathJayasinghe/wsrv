@@ -54,7 +54,7 @@ Result<void> Broker::add_locked(const SessionHandle& handle, std::string_view to
     }
     try {
         topics_[std::string{topic}].emplace(id, handle);
-        by_connection_[id].emplace(std::string{topic});
+        by_connection_[id].emplace(topic);
     } catch (const std::bad_alloc&) {
         static_cast<void>(remove_locked(id, topic));  // whatever half was inserted goes again
         return fail(ErrorCode::ResourceExhausted, "broker: out of memory");
