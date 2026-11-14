@@ -81,8 +81,11 @@ TEST(ServerMetrics, ANormalConversationIsCountedInBothDirections) {
         EXPECT_EQ(value(running, Metric::MessagesInText), 1U);
         EXPECT_EQ(value(running, Metric::MessagesInBinary), 1U);
         EXPECT_EQ(value(running, Metric::MessagesOutText), 1U);
-        EXPECT_GT(value(running, Metric::BytesIn), 300U) << "the request head and both frames";
-        EXPECT_GT(value(running, Metric::BytesOut), 300U) << "the 101 and both echoes";
+        // The client may read the echo before the server has finished counting what it sent.
+        EXPECT_TRUE(eventually([&] { return value(running, Metric::BytesIn) > 300; }))
+            << "the request head and both frames";
+        EXPECT_TRUE(eventually([&] { return value(running, Metric::BytesOut) > 300; }))
+            << "the 101 and both echoes";
         ASSERT_TRUE(client.send_frame(Opcode::Close, std::string("\x03\xE8", 2)));  // 1000
         ASSERT_TRUE(client.read_frame().has_value());  // our Close back
     }
