@@ -110,6 +110,11 @@ public:
     }
     /// The counters of every loop summed (ADR-0023): a snapshot taken counter by counter.
     /// Any-thread.
+    /// A counter bank any thread may add to (the broker's, ADR-0024 section 6). Valid while the
+    /// server object lives; its counts appear in metrics() like every other bank's.
+    [[nodiscard]] IMetrics& shared_metrics() noexcept {
+        return banks_->shared();
+    }
     [[nodiscard]] MetricsSnapshot metrics() const noexcept {
         return banks_->snapshot();
     }
