@@ -52,6 +52,8 @@ wsrv_add_test(NAME server_metrics_server_test SOURCES server/metrics_server_test
 wsrv_add_test(NAME server_admin_http_test SOURCES server/admin_http_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_broker_test SOURCES server/broker_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_broker_server_test SOURCES server/broker_server_test.cpp LINK wsrv::server)
+wsrv_add_test(NAME examples_chat_test SOURCES examples/chat_test.cpp LINK wsrv::server)
+target_include_directories(examples_chat_test PRIVATE "${PROJECT_SOURCE_DIR}/examples")  # chat/chat.hpp
 wsrv_add_test(NAME server_admin_server_test SOURCES server/admin_server_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_session_handle_test SOURCES server/session_handle_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_handshake_decider_test SOURCES server/handshake_decider_test.cpp LINK wsrv::server)

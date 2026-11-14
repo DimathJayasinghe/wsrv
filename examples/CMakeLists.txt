@@ -7,3 +7,7 @@ if(WSRV_ENABLE_TLS)
     target_compile_definitions(echo PRIVATE WSRV_HAS_TLS=1)
 endif()
 wsrv_apply_warnings(echo)
+
+add_executable(chat chat/main.cpp)
+target_link_libraries(chat PRIVATE wsrv::server)
+wsrv_apply_warnings(chat)
