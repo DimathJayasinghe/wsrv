@@ -118,6 +118,9 @@ TEST(Server, ChurnLeavesNoDescriptorsAndTheCapFreeAgain) {  // T15, NFR-R3
     EchoFactory factory;
     wsrv::ServerBuilder builder = echo_builder(factory);
     builder.config().max_connections = 8;
+    // This test is about the global cap and descriptor hygiene, not the per-IP limits (ADR-0021).
+    builder.config().max_connections_per_ip = 0;
+    builder.config().max_new_connections_per_ip_per_second = 0;
     RunningServer running{builder};
     const std::size_t before = open_descriptors();
     for (int round = 0; round < 100; ++round) {

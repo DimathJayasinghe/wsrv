@@ -50,7 +50,8 @@ LoopShard::LoopShard(Key /*unused*/,
                      std::unique_ptr<EventLoop> loop,
                      std::function<void()> on_drained)
     : shared_{shared}, on_drained_{std::move(on_drained)}, loop_{std::move(loop)} {
-    table_ = std::make_unique<ConnectionTable>(*loop_, [this] { on_removed(); });
+    table_ = std::make_unique<ConnectionTable>(*loop_,
+                                               [this](const Endpoint& peer) { on_removed(peer); });
     host_ = std::make_unique<LoopHost>(*loop_, shared_.clock, shared_.logger, *table_);
     scratch_.resize(kScratchSize);
     link_ = std::make_shared<LoopLink>(*loop_, *table_);
@@ -83,7 +84,7 @@ void LoopShard::adopt(Fd client, const Endpoint& peer, ConnectionId id) {
         if (shared_.wrapper != nullptr) {
             transport = shared_.wrapper->wrap(std::move(transport));
             if (!transport) {
-                shared_.live.fetch_sub(1);  // the socket was closed with the failed wrapper
+                give_back(peer);  // the socket was closed with the failed wrapper
                 shared_.logger.log(LogLevel::Error, "server: cannot wrap a connection's transport");
                 return;
             }
@@ -91,7 +92,7 @@ void LoopShard::adopt(Fd client, const Endpoint& peer, ConnectionId id) {
         connection = &table_->insert(
             std::make_unique<Connection>(id, peer, std::move(transport), *context_));
     } catch (const std::exception&) {
-        shared_.live.fetch_sub(1);  // never reached the table: nothing will give the slot back
+        give_back(peer);  // never reached the table: nothing else will give the slots back
         shared_.logger.log(LogLevel::Error, "server: out of memory accepting a connection");
         return;
     }
@@ -110,8 +111,16 @@ void LoopShard::abort_all() {
     table_->for_each([](Connection& connection) { connection.abort(); });
 }
 
-void LoopShard::on_removed() {
+/// The global slot and the per-IP slot a connection took at accept (Server::on_accept).
+void LoopShard::give_back(const Endpoint& peer) {
     shared_.live.fetch_sub(1);
+    if (shared_.ip_limits != nullptr) {
+        shared_.ip_limits->release(peer);
+    }
+}
+
+void LoopShard::on_removed(const Endpoint& peer) {
+    give_back(peer);
     if (shutting_down_ && table_->empty()) {
         report_drained();
     }

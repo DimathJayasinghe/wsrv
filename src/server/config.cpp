@@ -26,6 +26,13 @@ namespace {
     if (config.threads == 0 || config.threads > kMaxConfiguredThreads) {
         return std::unexpected{bad_config("threads out of range")};
     }
+    if (config.max_connections_per_ip > kMaxConfiguredConnections) {
+        return std::unexpected{bad_config("max_connections_per_ip out of range (ADR-0021)")};
+    }
+    if (config.max_new_connections_per_ip_per_second > kMaxConfiguredNewConnectionsPerSecond) {
+        return std::unexpected{
+            bad_config("max_new_connections_per_ip_per_second out of range (ADR-0021)")};
+    }
     if (config.http.max_request_line == 0 || config.http.max_total_bytes == 0 ||
         config.http.max_headers == 0) {
         return std::unexpected{bad_config("http limits must be non-zero")};

@@ -72,6 +72,9 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
         KeyEntry{"allow_missing_origin", &EmbeddedConfig::set_allow_missing_origin},
         KeyEntry{"max_message_size", &EmbeddedConfig::set_max_message_size},
         KeyEntry{"max_connections", &EmbeddedConfig::set_max_connections},
+        KeyEntry{"max_connections_per_ip", &EmbeddedConfig::set_max_connections_per_ip},
+        KeyEntry{"max_new_connections_per_ip_per_second",
+                 &EmbeddedConfig::set_max_new_connections_per_ip_per_second},
         KeyEntry{"shutdown_grace_ms", &EmbeddedConfig::set_shutdown_grace_ms},
         KeyEntry{"event_queue_events", &EmbeddedConfig::set_event_queue_events},
         KeyEntry{"event_queue_bytes", &EmbeddedConfig::set_event_queue_bytes},
@@ -174,6 +177,29 @@ Result<void> EmbeddedConfig::set_max_connections(std::string_view value) {
         return std::unexpected{number.error()};
     }
     server_.max_connections = *number;
+    return {};
+}
+
+// ---- per-IP limits (ADR-0021 section 5): well-formedness here, ranges in ServerBuilder::build
+// ----
+
+Result<void> EmbeddedConfig::set_max_connections_per_ip(std::string_view value) {
+    const Result<std::size_t> number =
+        parse_size(value, "config: max_connections_per_ip needs a number");
+    if (!number) {
+        return std::unexpected{number.error()};
+    }
+    server_.max_connections_per_ip = *number;
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_max_new_connections_per_ip_per_second(std::string_view value) {
+    const auto number = parse_number<std::uint32_t>(value);
+    if (!number) {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: max_new_connections_per_ip_per_second needs a number");
+    }
+    server_.max_new_connections_per_ip_per_second = *number;
     return {};
 }
 

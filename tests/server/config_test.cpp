@@ -197,6 +197,27 @@ TEST(ServerConfig,
     EXPECT_EQ(result.error().code, ErrorCode::InvalidConfig);
 }
 
+TEST(ServerConfig, ThePerIpLimitsDefaultToTheRequirementsTableAndZeroMeansOff) {  // ADR-0021
+    ServerConfig config;
+    EXPECT_EQ(config.max_connections_per_ip, 100U);
+    EXPECT_EQ(config.max_new_connections_per_ip_per_second, 50U);
+    config.max_connections_per_ip = 0;
+    config.max_new_connections_per_ip_per_second = 0;
+    EXPECT_EQ(complaint(config), "") << "0 switches a limit off; it is not an error";
+}
+
+TEST(ServerConfig, ThePerIpLimitsCannotExceedTheirCeilings) {  // ADR-0021 section 4
+    ServerConfig cap;
+    cap.max_connections_per_ip = wsrv::kMaxConfiguredConnections + 1;
+    EXPECT_NE(complaint(cap).find("max_connections_per_ip"), std::string_view::npos);
+    ServerConfig rate;
+    rate.max_new_connections_per_ip_per_second = wsrv::kMaxConfiguredNewConnectionsPerSecond + 1;
+    EXPECT_NE(complaint(rate).find("max_new_connections_per_ip_per_second"),
+              std::string_view::npos);
+    rate.max_new_connections_per_ip_per_second = wsrv::kMaxConfiguredNewConnectionsPerSecond;
+    EXPECT_EQ(complaint(rate), "");
+}
+
 TEST(ServerConfig, TheThreadCountMustBeBetweenOneAndTheCeiling) {  // ADR-0014
     wsrv::ServerConfig config;
     EXPECT_EQ(config.threads, 1U);

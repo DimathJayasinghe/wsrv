@@ -269,6 +269,9 @@ TEST(MultiLoop, ChurnAcrossLoopsLeavesTheFullCapAvailable) {  // the live count 
     RecordingFactory factory;
     wsrv::ServerBuilder builder = builder_for(factory, 4);
     builder.config().max_connections = 16;
+    // This test is about the global cap and descriptor hygiene, not the per-IP limits (ADR-0021).
+    builder.config().max_connections_per_ip = 0;
+    builder.config().max_new_connections_per_ip_per_second = 0;
     RunningServer running{builder};
     for (int round = 0; round < 10; ++round) {  // below the cap, so nothing here is refused
         auto clients = connect_clients(running, 8);

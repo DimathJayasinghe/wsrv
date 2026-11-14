@@ -35,6 +35,12 @@ struct ReadBudget {
 struct ServerConfig {
     Endpoint listen;
     std::size_t max_connections = 10000;  ///< further connections are accepted and closed (FR-S1)
+    /// Per client address (IPv4, or the /64 of an IPv6 address; ADR-0021): live connections, and
+    /// new connections per second (a connection performs one handshake). `0` = no limit. Over a
+    /// limit the client gets a 429. Behind a reverse proxy every user is one address: raise or
+    /// switch off.
+    std::size_t max_connections_per_ip = 100;
+    std::uint32_t max_new_connections_per_ip_per_second = 50;
     std::size_t threads = 1;  ///< loops: loop 0 on the caller's thread, the rest started by run()
 
     HttpLimits http;  ///< the request head (FR-H7)
@@ -62,6 +68,7 @@ struct ServerConfig {
 /// Hard ceilings (SECURITY_DESIGN section 3): a misconfiguration is rejected, never honoured.
 inline constexpr std::size_t kMaxConfiguredConnections = std::size_t{1} << 20;
 inline constexpr std::size_t kMaxConfiguredThreads = 256;
+inline constexpr std::uint32_t kMaxConfiguredNewConnectionsPerSecond = 1'000'000;
 inline constexpr std::size_t kMaxConfiguredReadBytes = std::size_t{16} << 20;
 inline constexpr std::chrono::milliseconds kMinDecisionTimeout{100};
 inline constexpr std::chrono::milliseconds kMaxDecisionTimeout{60000};
@@ -70,8 +77,9 @@ inline constexpr std::size_t kMaxForwardedHeaderNames = 64;
 /// Check a ServerConfig, including its SessionConfig and HttpLimits. Durations within
 /// (0, 24 h] for the three server timers (each is a mandatory defence: handshake timeout T2,
 /// write stall T3, shutdown grace FR-S5); max_connections in (0, kMaxConfiguredConnections];
-/// HTTP limits non-zero; read budget in (0, ceiling]; permessage-deflate set in both places or
-/// in neither (`handshake.permessage_deflate` and `session.deflate`, ADR-0020).
+/// per-IP limits within their ceilings (a limit of 0 means "off"); HTTP limits non-zero; read
+/// budget in (0, ceiling]; permessage-deflate set in both places or in neither
+/// (`handshake.permessage_deflate` and `session.deflate`, ADR-0020).
 /// @return Error{InvalidConfig} whose context names the offending field. The rest of the
 /// HandshakeConfig is not checked here: HandshakeNegotiator validates it when it is constructed.
 [[nodiscard]] Result<void> validate(const ServerConfig& config);

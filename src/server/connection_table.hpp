@@ -22,8 +22,9 @@ namespace wsrv {
 /// sized from max_connections by the Server. Thread-affinity: loop-thread-only.
 class ConnectionTable final : public IRetireSink, public ISessionDirectory {
 public:
-    /// `on_removed` runs after each destruction (the Server uses it to notice a drained shutdown).
-    ConnectionTable(EventLoop& loop, std::function<void()> on_removed);
+    /// `on_removed` runs after each destruction, with the peer of the connection that went (the
+    /// shard uses it to give back the global and the per-IP slot and to notice a drained shutdown).
+    ConnectionTable(EventLoop& loop, std::function<void(const Endpoint&)> on_removed);
 
     /// Take ownership. May throw std::bad_alloc: the caller (the accept callback) is the boundary.
     Connection& insert(std::unique_ptr<Connection> connection);
@@ -49,7 +50,7 @@ public:
 
 private:
     EventLoop& loop_;
-    std::function<void()> on_removed_;
+    std::function<void(const Endpoint&)> on_removed_;
     std::unordered_map<ConnectionId, std::unique_ptr<Connection>> connections_;
 };
 

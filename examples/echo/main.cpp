@@ -49,8 +49,8 @@ constexpr std::string_view kUsage =
     "  --tls-cert FILE          serve wss://: PEM certificate chain (needs --tls-key)\n"
     "  --tls-key FILE           PEM private key, not readable by others\n"
     "  --deflate                offer permessage-deflate (RFC 7692); off by default\n"
-    "  --autobahn               raise size and rate limits for the conformance suite (test use "
-    "only)\n";
+    "  --autobahn               raise size, rate and per-IP limits for the conformance suite (test "
+    "use only)\n";
 
 template <class Number>
 std::optional<Number> parse_number(std::string_view text) {
@@ -150,6 +150,10 @@ void raise_limits_for_autobahn(wsrv::ServerConfig& config) {
     session.assembler.max_fragments = std::size_t{1} << 20;
     session.outbound.max_queued_bytes = std::size_t{64} << 20;
     session.max_data_frames_per_second = 2'000'000;
+    // The suite is one client address opening hundreds of connections in quick succession: the
+    // per-IP limits (ADR-0021) would answer it with 429s. This server is for that test only.
+    config.max_connections_per_ip = 0;
+    config.max_new_connections_per_ip_per_second = 0;
 }
 
 wsrv::ServerBuilder make_builder(const Options& options, EchoFactory& factory) {

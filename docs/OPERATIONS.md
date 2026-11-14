@@ -20,7 +20,8 @@ loops = 0                 # 0 = hardware_concurrency
 max_connections = 10000
 max_message_bytes = 1048576
 max_handshake_bytes = 8192
-per_ip_connections = 100
+per_ip_connections = 100            # 0 = no limit (ADR-0021)
+per_ip_new_connections_per_s = 50   # 0 = no limit (ADR-0021)
 idle_timeout_s = 60
 
 [security]
@@ -77,6 +78,15 @@ The tuning keys only matter while the switch is on, in any order; a value outsid
 
 **Security.** Compressing text that mixes a secret with attacker-influenced data in one message lets an observer of message sizes guess the secret (CRIME/BREACH class): leave compression off for such applications. There is no per-message opt-out yet. Messages sent through the streaming writer (`MessageWriter`) are not compressed.
 
+### 1.2 Per-address limits (ADR-0021)
+
+Two limits keep one client address from taking the whole server: `max_connections_per_ip` (default 100, live connections) and `max_new_connections_per_ip_per_second` (default 50, a token bucket: a burst of one second's worth, then the rate). `0` switches a limit off. In the embedded/`wsrvd` text configuration they are the keys of the same names (`--max-connections-per-ip=N`, `--max-new-connections-per-ip-per-second=N`).
+
+- **Who is "one address":** an IPv4 address; an IPv4-mapped IPv6 address counts as the IPv4 address it maps; any other IPv6 address counts as its **/64** (a subscriber owns at least a /64, so single addresses would let one machine rotate through 2^64 of them). The port is ignored.
+- **What the client sees:** `HTTP/1.1 429 Too Many Requests` with `Retry-After: 1` and a closed connection. A client that already sent its request may see a reset instead: the answer is best effort, the close is the guarantee. The global cap (`max_connections`) keeps its silent close.
+- **Behind a reverse proxy or NAT** every user shares one address, so the defaults can refuse real users. Raise the limits or set them to `0` and rate-limit at the proxy (real client addresses via the PROXY protocol are not implemented; EC-N21).
+- **Cost:** a table of at most `2 * max_connections` entries (about 40 bytes plus the map node each), one mutex taken twice per connection life. An idle server holds no per-address state. When the table is full a new address is refused (fail closed), after one sweep of entries that carry no information.
+
 ## 2. Logging
 
 - Structured, one event per line. Fields: `ts` (RFC 3339 UTC), `level`, `conn` (ID), `peer`, `event`, `code`, `msg`.
@@ -128,6 +138,7 @@ Admin endpoints: `/metrics`, `/healthz` (liveness), `/readyz` (accepting & not s
 | Accept errors `EMFILE` | `wsrv_accept_errors_total`, `ulimit -n` | fd limit too low / leak |
 | High `loop_lag` | handler profile | blocking user code |
 | Rising outbound queue / slow-consumer drops | per-conn histogram | slow clients, broadcast too large |
+| Real users get 429 | client address behind one proxy/NAT? | per-address limits (section 1.2): raise or set to 0, limit at the proxy |
 | Many `handshake_failed` | log sample, Origin list | wrong origin config / scanners |
 | Memory growth | pool metrics, deflate on? | zlib state per connection (section 1.1), leak (run soak with heaptrack) |
 | Clients dropping every N seconds | proxy idle timeout vs heartbeat | proxy timeout < ping interval |
