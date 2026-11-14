@@ -68,6 +68,10 @@ public:
     [[nodiscard]] std::uint16_t port() const noexcept {
         return port_.load();
     }
+    /// The admin listener's bound port (ADR-0023); 0 when it is off or before a successful start.
+    [[nodiscard]] std::uint16_t admin_port() const noexcept {
+        return admin_port_.load();
+    }
     /// True from a successful start until the loops have stopped.
     [[nodiscard]] bool running() const noexcept {
         return running_.load();
@@ -119,6 +123,7 @@ private:
     struct Started {
         Result<std::uint16_t> port;
         std::string detail;
+        std::uint16_t admin_port = 0;  ///< 0 = the admin listener is off
     };
 
     void io_thread_main(std::promise<Started>& ready);
@@ -135,6 +140,7 @@ private:
     std::atomic<bool> started_{false};
     std::atomic<bool> running_{false};
     std::atomic<std::uint16_t> port_{0};
+    std::atomic<std::uint16_t> admin_port_{0};
     std::string start_error_;
     // A pointer so that a forked child can abandon it: it names a thread that exists only in the
     // parent, so the child must neither join nor destroy it (destroying a joinable thread aborts).

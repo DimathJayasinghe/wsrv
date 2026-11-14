@@ -38,11 +38,12 @@ Trust boundaries: **network ↔ transport** (fully untrusted bytes), **server �
 | T18 | Supply chain | Compromised dependency | Minimal deps, pinned hashes, SBOM, signed tags/releases, dependabot-equivalent | CI |
 | T19 | Privilege abuse | Running as root | Documented drop-privileges, systemd hardening, seccomp profile (optional) | Ops doc |
 | T20 | Predictable randomness | Weak masks/IDs | `getrandom(2)` only; no `rand()` | Banned-function check |
+| T21 | Admin port abuse / information disclosure | Anyone who can reach the admin port: floods, slow requests, scraping counters | Off unless configured; loopback by default (warn on anything else); plain GET of three fixed pages, exact-match targets, head <= 2 KiB, 5 s deadline, at most 8 clients at once, one non-blocking send, no body read, no keep-alive; closed enumeration of metrics (no peer data in any label) | `AdminHttp.*`, `AdminServer.*` (ADR-0023) |
 
 ## 3. Secure defaults ("deny unless allowed")
 
 - Origin: header present and no allow-list ⇒ **reject** unless `allow_any_origin()` explicitly set (name is deliberately loud; logs a startup warning).
-- Limits (REQUIREMENTS §4) are **on** by default; there is no "unlimited" value — maximums are capped by compile-time hard ceilings (e.g. frame ≤ 64 MiB) to prevent misconfiguration.
+- Limits (REQUIREMENTS §4) are **on** by default; there is no "unlimited" value — maximums are capped by compile-time hard ceilings (e.g. frame ≤ 64 MiB) to prevent misconfiguration. **One exception, decided in ADR-0021:** the two per-IP limits accept `0` = off, because behind a reverse proxy or NAT every user is one address and the defaults would refuse real users; they are on by default and the ceilings still apply. (Flagged to the owner for confirmation.)
 - Plaintext listeners log a startup notice when bound to non-loopback without TLS (info, not error — a reverse proxy may terminate TLS).
 - Server header / version string not disclosed by default.
 - `permessage-deflate` is **off** by default (compression + secrets in the same message ⇒ CRIME/BREACH-class risk); enabling documented with the caveat.

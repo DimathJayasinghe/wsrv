@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <new>
+#include <optional>
 #include <utility>
 
 #include <poll.h>
@@ -135,6 +136,7 @@ Result<void> EmbeddedServer::start() {
         return std::unexpected{result.port.error()};
     }
     port_.store(*result.port);
+    admin_port_.store(result.admin_port);
     return {};
 }
 
@@ -233,7 +235,9 @@ void EmbeddedServer::io_thread_main(std::promise<Started>& ready) {
         server_ = server.get();
     }
     running_.store(true);
-    ready.set_value(Started{server->local_endpoint().port, {}});
+    const std::optional<Endpoint> admin = server->admin_endpoint();
+    ready.set_value(
+        Started{server->local_endpoint().port, {}, admin ? admin->port : std::uint16_t{0}});
     static_cast<void>(server->run().has_value());  // a loop failure ends it too; events remain
     {
         const std::lock_guard lock{server_mutex_};

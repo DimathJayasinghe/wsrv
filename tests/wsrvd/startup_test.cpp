@@ -123,4 +123,11 @@ TEST(Usage, NamesThePerIpLimitFlagsWithTheirDefaults) {  // ADR-0021 section 5
     EXPECT_NE(text.find("0 = no limit"), std::string_view::npos);
 }
 
+TEST(Usage, NamesTheAdminFlagsAndWarnsThatThePortIsNotAuthenticated) {  // ADR-0023
+    const std::string_view text = wsrv::wsrvd::usage();
+    EXPECT_NE(text.find("--admin-port"), std::string_view::npos);
+    EXPECT_NE(text.find("--admin-host"), std::string_view::npos);
+    EXPECT_NE(text.find("no authentication"), std::string_view::npos);
+}
+
 }  // namespace

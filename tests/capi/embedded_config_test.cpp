@@ -151,6 +151,27 @@ TEST(EmbeddedConfig, MalformedPerIpLimitsAreRefusedAndChangeNothing) {
     EXPECT_EQ(config.server().max_new_connections_per_ip_per_second, 50U);
 }
 
+TEST(EmbeddedConfig, TheAdminListenerIsOffUntilAPortIsGiven) {  // ADR-0023 section 3
+    EmbeddedConfig config;
+    EXPECT_FALSE(config.admin_requested());
+    EXPECT_TRUE(config.set("admin_host", "10.0.0.5").has_value());
+    EXPECT_FALSE(config.admin_requested()) << "a host alone does not switch it on";
+    EXPECT_TRUE(config.set("admin_port", "9100").has_value());
+    EXPECT_TRUE(config.admin_requested());
+    EXPECT_EQ(config.admin_host(), "10.0.0.5");
+    EXPECT_EQ(config.admin_port(), 9100);
+}
+
+TEST(EmbeddedConfig, MalformedAdminSettingsAreRefusedAndChangeNothing) {
+    EmbeddedConfig config;
+    for (const char* bad : {"", "-1", "65536", "80x", " 80"}) {
+        EXPECT_FALSE(config.set("admin_port", bad).has_value()) << "'" << bad << "'";
+    }
+    EXPECT_FALSE(config.set("admin_host", "").has_value());
+    EXPECT_FALSE(config.admin_requested());
+    EXPECT_EQ(config.admin_host(), "127.0.0.1") << "loopback unless the operator opts out";
+}
+
 TEST(EmbeddedConfig, BooleansAcceptOnlyTrueFalseOneZero) {
     EmbeddedConfig config;
     for (const char* yes : {"true", "1"}) {

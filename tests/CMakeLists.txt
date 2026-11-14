@@ -49,6 +49,8 @@ wsrv_add_test(NAME server_multi_loop_test SOURCES server/multi_loop_test.cpp LIN
 wsrv_add_test(NAME server_ip_limits_test SOURCES server/ip_limits_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_ip_limits_server_test SOURCES server/ip_limits_server_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_metrics_server_test SOURCES server/metrics_server_test.cpp LINK wsrv::server)
+wsrv_add_test(NAME server_admin_http_test SOURCES server/admin_http_test.cpp LINK wsrv::server)
+wsrv_add_test(NAME server_admin_server_test SOURCES server/admin_server_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_session_handle_test SOURCES server/session_handle_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_handshake_decider_test SOURCES server/handshake_decider_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_hook_test SOURCES server/server_hook_test.cpp LINK wsrv::server)

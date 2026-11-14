@@ -49,5 +49,6 @@ Histograms (`wsrv_handshake_seconds`, `wsrv_loop_lag_seconds`, `wsrv_outbound_qu
 
 ## Slices
 1. (done) This ADR; `Metric`, `IMetrics`, `CounterBank`, `MetricBanks`, exposition text, with unit tests; counting at accept / refuse / close / messages / accept errors; `Server::metrics()`, `metrics_text()`.
-2. `AdminEndpoint` and its config, embedded and `wsrvd` keys; end-to-end tests.
-3. OPERATIONS section 3 rewritten from "planned" to what exists, runbook, lesson.
+2. (done) `AdminEndpoint` and its config, embedded and `wsrvd` keys; end-to-end tests; OPERATIONS section 3.1, SECURITY_DESIGN T21, lesson 32.
+
+As built: `ServerConfig::{admin, admin_max_connections, admin_request_timeout}`, `ServerBuilder::admin()`, `Server::admin_endpoint()`; the bounds `admin_max_connections` and `admin_request_timeout` are `ServerConfig` fields (C++ API) and keep their defaults for embedded/`wsrvd` users (keys can be added without an ABI change if a deployment needs them). No C ABI function exposes the admin port: a host that sets `admin_port` knows it, and only `admin_port=0` (tests) needs the bound value, available as `EmbeddedServer::admin_port()`.

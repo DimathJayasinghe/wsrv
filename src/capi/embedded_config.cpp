@@ -72,6 +72,8 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
         KeyEntry{"allow_missing_origin", &EmbeddedConfig::set_allow_missing_origin},
         KeyEntry{"max_message_size", &EmbeddedConfig::set_max_message_size},
         KeyEntry{"max_connections", &EmbeddedConfig::set_max_connections},
+        KeyEntry{"admin_host", &EmbeddedConfig::set_admin_host},
+        KeyEntry{"admin_port", &EmbeddedConfig::set_admin_port},
         KeyEntry{"max_connections_per_ip", &EmbeddedConfig::set_max_connections_per_ip},
         KeyEntry{"max_new_connections_per_ip_per_second",
                  &EmbeddedConfig::set_max_new_connections_per_ip_per_second},
@@ -106,6 +108,9 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
 void EmbeddedConfig::apply_to(ServerBuilder& builder) const {
     builder.listen(host_, port_);
     builder.config() = server_;
+    if (admin_port_) {
+        builder.admin(admin_host_, *admin_port_);  // build() checks the address and the bounds
+    }
     if (deflate_enabled_) {
         builder.permessage_deflate(deflate_);  // build() checks the ranges and the zlib build
     }
@@ -182,6 +187,23 @@ Result<void> EmbeddedConfig::set_max_connections(std::string_view value) {
 
 // ---- per-IP limits (ADR-0021 section 5): well-formedness here, ranges in ServerBuilder::build
 // ----
+
+Result<void> EmbeddedConfig::set_admin_host(std::string_view value) {
+    if (value.empty()) {
+        return fail(ErrorCode::InvalidConfig, "config: admin_host is empty");
+    }
+    admin_host_ = std::string{value};  // an address literal; ServerBuilder::build() checks it
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_admin_port(std::string_view value) {
+    const auto port = parse_number<std::uint16_t>(value);
+    if (!port) {
+        return fail(ErrorCode::InvalidConfig, "config: admin_port needs a number 0..65535");
+    }
+    admin_port_ = port;
+    return {};
+}
 
 Result<void> EmbeddedConfig::set_max_connections_per_ip(std::string_view value) {
     const Result<std::size_t> number =

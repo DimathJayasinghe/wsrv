@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace wsrv {
 
@@ -69,6 +70,10 @@ public:
     /// An IPv4 or IPv6 address literal (no names: DNS would block the loop) and a port (0 = let
     /// the kernel choose; see Server::local_endpoint()).
     ServerBuilder& listen(std::string_view ip, std::uint16_t port);
+    /// Serve /metrics, /healthz and /readyz on this address (ADR-0023): plain HTTP, no
+    /// authentication, so loopback unless the network around it is trusted. Port 0 = any free port
+    /// (see Server::admin_endpoint()). Off unless called.
+    ServerBuilder& admin(std::string_view ip, std::uint16_t port);
     ServerBuilder& handler_factory(IHandlerFactory& factory) noexcept;
     ServerBuilder& logger(ILogger& logger) noexcept;
     ServerBuilder& clock(const IClock& clock) noexcept;
@@ -104,6 +109,7 @@ private:
     std::optional<DeflateOptions> deflate_;  ///< applied by build(), after config() was copied
     std::string ip_ = "127.0.0.1";           ///< loopback unless the operator opts into exposure
     std::uint16_t port_ = 0;
+    std::optional<std::pair<std::string, std::uint16_t>> admin_;  ///< ip and port, when enabled
 };
 
 }  // namespace wsrv

@@ -33,6 +33,13 @@ namespace {
         return std::unexpected{
             bad_config("max_new_connections_per_ip_per_second out of range (ADR-0021)")};
     }
+    if (config.admin.has_value() &&
+        (config.admin_max_connections == 0 ||
+         config.admin_max_connections > kMaxConfiguredAdminConnections ||
+         config.admin_request_timeout <= std::chrono::milliseconds{0} ||
+         config.admin_request_timeout > kMaxAdminRequestTimeout)) {
+        return std::unexpected{bad_config("admin limits out of range (ADR-0023)")};
+    }
     if (config.http.max_request_line == 0 || config.http.max_total_bytes == 0 ||
         config.http.max_headers == 0) {
         return std::unexpected{bad_config("http limits must be non-zero")};

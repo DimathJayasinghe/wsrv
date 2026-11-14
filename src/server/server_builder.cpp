@@ -54,6 +54,11 @@ ServerBuilder& ServerBuilder::listen(std::string_view ip, std::uint16_t port) {
     return *this;
 }
 
+ServerBuilder& ServerBuilder::admin(std::string_view ip, std::uint16_t port) {
+    admin_ = std::make_pair(std::string{ip}, port);
+    return *this;
+}
+
 ServerBuilder& ServerBuilder::handler_factory(IHandlerFactory& factory) noexcept {
     deps_.factory = &factory;
     return *this;
@@ -96,6 +101,14 @@ std::unique_ptr<Server> ServerBuilder::build() const {
     }
     ServerConfig config = config_;
     config.listen = *endpoint;
+    if (admin_) {
+        const Result<Endpoint> admin = parse_endpoint(admin_->first, admin_->second);
+        if (!admin) {
+            throw_config_error(
+                Error{ErrorCode::InvalidConfig, "admin address is not an IP literal"});
+        }
+        config.admin = *admin;
+    }
     if (deflate_) {
         apply_deflate(*deflate_, config);
     }

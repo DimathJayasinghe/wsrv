@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -53,6 +54,10 @@ struct TlsSniSetting {
 /// start with permessage_deflate=true instead of quietly serving uncompressed.
 /// max_message_size also sizes the outbound queue at twice that, so a message that can be received
 /// can be sent back (as in the echo example).
+/// and for the admin listener (ADR-0023 section 3, off by default): admin_port (0..65535; setting
+/// it switches the listener on, 0 lets the kernel choose) and admin_host (an IP literal, default
+/// 127.0.0.1). It serves /metrics, /healthz and /readyz over plain HTTP with no authentication:
+/// keep it on loopback or behind a network policy.
 /// Thread-affinity: not thread-safe; configure on one thread before starting.
 class EmbeddedConfig {
 public:
@@ -64,6 +69,16 @@ public:
     }
     [[nodiscard]] std::uint16_t port() const noexcept {
         return port_;
+    }
+    /// The admin listener (ADR-0023): on only once a port was given.
+    [[nodiscard]] bool admin_requested() const noexcept {
+        return admin_port_.has_value();
+    }
+    [[nodiscard]] const std::string& admin_host() const noexcept {
+        return admin_host_;
+    }
+    [[nodiscard]] std::uint16_t admin_port() const noexcept {
+        return admin_port_.value_or(0);
     }
     [[nodiscard]] const ServerConfig& server() const noexcept {
         return server_;
@@ -112,6 +127,8 @@ private:
     [[nodiscard]] Result<void> set_allow_missing_origin(std::string_view value);
     [[nodiscard]] Result<void> set_max_message_size(std::string_view value);
     [[nodiscard]] Result<void> set_max_connections(std::string_view value);
+    [[nodiscard]] Result<void> set_admin_host(std::string_view value);
+    [[nodiscard]] Result<void> set_admin_port(std::string_view value);
     [[nodiscard]] Result<void> set_max_connections_per_ip(std::string_view value);
     [[nodiscard]] Result<void> set_max_new_connections_per_ip_per_second(std::string_view value);
     [[nodiscard]] Result<void> set_shutdown_grace_ms(std::string_view value);
@@ -131,7 +148,9 @@ private:
     [[nodiscard]] Result<void> set_deflate_min_size(std::string_view value);
     [[nodiscard]] Result<void> set_deflate_max_ratio(std::string_view value);
 
-    std::string host_ = "127.0.0.1";  // loopback unless the operator opts into exposure
+    std::string admin_host_ = "127.0.0.1";     // loopback: the admin page has no authentication
+    std::optional<std::uint16_t> admin_port_;  // set = the admin listener is on
+    std::string host_ = "127.0.0.1";           // loopback unless the operator opts into exposure
     std::uint16_t port_ = 0;
     ServerConfig server_;
     EventQueueConfig queue_;
