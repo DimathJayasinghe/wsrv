@@ -109,6 +109,9 @@ private:
         case CommandKind::Say:
             return say(session, command);
         case CommandKind::Members:
+            if (!rooms_.contains(command.room)) {
+                return "error: join the room first";  // else anyone could probe which rooms exist
+            }
             return "ok members " + command.room + " " +
                    std::to_string(broker_.subscriber_count(command.room));
         case CommandKind::Rooms:

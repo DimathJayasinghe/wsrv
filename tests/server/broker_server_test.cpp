@@ -153,6 +153,9 @@ TEST(BrokerServer, TheBrokersCountersAppearInTheServersMetrics) {  // ADR-0024 s
     ASSERT_TRUE(eventually([&] { return broker.subscriber_count("lobby") == 2; }));
     ASSERT_TRUE(a.send_frame(wsrv::Opcode::Text, "x"));
     EXPECT_EQ(next_text(b), "x");
+    // The publisher counts after its sends return, so the subscriber can have the message first.
+    ASSERT_TRUE(eventually(
+        [&] { return running.server().metrics().value(Metric::BrokerPublishes) == 1U; }));
     const wsrv::MetricsSnapshot now = running.server().metrics();
     EXPECT_EQ(now.value(Metric::BrokerPublishes), 1U);
     EXPECT_EQ(now.value(Metric::BrokerDeliveriesAccepted), 1U);

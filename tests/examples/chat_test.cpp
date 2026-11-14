@@ -131,6 +131,7 @@ TEST_F(ChatServerTest, OnlyAMemberMayTalkAndBadInputGetsAnError) {
     auto alice = connect();
     EXPECT_EQ(say(*alice, "say lobby hello"), "error: join the room first");
     EXPECT_EQ(say(*alice, "join bad room"), "error: unknown command");
+    EXPECT_EQ(say(*alice, "members lobby"), "error: join the room first") << "no probing of rooms";
     EXPECT_EQ(say(*alice, "join bad*room"), "error: not a valid room name");
     EXPECT_EQ(say(*alice, "frobnicate"), "error: unknown command");
     EXPECT_EQ(broker_.topic_count(), 0U) << "nothing was created by those";
