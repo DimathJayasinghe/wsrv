@@ -148,18 +148,20 @@ void MetricsSnapshot::accumulate(const CounterBank& bank) noexcept {
     }
 }
 
-MetricBanks::MetricBanks(std::size_t loops) : loops_{loops}, banks_(loops + 1) {}
+MetricBanks::MetricBanks(std::size_t loops)
+    : loops_{loops}, banks_(loops), shared_{std::make_shared<CounterBank>()} {}
 
 CounterBank& MetricBanks::claim() noexcept {
     const std::size_t index = next_.fetch_add(1, std::memory_order_relaxed);
-    return banks_[index < loops_ ? index : loops_];  // past the loops: the shared spare
+    return index < loops_ ? banks_[index] : *shared_;  // past the loops: the shared spare
 }
 
 MetricsSnapshot MetricBanks::snapshot() const noexcept {
     MetricsSnapshot sum;
-    for (std::size_t i = 0; i <= loops_; ++i) {
-        sum.accumulate(banks_[i]);
+    for (const CounterBank& bank : banks_) {
+        sum.accumulate(bank);
     }
+    sum.accumulate(*shared_);
     return sum;
 }
 

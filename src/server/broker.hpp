@@ -9,10 +9,12 @@
 #include <atomic>
 #include <cstddef>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace wsrv {
 
@@ -45,9 +47,9 @@ struct PublishReport {
 /// Thread-affinity: any thread.
 class Broker {
 public:
-    /// `metrics` (optional, must outlive the broker) receives the publish and delivery counters.
-    explicit Broker(BrokerConfig config = {}, IMetrics* metrics = nullptr) noexcept
-        : config_{config}, metrics_{metrics} {}
+    /// `metrics` (optional) receives the publish and delivery counters. The broker keeps it alive.
+    explicit Broker(BrokerConfig config = {}, std::shared_ptr<IMetrics> metrics = nullptr) noexcept
+        : config_{config}, metrics_{std::move(metrics)} {}
     Broker(const Broker&) = delete;
     Broker& operator=(const Broker&) = delete;
     Broker(Broker&&) = delete;
@@ -57,8 +59,9 @@ public:
     /// Send the counters to `metrics` from now on (nullptr: stop). The broker is usually built
     /// before the server whose Server::shared_metrics() it reports to, because the handler factory
     /// the server needs refers to the broker; this closes that circle. Any thread, any time.
-    void use_metrics(IMetrics* metrics) noexcept {
-        metrics_.store(metrics, std::memory_order_release);
+    void use_metrics(std::shared_ptr<IMetrics> metrics) noexcept {
+        const std::lock_guard lock{mutex_};
+        metrics_ = std::move(metrics);
     }
 
     /// Listen to `topic` through `handle`. Subscribing twice is one subscription.
@@ -93,8 +96,9 @@ private:
     [[nodiscard]] bool remove_locked(ConnectionId id, std::string_view topic);
 
     const BrokerConfig config_;
-    std::atomic<IMetrics*> metrics_;
     mutable std::mutex mutex_;
+    std::shared_ptr<IMetrics> metrics_;     // guarded by mutex_
+    std::atomic<std::size_t> rotation_{0};  // where the next publish starts (fairness, A1)
     std::map<std::string, Subscribers, std::less<>> topics_;
     std::map<ConnectionId, std::set<std::string, std::less<>>> by_connection_;
     std::size_t subscriptions_ = 0;

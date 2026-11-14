@@ -126,13 +126,22 @@ void EventLoop::stop() noexcept {
 }
 
 Result<void> EventLoop::post(Task task) {
+    return post_within(std::move(task), config_.max_queued_tasks);
+}
+
+Result<void> EventLoop::post_bulk(Task task) {
+    // A quarter of the queue (at least one slot when the queue has four or more) is kept back.
+    return post_within(std::move(task), config_.max_queued_tasks - config_.max_queued_tasks / 4);
+}
+
+Result<void> EventLoop::post_within(Task task, std::size_t limit) {
     if (!task) {
         return fail(ErrorCode::InvalidArgument, "empty task");
     }
     bool write = false;
     {
         const std::lock_guard<std::mutex> lock{tasks_mutex_};
-        if (tasks_.size() >= config_.max_queued_tasks) {
+        if (tasks_.size() >= limit) {
             return fail(ErrorCode::BufferFull, "event loop task queue is full");
         }
         try {

@@ -110,7 +110,7 @@ ADR-0023. Counters live in one bank per loop (relaxed atomics, no lock) and are 
 | `wsrv_slow_consumer_drops_total` | counter | done: slow-consumer close (1008) plus write-stall drops |
 | `wsrv_accept_errors_total{errno}` | counter | done: `emfile` (out of descriptors, the reserve-fd trick ran), `other` |
 | `wsrv_tls_handshake_failures_total` | counter | done: TLS failures before the upgrade |
-| `wsrv_broker_publishes_total` | counter | done: validated publishes on the pub/sub broker (section 3.2); only once the application attaches the broker with `Broker::use_metrics(&server.shared_metrics())` |
+| `wsrv_broker_publishes_total` | counter | done: validated publishes on the pub/sub broker (section 3.2); only once the application attaches the broker with `Broker::use_metrics(server.shared_metrics())` |
 | `wsrv_broker_deliveries_total{result}` | counter | done: `accepted` (the subscriber's loop took the message for delivery), `refused` (its task queue was full, out of memory, or the server is gone); every subscriber of a publish is one or the other |
 | `wsrv_handshake_seconds` | histogram | planned (ADR-0023 section 5) |
 | `wsrv_loop_lag_seconds{loop}` | histogram (detects blocking handlers) | planned |
@@ -140,6 +140,8 @@ ADR-0024. `Broker` is an object of the application's composition root: handlers 
 | Subscriptions in total | 100 000 | `BufferFull` (what stops a handler that forgets to leave) |
 | Topic name | 1 to 128 bytes of `[A-Za-z0-9._:/@-]` | `InvalidArgument` |
 | Payload per publish | 64 KiB | `InvalidArgument` |
+
+Two cautions (ADR-0024 amendments). **Compression:** with permessage-deflate negotiated every subscriber compresses its own copy of each broadcast, so a publish to thousands of subscribers costs thousands of zlib runs on their loops; for a broker deployment leave compression off or lower `max_payload_bytes`. **Shared bounds:** the limits above are global; they cannot tell one user from another, so an application that serves strangers must apply its own quota per account or address before calling `subscribe`. Broadcasts use a reserved share of each loop's task queue: they are refused once it is three quarters full, so new connections, handshake decisions, `close` and shutdown still get through while a publish flood is being shed.
 
 What to watch: `wsrv_broker_deliveries_total{result="refused"}` rising means a loop's task queue is full (the publish rate outruns a loop); a `PublishReport` says the same per call. Delivery is "accepted for delivery", never acknowledged; a subscriber that cannot keep up is closed or dropped by its own connection's slow-consumer policy (`wsrv_slow_consumer_drops_total`), and the other subscribers of the same publish are unaffected. The C ABI and the PHP `Client::publish()` are not available yet (ADR-0024 section 7).
 

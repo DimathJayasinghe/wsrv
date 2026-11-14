@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <set>
 #include <string>
 #include <string_view>
@@ -147,6 +148,20 @@ TEST(MetricBanks, ClaimingMoreThanPlannedSharesASpareBankAndCountsStillAdd) {  /
     spare1.add(Metric::BytesOut, 6);
     spare2.add(Metric::BytesOut, 7);
     EXPECT_EQ(banks.snapshot().value(Metric::BytesOut), 18U);
+}
+
+TEST(MetricBanks, TheSharedBankCountsInTheSnapshotAndOutlivesTheBanks) {  // ADR-0024 A3
+    std::shared_ptr<wsrv::CounterBank> shared;
+    {
+        wsrv::MetricBanks banks{2};
+        shared = banks.shared();
+        shared->add(Metric::BrokerPublishes, 3);
+        banks.claim().add(Metric::BrokerPublishes, 4);
+        EXPECT_EQ(banks.snapshot().value(Metric::BrokerPublishes), 7U);
+        EXPECT_EQ(shared, banks.shared()) << "one shared bank, not one per call";
+    }
+    shared->add(Metric::BrokerPublishes);  // the owner is gone: still valid memory
+    EXPECT_EQ(shared->read(Metric::BrokerPublishes), 4U);
 }
 
 TEST(Metrics, TheNullSinkAcceptsEverythingAndKeepsNothing) {

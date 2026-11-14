@@ -7,6 +7,7 @@
 #include "server/handshake_verdict.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -65,6 +66,10 @@ public:
     /// delivery", not "delivered".
     [[nodiscard]] Result<void> submit(ConnectionId id, SessionCommand command);
 
+    /// The same for a broadcast: posted with EventLoop::post_bulk, so it is refused (BufferFull)
+    /// while a quarter of the loop's task queue is kept free for control tasks (ADR-0024 A1).
+    [[nodiscard]] Result<void> submit_bulk(ConnectionId id, SessionCommand command);
+
     /// The same for a handshake decision: runs `ISessionDirectory::decide` on the loop thread.
     [[nodiscard]] Result<void> submit_decision(ConnectionId id, HandshakeVerdict verdict);
 
@@ -72,6 +77,9 @@ public:
     void close() noexcept;
 
 private:
+    enum class Lane : std::uint8_t { Control, Bulk };
+    [[nodiscard]] Result<void> submit_in(Lane lane, ConnectionId id, SessionCommand command);
+
     std::mutex mutex_;
     EventLoop* loop_;
     ISessionDirectory* directory_;
