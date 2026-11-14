@@ -56,7 +56,7 @@ Keywords MUST / SHOULD / MAY follow RFC 2119. IDs are stable; tests and PRs cite
 - **FR-S4** MUST implement backpressure: bounded per-connection outbound queue with configurable slow-consumer policy; inbound read pause when handler lags.
 - **FR-S5** MUST support graceful shutdown (stop accepting, send 1001, drain with deadline, force close).
 - **FR-S6** MUST isolate user-handler failures: exceptions caught at the boundary → close 1011, logged, server continues.
-- **FR-S7** SHOULD provide pub/sub topics and broadcast with per-subscriber backpressure isolation (M10).
+- **FR-S7** SHOULD provide pub/sub topics and broadcast with per-subscriber backpressure isolation (M10). Done for C++ applications (`Broker`, ADR-0024); the C ABI and PHP exposure are a follow-up.
 - **FR-S8** MAY expose `/healthz` (plain HTTP 200) on the same port.
 
 ### 2.5 Extensions & transport

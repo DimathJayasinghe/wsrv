@@ -72,6 +72,42 @@ Result<void> SessionHandle::send_text(std::string_view text) const {
     }
 }
 
+Result<SharedMessage> SharedMessage::text(std::string_view text) {
+    Utf8Validator utf8;
+    if (!utf8.feed(as_bytes(text)) || !utf8.at_boundary()) {
+        return fail(ErrorCode::InvalidUtf8, "shared message: text is not valid UTF-8");
+    }
+    try {
+        const ByteView raw = as_bytes(text);
+        return SharedMessage{std::make_shared<const std::vector<std::byte>>(raw.begin(), raw.end()),
+                             true};
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "shared message: out of memory");
+    }
+}
+
+Result<SharedMessage> SharedMessage::binary(ByteView data) {
+    try {
+        return SharedMessage{
+            std::make_shared<const std::vector<std::byte>>(data.begin(), data.end()), false};
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "shared message: out of memory");
+    }
+}
+
+Result<void> SessionHandle::send(const SharedMessage& message) const {
+    try {
+        return submit_to(link_, id_, [message](Session& session) {
+            const ByteView bytes = message.data();
+            const Result<void> queued =
+                message.is_text() ? session.send_text(as_chars(bytes)) : session.send_binary(bytes);
+            static_cast<void>(queued.has_value());  // the slow-consumer policy applies inside
+        });
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "session handle: out of memory");
+    }
+}
+
 Result<void> SessionHandle::send_binary(ByteView data) const {
     try {
         return submit_to(

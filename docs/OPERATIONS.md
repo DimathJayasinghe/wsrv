@@ -110,6 +110,8 @@ ADR-0023. Counters live in one bank per loop (relaxed atomics, no lock) and are 
 | `wsrv_slow_consumer_drops_total` | counter | done: slow-consumer close (1008) plus write-stall drops |
 | `wsrv_accept_errors_total{errno}` | counter | done: `emfile` (out of descriptors, the reserve-fd trick ran), `other` |
 | `wsrv_tls_handshake_failures_total` | counter | done: TLS failures before the upgrade |
+| `wsrv_broker_publishes_total` | counter | done: validated publishes on the pub/sub broker (section 3.2); only once the application attaches the broker with `Broker::use_metrics(&server.shared_metrics())` |
+| `wsrv_broker_deliveries_total{result}` | counter | done: `accepted` (the subscriber's loop took the message for delivery), `refused` (its task queue was full, out of memory, or the server is gone); every subscriber of a publish is one or the other |
 | `wsrv_handshake_seconds` | histogram | planned (ADR-0023 section 5) |
 | `wsrv_loop_lag_seconds{loop}` | histogram (detects blocking handlers) | planned |
 | `wsrv_outbound_queue_bytes` | histogram | planned |
@@ -126,6 +128,20 @@ Off unless configured: embedded/`wsrvd` keys `admin_port` (setting it switches t
 | any other target | `404` (exact match: no query string, no case folding); other methods `405`, a malformed request `400` |
 
 Bounds (ADR-0023, SECURITY_DESIGN T21): the admin listener runs on loop 0 (no extra thread); at most 8 clients at once (more are closed at once), a request head of at most 2 KiB, 5 s to send it, one request per connection, one non-blocking send for the answer (a client that cannot take the whole page in one call is dropped, so a page is never silently truncated). Prometheus example: `scrape_configs: [{job_name: wsrv, static_configs: [{targets: ["127.0.0.1:9100"]}]}]`.
+
+### 3.2 Pub/sub broker (C++ API)
+ADR-0024. `Broker` is an object of the application's composition root: handlers call `subscribe`, `unsubscribe`, `publish_text` and `publish_binary` from any thread; a room is a topic. Hold a `BrokerMembership` in each handler so its subscriptions end with its connection. Every bound is a `BrokerConfig` field and every overflow is a refusal that changes nothing:
+
+| Bound | Default | When exceeded |
+|---|---|---|
+| Distinct topics | 1024 | `subscribe` returns `BufferFull` |
+| Subscribers per topic | 10 000 | `BufferFull` |
+| Topics per connection | 64 | `BufferFull` |
+| Subscriptions in total | 100 000 | `BufferFull` (what stops a handler that forgets to leave) |
+| Topic name | 1 to 128 bytes of `[A-Za-z0-9._:/@-]` | `InvalidArgument` |
+| Payload per publish | 64 KiB | `InvalidArgument` |
+
+What to watch: `wsrv_broker_deliveries_total{result="refused"}` rising means a loop's task queue is full (the publish rate outruns a loop); a `PublishReport` says the same per call. Delivery is "accepted for delivery", never acknowledged; a subscriber that cannot keep up is closed or dropped by its own connection's slow-consumer policy (`wsrv_slow_consumer_drops_total`), and the other subscribers of the same publish are unaffected. The C ABI and the PHP `Client::publish()` are not available yet (ADR-0024 section 7).
 
 ## 4. Lifecycle
 

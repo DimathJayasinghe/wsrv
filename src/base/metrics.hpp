@@ -43,6 +43,11 @@ enum class Metric : std::uint8_t {
     AcceptErrorsEmfile,
     AcceptErrorsOther,
     TlsHandshakeFailures,
+    // wsrv_broker_publishes_total
+    BrokerPublishes,
+    // wsrv_broker_deliveries_total{result}
+    BrokerDeliveriesAccepted,
+    BrokerDeliveriesRefused,
     Count  ///< not a metric: the size of the enumeration
 };
 
@@ -82,7 +87,8 @@ public:
     void add(Metric /*metric*/, std::uint64_t /*amount*/ = 1) noexcept override {}
 };
 
-/// The counters of one loop (ADR-0023 section 2): one writer, any number of readers, no lock.
+/// The counters of one loop (ADR-0023 section 2): normally one writer (the shared bank has several;
+/// the adds are atomic either way), any number of readers, no lock.
 /// Aligned to a cache line so two loops' banks never share one.
 /// Thread-affinity: any thread (relaxed atomics; totals are exact, order across counters is not).
 class alignas(64) CounterBank final : public IMetrics {
@@ -127,6 +133,12 @@ public:
 
     /// The next unclaimed bank; the spare once all `loops` are taken.
     [[nodiscard]] CounterBank& claim() noexcept;
+    /// The spare bank, for writers that are not a loop (the broker, ADR-0024 section 6): several
+    /// threads add to it at once, which the relaxed atomics allow. A loop that claims it after
+    /// the others are taken shares it the same way.
+    [[nodiscard]] CounterBank& shared() noexcept {
+        return banks_[loops_];
+    }
     [[nodiscard]] MetricsSnapshot snapshot() const noexcept;
 
 private:

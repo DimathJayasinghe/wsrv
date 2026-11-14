@@ -6,10 +6,12 @@
 #include "server/handler.hpp"
 #include "server/handshake_verdict.hpp"
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string_view>
+#include <vector>
 
 namespace wsrv {
 
@@ -75,6 +77,33 @@ private:
     ISessionDirectory* directory_;
 };
 
+/// One payload, built and checked once, sent to many connections (ADR-0024 section 3). It is
+/// immutable and copies share the same bytes (a copy is a reference count, not an allocation), so
+/// a broadcast to N subscribers holds one buffer, not N. Text is validated as UTF-8 when the
+/// message is built; sending it never validates again. Thread-affinity: any thread (immutable after
+/// construction).
+class SharedMessage {
+public:
+    /// @return Error{InvalidUtf8} if `text` is not valid UTF-8, Error{ResourceExhausted} on
+    /// allocation failure.
+    [[nodiscard]] static Result<SharedMessage> text(std::string_view text);
+    [[nodiscard]] static Result<SharedMessage> binary(ByteView data);
+
+    [[nodiscard]] ByteView data() const noexcept {
+        return ByteView{*bytes_};
+    }
+    [[nodiscard]] bool is_text() const noexcept {
+        return is_text_;
+    }
+
+private:
+    SharedMessage(std::shared_ptr<const std::vector<std::byte>> bytes, bool is_text) noexcept
+        : bytes_{std::move(bytes)}, is_text_{is_text} {}
+
+    std::shared_ptr<const std::vector<std::byte>> bytes_;
+    bool is_text_;
+};
+
 /// A kept-alive, copyable way to send to one connection from any thread (FR-S3, EC-N13).
 /// send_text and close check their arguments (UTF-8, a sendable close code) before queueing
 /// anything and return Error{InvalidUtf8} / Error{InvalidArgument} to the caller.
@@ -99,6 +128,9 @@ public:
 
     [[nodiscard]] Result<void> send_text(std::string_view text) const;
     [[nodiscard]] Result<void> send_binary(ByteView data) const;
+    /// Send a message that was built once for many handles: the closure holds a reference, not a
+    /// copy of the bytes; the connection copies into its own bounded queue on the loop thread.
+    [[nodiscard]] Result<void> send(const SharedMessage& message) const;
     [[nodiscard]] Result<void> close(CloseCode code, std::string_view reason) const;
     /// Lift a pause_reads() on the connection (Session::resume_reads), from any thread.
     [[nodiscard]] Result<void> resume_reads() const;

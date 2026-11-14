@@ -106,7 +106,7 @@ FPM requests only *publish* (short-lived connection / persistent pconnect to wsr
 - `Wsrv\Client`: one connection to `wsrvd`: `connect()`, `poll()`, `sendText()`, `sendBinary()`, `closeConnection()`, `ping()`.
 - `Wsrv\Worker`: the callback style on top of it: `on('open'|'message'|'close'|'error'|'status', ...)`, `run()`, `step()`, `stop()`, with a `Connection` handle given to callbacks.
 
-`Wsrv\Client::publish()` / `subscribe()` (publish-only FPM requests, topics and rooms) are **not** implemented: they need the M10 broker. `Wsrv\Server` below is the *embedded* mode (FFI or extension, Mode A) and is also not implemented yet.
+`Wsrv\Client::publish()` / `subscribe()` (publish-only FPM requests, topics and rooms) are **not** implemented: the C++ `Broker` exists (M10, ADR-0024) but exposing it to a host language needs its own design (ADR-0024 section 7). `Wsrv\Server` below is the *embedded* mode (FFI or extension, Mode A) and is also not implemented yet.
 
 ### 4.3 PHP API (target ergonomics)
 

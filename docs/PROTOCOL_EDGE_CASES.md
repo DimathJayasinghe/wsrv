@@ -162,6 +162,10 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | EC-A04 | Handler stores `string_view` beyond callback | Documented UB; debug builds poison buffers after callback to catch |
 | EC-A05 | Handler destroys server from callback | Detected/forbidden; assert in debug |
 | EC-A06 | Re-entrancy: callback triggers `close()` which triggers `on_close` | Deferred to after current callback unwinds |
+| EC-A07 | A peer-chosen topic name (empty, 129 bytes, spaces, NUL, UTF-8, wildcards) | `InvalidArgument`; nothing is created (ADR-0024 section 2) |
+| EC-A08 | Subscribe past a bound (topics, per topic, per connection, total) or publish an oversized payload | Refused with `BufferFull` / `InvalidArgument`, state unchanged |
+| EC-A09 | One subscriber's loop queue is full or its connection is slow during a publish | Only that delivery is refused (counted, in the report); the others receive; no blocking, no retry |
+| EC-A10 | A connection ends while subscribed (any way: Close frame, reset, timeout, server stop) | `BrokerMembership` in the handler gives every subscription back; empty topics are erased |
 
 ## 7. TLS (EC-T) — M8
 
@@ -228,6 +232,7 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | EC-N05 accept-error metric, T4 refusal counters (global cap, per-IP by reason), EC-N09 slow-consumer counter, handshake refusal and close-class counters (ADR-0023) | done (M10 slice 2a) | `Metrics.*`, `MetricBanks.*`, `MetricsText.*`, `AcceptorTest.AcceptErrorsAreCounted*`, `ConnectionTest.*Counted*`, `ConnectionTest.MessagesAndBytes*`, `ServerMetrics.*` |
 | T21 admin listener: the three pages, bounds (clients, head size, deadline), off by default, readiness on shutdown (ADR-0023) | done (M10 slice 2b) | `AdminHttp.*`, `AdminServer.*`, `EmbeddedConfig.*Admin*`, `EmbeddedServer.*Admin*`, `DaemonConfig.TheAdmin*`, `Usage.NamesTheAdmin*` |
 | EC-N22..N25 (found by the second security review, M9/M10) | done | `MultiLoop.AForcedShutdownReports*`, `MultiLoop.StopReports*`, `EmbeddedServer.ClientsThatIgnoreTheShutdown*`, `HostBridgeResume.*`, `ConnectionTest.AConnectionThatEndedInsideOnOpen*`, `ConnectionTest.ATransportThatYielded*` |
+| EC-A07..A10 (topic names, broker bounds, per-subscriber isolation, no leaked subscriptions), FR-S7 (ADR-0024) | done (M10 slice 3) | `BrokerTest.*`, `SmallQueueBrokerTest.*`, `SharedMessage.*`, `SessionHandleTest.*SharedMessage*`, `BrokerServer.*` |
 | EC-H26 | M10 (MAY) | - |
 | EC-D01 (negotiation permutations), D02 (fragmented compressed message, RSV1 on the first frame only), D03 (bomb: size and ratio), D04 (invalid stream: 1007), D06 (empty message), D07 (plain message while negotiated) | done (M9) | `PermessageDeflate.*`, `DeflatePolicyCheck.*`, `SessionDeflate.*`, `ZlibCodec.*`, `ServerDeflate.*`, `fuzz_inflate`, Autobahn 12.* and 13.* (216 cases) |
 | EC-D05 (memory per compressed connection: bounded, budgeted) | bound done (M9): window and level are range-checked, the per-connection figures are in `docs/OPERATIONS.md` section 1.1. **Gap:** the release of the send scratch buffer after every send is by design and review (ADR-0020 A1) and is not asserted by a test; a global budget across connections is M10 | `SessionDeflate.TheConfigurationIsChecked`, `ZlibCodec.TheFactoryRefusesWindowsAndLevelsZlibCannotDo`, `ServerDeflate.ImpossibleSettingsAreRefusedAtBuildTimeNamingTheFeature`, `ServerDeflate.ChurnOfCompressedConnectionsLeavesNoDescriptorsBehind` |

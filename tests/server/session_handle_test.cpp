@@ -7,6 +7,7 @@
 #include "base/clock.hpp"
 #include "net/event_loop.hpp"
 #include "net/syscalls.hpp"
+#include "support/recording_session.hpp"
 
 #include <gtest/gtest.h>
 
@@ -24,65 +25,8 @@ using wsrv::CloseCode;
 using wsrv::ConnectionId;
 using wsrv::ErrorCode;
 using wsrv::SessionHandle;
-
-/// A Session that records what it was asked to do, and on which thread.
-class RecordingSession final : public wsrv::Session {
-public:
-    explicit RecordingSession(ConnectionId id) : id_{id} {}
-    [[nodiscard]] ConnectionId id() const noexcept override {
-        return id_;
-    }
-    [[nodiscard]] const wsrv::Endpoint& peer() const noexcept override {
-        return peer_;
-    }
-    [[nodiscard]] wsrv::Result<void> send_text(std::string_view text) override {
-        texts.emplace_back(text);
-        threads.push_back(std::this_thread::get_id());
-        return {};
-    }
-    [[nodiscard]] wsrv::Result<void> send_binary(wsrv::ByteView data) override {
-        binary_sizes.push_back(data.size());
-        return {};
-    }
-    [[nodiscard]] wsrv::Result<wsrv::MessageWriter> begin_text() override {
-        return wsrv::fail(wsrv::ErrorCode::Closing, "stub");
-    }
-    [[nodiscard]] wsrv::Result<wsrv::MessageWriter> begin_binary() override {
-        return wsrv::fail(wsrv::ErrorCode::Closing, "stub");
-    }
-    void pause_reads() override {}
-    void resume_reads() override {
-        ++resumes;
-    }
-    void close(CloseCode code, std::string_view reason) override {
-        closes.emplace_back(code, std::string{reason});
-    }
-    [[nodiscard]] SessionHandle handle() const override {
-        return {};  // not needed here
-    }
-
-    std::vector<std::string> texts;
-    int resumes = 0;
-    std::vector<std::size_t> binary_sizes;
-    std::vector<std::pair<CloseCode, std::string>> closes;
-    std::vector<std::thread::id> threads;
-
-private:
-    ConnectionId id_;
-    wsrv::Endpoint peer_;
-};
-
-class FakeDirectory final : public wsrv::ISessionDirectory {
-public:
-    void run(ConnectionId id, const wsrv::SessionCommand& command) override {
-        const auto found = sessions.find(id);
-        if (found != sessions.end()) {
-            command(*found->second);
-        }
-    }
-    void decide(ConnectionId /*id*/, const wsrv::HandshakeVerdict& /*verdict*/) override {}
-    std::map<ConnectionId, wsrv::Session*> sessions;
-};
+using wsrv::test::FakeDirectory;
+using wsrv::test::RecordingSession;
 
 class SessionHandleTest : public ::testing::Test {
 protected:
@@ -144,6 +88,61 @@ TEST_F(SessionHandleTest, AMessageSentFromAnotherThreadRunsOnTheLoopThreadInOrde
     for (const std::thread::id& thread : session_.threads) {
         EXPECT_EQ(thread, std::this_thread::get_id());
     }
+}
+
+// ---- SharedMessage (ADR-0024 section 3) ---------------------------------------------------------
+
+TEST(SharedMessage, TextIsValidatedOnceWhenItIsBuilt) {
+    EXPECT_TRUE(wsrv::SharedMessage::text("h\xC3\xA9llo").has_value());
+    const auto bad = wsrv::SharedMessage::text("\xC3\x28");  // an invalid two-byte sequence
+    ASSERT_FALSE(bad.has_value());
+    EXPECT_EQ(bad.error().code, ErrorCode::InvalidUtf8);
+    EXPECT_FALSE(wsrv::SharedMessage::text("\xE2\x82").has_value()) << "cut in the middle";
+}
+
+TEST(SharedMessage, ACopyIsTheSamePayloadNotANewAllocation) {
+    const auto message = wsrv::SharedMessage::binary(wsrv::ByteView{});
+    ASSERT_TRUE(message.has_value());
+    const wsrv::SharedMessage copy = *message;
+    EXPECT_EQ(copy.data().data(), message->data().data());
+    EXPECT_FALSE(copy.is_text());
+}
+
+TEST_F(SessionHandleTest, ASharedMessageReachesTheSessionAsTextOrBinary) {
+    const SessionHandle handle{link_, kId};
+    const auto text = wsrv::SharedMessage::text("shared hello");
+    const std::string raw = "\x01\x02\x03";
+    const auto binary = wsrv::SharedMessage::binary(wsrv::as_bytes(raw));
+    ASSERT_TRUE(text.has_value());
+    ASSERT_TRUE(binary.has_value());
+    ASSERT_TRUE(handle.send(*text).has_value());
+    ASSERT_TRUE(handle.send(*binary).has_value());
+    ASSERT_TRUE(pump_until([&] { return !session_.texts.empty() && !session_.binaries.empty(); }));
+    EXPECT_EQ(session_.texts[0], "shared hello");
+    EXPECT_EQ(session_.binaries[0], raw);
+}
+
+TEST_F(SessionHandleTest, ManyHandlesCanSendTheSameSharedMessage) {
+    const auto message = wsrv::SharedMessage::text("same for all");
+    ASSERT_TRUE(message.has_value());
+    const SessionHandle handle{link_, kId};
+    for (int i = 0; i < 50; ++i) {
+        ASSERT_TRUE(handle.send(*message).has_value());
+    }
+    ASSERT_TRUE(pump_until([&] { return session_.texts.size() == 50; }));
+    EXPECT_EQ(session_.texts.front(), session_.texts.back());
+}
+
+TEST_F(SessionHandleTest, ASharedMessageToAClosedLinkIsClosingAndAnInertHandleSaysSo) {
+    const auto message = wsrv::SharedMessage::text("x");
+    ASSERT_TRUE(message.has_value());
+    const SessionHandle handle{link_, kId};
+    link_->close();
+    const auto sent = handle.send(*message);
+    ASSERT_FALSE(sent.has_value());
+    EXPECT_EQ(sent.error().code, ErrorCode::Closing);
+    const SessionHandle inert;
+    EXPECT_EQ(inert.send(*message).error().code, ErrorCode::Closing);
 }
 
 TEST_F(SessionHandleTest, BinaryAndCloseReachTheSession) {

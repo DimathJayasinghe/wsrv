@@ -37,6 +37,15 @@ constexpr MetricInfo close_series(std::string_view close_class) {
             "",
             ""};
 }
+constexpr MetricInfo broker_deliveries_series(std::string_view result) {
+    return {"wsrv_broker_deliveries_total",
+            "Broker deliveries to subscribers, by whether the subscriber's loop accepted them.",
+            false,
+            "result",
+            result,
+            "",
+            ""};
+}
 constexpr MetricInfo accept_errors_series(std::string_view error) {
     return {"wsrv_accept_errors_total",
             "Failed accept calls (each makes the acceptor back off).",
@@ -78,6 +87,15 @@ constexpr std::array<MetricInfo, kMetricCount> kInfo{{
     accept_errors_series("other"),
     MetricInfo{
         "wsrv_tls_handshake_failures_total", "TLS handshakes that failed.", false, "", "", "", ""},
+    MetricInfo{"wsrv_broker_publishes_total",
+               "Messages published to broker topics.",
+               false,
+               "",
+               "",
+               "",
+               ""},
+    broker_deliveries_series("accepted"),
+    broker_deliveries_series("refused"),
 }};
 
 void append_number(std::string& out, std::uint64_t value) {
