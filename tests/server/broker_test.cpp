@@ -329,9 +329,34 @@ TEST_F(SmallQueueBrokerTest, ARefusingLoopCostsOnlyThoseDeliveriesAndIsReportedN
         received += session(id).texts.size();
     }
     EXPECT_EQ(received, report->accepted) << "exactly the accepted ones were delivered";
-    const auto again = broker.publish_text("t", "y");  // the queue has room again: all accepted
+    const auto again = broker.publish_text("t", "y");  // the queue has room again
     ASSERT_TRUE(again.has_value());
-    EXPECT_GE(again->accepted, 4U);
+    EXPECT_EQ(again->accepted, 3U) << "a queue of 4 takes 3 broadcast tasks, one slot is reserved";
+}
+
+TEST_F(SmallQueueBrokerTest, ARefusedTailIsNotAlwaysTheSameSubscribers) {  // fairness, ADR-0024 A1
+    Broker broker;
+    for (ConnectionId id = 1; id <= 8; ++id) {
+        ASSERT_TRUE(broker.subscribe(add(id), "t").has_value());
+    }
+    for (int round = 0; round < 8; ++round) {
+        ASSERT_TRUE(broker.publish_text("t", "x").has_value());
+        pump();  // drain, so every publish meets an empty queue and can serve only three
+    }
+    for (ConnectionId id = 1; id <= 8; ++id) {
+        EXPECT_GE(session(id).texts.size(), 1U)
+            << "subscriber " << id << " was refused every time: the start must rotate";
+    }
+}
+
+TEST_F(SmallQueueBrokerTest, AFloodOfBroadcastsLeavesRoomForAClose) {
+    Broker broker;
+    const SessionHandle victim = add(1);
+    ASSERT_TRUE(broker.subscribe(victim, "t").has_value());
+    for (int i = 0; i < 10; ++i) {
+        static_cast<void>(broker.publish_text("t", "x").has_value());
+    }
+    EXPECT_TRUE(victim.close(wsrv::CloseCode::GoingAway, "bye").has_value());
 }
 
 TEST_F(BrokerTest, ASubscriberWhoseServerIsGoneIsDroppedAndTheRestOfTheTableIsKept) {
@@ -348,17 +373,30 @@ TEST_F(BrokerTest, ASubscriberWhoseServerIsGoneIsDroppedAndTheRestOfTheTableIsKe
 // ---- metrics -----------------------------------------------------------------------------------
 
 TEST_F(BrokerTest, PublishesAndDeliveriesAreCounted) {  // ADR-0024 section 6
-    wsrv::CounterBank bank;
-    Broker broker{BrokerConfig{}, &bank};
+    const auto bank = std::make_shared<wsrv::CounterBank>();
+    Broker broker{BrokerConfig{}, bank};
     ASSERT_TRUE(broker.subscribe(add(1), "t").has_value());
     ASSERT_TRUE(broker.subscribe(add(2), "t").has_value());
     ASSERT_TRUE(broker.publish_text("t", "a").has_value());
     ASSERT_TRUE(broker.publish_text("t", "b").has_value());
-    EXPECT_EQ(bank.read(wsrv::Metric::BrokerPublishes), 2U);
-    EXPECT_EQ(bank.read(wsrv::Metric::BrokerDeliveriesAccepted), 4U);
-    EXPECT_EQ(bank.read(wsrv::Metric::BrokerDeliveriesRefused), 0U);
+    EXPECT_EQ(bank->read(wsrv::Metric::BrokerPublishes), 2U);
+    EXPECT_EQ(bank->read(wsrv::Metric::BrokerDeliveriesAccepted), 4U);
+    EXPECT_EQ(bank->read(wsrv::Metric::BrokerDeliveriesRefused), 0U);
     EXPECT_FALSE(broker.publish_text("t", "\xC3\x28").has_value());
-    EXPECT_EQ(bank.read(wsrv::Metric::BrokerPublishes), 2U) << "a refused publish is not counted";
+    EXPECT_EQ(bank->read(wsrv::Metric::BrokerPublishes), 2U) << "a refused publish is not counted";
+}
+
+TEST_F(BrokerTest, TheBrokerKeepsItsCountersAliveAfterTheirOwnerIsGone) {  // review finding 4
+    std::shared_ptr<wsrv::CounterBank> kept;
+    Broker broker;
+    {
+        wsrv::MetricBanks banks{1};
+        kept = banks.shared();
+        broker.use_metrics(kept);
+    }  // the banks (the server's) are destroyed; a publish after this must not touch freed memory
+    ASSERT_TRUE(broker.subscribe(add(1), "t").has_value());
+    ASSERT_TRUE(broker.publish_text("t", "x").has_value());
+    EXPECT_EQ(kept->read(wsrv::Metric::BrokerPublishes), 1U);
 }
 
 // ---- threads -----------------------------------------------------------------------------------

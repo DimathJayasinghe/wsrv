@@ -111,7 +111,7 @@ int serve(const Options& options) {
     }
     try {
         const std::unique_ptr<wsrv::Server> server = builder.build();
-        broker.use_metrics(&server->shared_metrics());  // wsrv_broker_* on the metrics page
+        broker.use_metrics(server->shared_metrics());  // wsrv_broker_* on the metrics page
         if (const auto signals = server->install_signal_handlers(); !signals) {
             std::cerr << "chat: cannot install signal handlers\n";
             return EXIT_FAILURE;
@@ -119,9 +119,7 @@ int serve(const Options& options) {
         std::cout << "chat: listening (ws) on " << options.host << ':'
                   << server->local_endpoint().port << " (Ctrl-C to stop)\n"
                   << std::flush;  // flushed: scripts wait for this line
-        const bool ok = server->run().has_value();
-        broker.use_metrics(nullptr);  // the server is about to be destroyed
-        return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+        return server->run() ? EXIT_SUCCESS : EXIT_FAILURE;
     } catch (const wsrv::ConfigError& error) {
         std::cerr << "chat: " << error.what() << '\n';
         return EXIT_FAILURE;

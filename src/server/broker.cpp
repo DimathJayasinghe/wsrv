@@ -158,8 +158,11 @@ Broker::publish_binary(std::string_view topic, ByteView data, ConnectionId excep
 Result<PublishReport>
 Broker::publish(std::string_view topic, const SharedMessage& message, ConnectionId except) {
     std::vector<SessionHandle> recipients;
+    std::shared_ptr<IMetrics> metrics;
     try {
         const std::lock_guard lock{mutex_};
+        metrics =
+            metrics_;  // a reference, so the counters outlive a server that is being destroyed
         if (const auto found = topics_.find(topic); found != topics_.end()) {
             recipients.reserve(found->second.size());
             for (const auto& [id, handle] : found->second) {
@@ -173,7 +176,13 @@ Broker::publish(std::string_view topic, const SharedMessage& message, Connection
     }
     PublishReport report;
     report.subscribers = recipients.size();
-    for (const SessionHandle& handle : recipients) {
+    // Start somewhere else each time: when the loops cannot take every delivery, the refused ones
+    // are the tail of this order, and a fixed order would refuse the same subscribers every time.
+    const std::size_t count = recipients.size();
+    const std::size_t start =
+        count == 0 ? 0 : rotation_.fetch_add(1, std::memory_order_relaxed) % count;
+    for (std::size_t i = 0; i < count; ++i) {
+        const SessionHandle& handle = recipients[(start + i) % count];
         const Result<void> sent = handle.send(message);
         if (sent) {
             ++report.accepted;
@@ -184,7 +193,7 @@ Broker::publish(std::string_view topic, const SharedMessage& message, Connection
             unsubscribe(handle.id(), topic);  // permanent: the server is gone (rare, one lock each)
         }
     }
-    if (IMetrics* const metrics = metrics_.load(std::memory_order_acquire); metrics != nullptr) {
+    if (metrics != nullptr) {
         metrics->add(Metric::BrokerPublishes);
         metrics->add(Metric::BrokerDeliveriesAccepted, report.accepted);
         metrics->add(Metric::BrokerDeliveriesRefused, report.refused);

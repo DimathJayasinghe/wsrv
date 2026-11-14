@@ -95,6 +95,12 @@ public:
     /// for an empty task. Tasks posted by a running task run in the next iteration.
     [[nodiscard]] Result<void> post(Task task);
 
+    /// The same, for work that arrives in bursts and can be refused (a broadcast to many
+    /// subscribers, ADR-0024 A1): accepted only while the queue holds fewer than three quarters of
+    /// max_queued_tasks, so a flood of these can never fill the queue and keep out the control
+    /// tasks that use post() (hand-off of a new connection, a handshake decision, shutdown, close).
+    [[nodiscard]] Result<void> post_bulk(Task task);
+
     /// Queue `task` for the end of the current iteration: after its events, timers and posted
     /// tasks, before the next poll. This is the safe point for work that must not run inside the
     /// callback that asked for it, such as destroying the object whose on_event() is on the stack
@@ -155,6 +161,7 @@ private:
     void run_timers();
     void run_tasks();
     void run_deferred();
+    [[nodiscard]] Result<void> post_within(Task task, std::size_t limit);
     void invoke(Task& task) noexcept;
     [[nodiscard]] int wait_timeout_ms(std::chrono::milliseconds max_wait);
 

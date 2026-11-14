@@ -84,7 +84,7 @@ TEST(BrokerServer, AMessageReachesEveryoneElseOnEveryLoopAndNotItsSender) {
     Broker broker;
     LobbyFactory factory{broker};
     RunningServer running{lobby_server(factory, 3)};
-    broker.use_metrics(&running.server().shared_metrics());
+    broker.use_metrics(running.server().shared_metrics());
     std::vector<std::unique_ptr<TcpClient>> clients;
     for (int i = 0; i < 6; ++i) {  // round-robin: two per loop
         clients.push_back(std::make_unique<TcpClient>(running.port()));
@@ -145,7 +145,7 @@ TEST(BrokerServer, TheBrokersCountersAppearInTheServersMetrics) {  // ADR-0024 s
     Broker broker;
     LobbyFactory factory{broker};
     RunningServer running{lobby_server(factory, 2)};
-    broker.use_metrics(&running.server().shared_metrics());
+    broker.use_metrics(running.server().shared_metrics());
     TcpClient a{running.port()};
     TcpClient b{running.port()};
     ASSERT_TRUE(a.upgrade());

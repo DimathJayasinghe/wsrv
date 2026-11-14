@@ -29,6 +29,11 @@ A topic name is written into logs and, in a chat protocol, back to other peers. 
 ## 7. Rollback on allocation failure
 `add_locked` checks every bound first, then inserts into two tables. If the second insertion throws `bad_alloc`, the first must be undone, or a topic would list a subscriber the other table does not know. The code removes whatever was inserted and returns `ResourceExhausted`; the total counter is increased only after both inserts succeed. A mutation check showed the test that repeated a `subscribe` five times was needed: without the idempotence check the counter drifted upward and the total bound would have refused honest clients.
 
+## 8. What the security review added
+A reviewer found that the design above had one gap: the broadcast shares the loop's task queue with everything else. A publish to 10 000 subscribers could fill a loop's queue, and then a new client could not be handed to that loop, a handshake decision was lost and a graceful stop became a forced one. The fix is a **reserve**: broadcasts go through `post_bulk`, which refuses once the queue is three quarters full, so the last quarter is only for control tasks. It is the same idea as a reserved lane on a road: not faster, but the ambulance can pass. `publish` also starts at a rotating offset: when the loops cannot take every delivery, the refused ones are the tail of the order, and a fixed order would refuse the same subscribers for ever.
+
+Two smaller lessons from the same review. A raw pointer to something another object owns (the broker's pointer to the server's counters) is a use-after-free waiting for a thread you did not think about; a `shared_ptr` costs one copy per publish and removes the question. And compression is per connection: "one allocation per publish" does not mean "one unit of work per publish" (ADR-0024 A2).
+
 ## Tests
 `BrokerTest.*` (delivery, order, `except`, bounds, names, isolation with a deliberately tiny loop queue, a gone server, metrics, four threads under TSan), `SharedMessage.*`, `SessionHandleTest.*SharedMessage*`, `BrokerServer.*` (three loops, real sockets). Mutation checks that went red: sending to the publisher, ignoring `Closing`, dropping the total bound, dropping the idempotence check.
 
@@ -43,4 +48,5 @@ A topic name is written into logs and, in a chat protocol, back to other peers. 
 1. `publish_text` holds the lock only to copy handles. What can go wrong if a subscriber unsubscribes between the copy and the send? Why is that acceptable?
 2. Why is `max_subscriptions` needed when `BrokerMembership` already unsubscribes on destruction?
 3. Change the registry to one shard per loop. What would then be harder: subscribing, publishing, or counting the total bound?
-4. Wildcard topics (`news.*`) would need a trie or a scan. Which of the three bounds in ADR-0024 section 2 would stop being enough?
+4. Why is the bulk limit three quarters and not "the queue minus one slot"? What would a flood of control tasks (not broadcasts) do instead?
+5. Wildcard topics (`news.*`) would need a trie or a scan. Which of the three bounds in ADR-0024 section 2 would stop being enough?

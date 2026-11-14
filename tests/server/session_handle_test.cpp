@@ -249,6 +249,26 @@ TEST_F(SmallQueueTest, AFullTaskQueueIsReportedAsBufferFull) {  // EC-N14
     ASSERT_TRUE(pump_until([&] { return session_.texts.size() == 4; }));
 }
 
+TEST_F(SmallQueueTest,
+       ABroadcastStopsBeforeTheQueueIsFullSoAControlTaskStillGetsIn) {  // ADR-0024 A1
+    const SessionHandle handle{link_, kId};
+    const auto message = wsrv::SharedMessage::text("m");
+    ASSERT_TRUE(message.has_value());
+    int accepted = 0;
+    wsrv::Result<void> last;
+    for (int i = 0; i < 10; ++i) {
+        last = handle.send(*message);
+        accepted += last.has_value() ? 1 : 0;
+    }
+    EXPECT_EQ(accepted, 3) << "a queue of 4 keeps one slot back for control";
+    ASSERT_FALSE(last.has_value());
+    EXPECT_EQ(last.error().code, ErrorCode::BufferFull);
+    EXPECT_TRUE(handle.close(CloseCode::GoingAway, "bye").has_value())
+        << "the broadcast flood must not keep a close out";
+    ASSERT_TRUE(pump_until([&] { return !session_.closes.empty(); }));
+    EXPECT_EQ(session_.texts.size(), 3U);
+}
+
 TEST_F(SessionHandleTest, ClosingTheLinkWhileThreadsSendIsRaceFree) {  // run under TSan
     const SessionHandle handle{link_, kId};
     std::atomic<bool> stop{false};

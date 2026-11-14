@@ -216,6 +216,30 @@ TEST_F(EventLoopTest, ThePostQueueIsBoundedAndRecovers) {  // EC-N14
     EXPECT_TRUE(loop->post([] {}).has_value());
 }
 
+TEST_F(EventLoopTest, BulkTasksStopAtThreeQuartersSoControlTasksStillFit) {  // ADR-0024 A1
+    EventLoopConfig config;
+    config.max_queued_tasks = 8;  // bulk limit 6, the last 2 are reserved for control tasks
+    auto loop = make(config);
+    for (int i = 0; i < 6; ++i) {
+        ASSERT_TRUE(loop->post_bulk([] {}).has_value()) << i;
+    }
+    const auto refused = loop->post_bulk([] {});
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, ErrorCode::BufferFull);
+    EXPECT_TRUE(loop->post([] {}).has_value()) << "a control task uses the reserve";
+    EXPECT_TRUE(loop->post([] {}).has_value());
+    EXPECT_FALSE(loop->post([] {}).has_value()) << "the whole queue is still bounded";
+    ASSERT_TRUE(loop->run_once(0ms).has_value());
+    EXPECT_TRUE(loop->post_bulk([] {}).has_value()) << "and bulk recovers once it drains";
+}
+
+TEST_F(EventLoopTest, AnEmptyBulkTaskIsRefusedLikeAnyOther) {
+    auto loop = make();
+    const auto empty = loop->post_bulk(wsrv::Task{});
+    ASSERT_FALSE(empty.has_value());
+    EXPECT_EQ(empty.error().code, ErrorCode::InvalidArgument);
+}
+
 TEST_F(EventLoopTest, AThrowingTaskIsContainedAndCounted) {
     auto loop = make();
     int after = 0;

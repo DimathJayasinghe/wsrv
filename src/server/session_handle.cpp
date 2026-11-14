@@ -11,14 +11,23 @@
 namespace wsrv {
 
 Result<void> LoopLink::submit(ConnectionId id, SessionCommand command) {
+    return submit_in(Lane::Control, id, std::move(command));
+}
+
+Result<void> LoopLink::submit_bulk(ConnectionId id, SessionCommand command) {
+    return submit_in(Lane::Bulk, id, std::move(command));
+}
+
+Result<void> LoopLink::submit_in(Lane lane, ConnectionId id, SessionCommand command) {
     const std::lock_guard lock{mutex_};
     if (loop_ == nullptr) {
         return fail(ErrorCode::Closing, "session handle: the server is gone");
     }
     ISessionDirectory* const directory = directory_;
     try {
-        return loop_->post(
-            [directory, id, command = std::move(command)] { directory->run(id, command); });
+        auto task = [directory, id, command = std::move(command)] { directory->run(id, command); };
+        return lane == Lane::Bulk ? loop_->post_bulk(std::move(task))
+                                  : loop_->post(std::move(task));
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::ResourceExhausted, "session handle: out of memory");
     }
@@ -96,8 +105,12 @@ Result<SharedMessage> SharedMessage::binary(ByteView data) {
 }
 
 Result<void> SessionHandle::send(const SharedMessage& message) const {
+    if (link_ == nullptr) {
+        return fail(ErrorCode::Closing, "session handle: not connected");
+    }
     try {
-        return submit_to(link_, id_, [message](Session& session) {
+        // The bulk lane: a broadcast is refused before it can fill the loop's queue (ADR-0024 A1).
+        return link_->submit_bulk(id_, [message](Session& session) {
             const ByteView bytes = message.data();
             const Result<void> queued =
                 message.is_text() ? session.send_text(as_chars(bytes)) : session.send_binary(bytes);

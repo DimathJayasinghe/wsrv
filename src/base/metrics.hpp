@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -133,17 +134,20 @@ public:
 
     /// The next unclaimed bank; the spare once all `loops` are taken.
     [[nodiscard]] CounterBank& claim() noexcept;
-    /// The spare bank, for writers that are not a loop (the broker, ADR-0024 section 6): several
+    /// The shared bank, for writers that are not a loop (the broker, ADR-0024 section 6): several
     /// threads add to it at once, which the relaxed atomics allow. A loop that claims it after
-    /// the others are taken shares it the same way.
-    [[nodiscard]] CounterBank& shared() noexcept {
-        return banks_[loops_];
+    /// the others are taken shares it the same way. It is reference counted so a holder that
+    /// outlives these banks (a broker used from an embedder's thread while the server is being
+    /// destroyed) writes to valid memory, never to freed memory (ADR-0024 A3).
+    [[nodiscard]] std::shared_ptr<CounterBank> shared() const noexcept {
+        return shared_;
     }
     [[nodiscard]] MetricsSnapshot snapshot() const noexcept;
 
 private:
     std::size_t loops_;
-    std::vector<CounterBank> banks_;  // loops + 1 (the spare); never resized
+    std::vector<CounterBank> banks_;       // one per loop; never resized
+    std::shared_ptr<CounterBank> shared_;  // the spare, see shared()
     std::atomic<std::size_t> next_{0};
 };
 
