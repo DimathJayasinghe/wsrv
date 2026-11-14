@@ -92,6 +92,10 @@ WSRV_API void wsrv_config_free(wsrv_config *config); /* NULL is fine */
  *   max_new_connections_per_ip_per_second  new connections per second from one client address,
  *                        default 50; 0 = no limit. Over it: HTTP 429. Behind a reverse proxy every
  *                        user is one address: raise or switch off.
+ *   admin_port           0..65535: serve /metrics (Prometheus text), /healthz and /readyz over
+ *                        plain HTTP on this port. Off unless set; 0 lets the kernel choose. There
+ *                        is no authentication: keep it on loopback or behind a network policy.
+ *   admin_host           IP literal for the admin port, default "127.0.0.1"
  *   shutdown_grace_ms    graceful shutdown deadline
  *   event_queue_events   most events waiting for the host
  *   event_queue_bytes    most payload bytes waiting for the host

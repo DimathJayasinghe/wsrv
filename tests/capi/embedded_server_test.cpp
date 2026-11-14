@@ -218,6 +218,24 @@ TEST(EmbeddedServer, ClientsThatIgnoreTheShutdownStillGiveTheHostOneCloseEachOnE
     EXPECT_EQ(closes, 4);
 }
 
+// ADR-0023: the admin listener is a text key like every other.
+TEST(EmbeddedServer, TheAdminKeysServeMetricsOnTheirOwnPort) {
+    EmbeddedConfig config = base_config();
+    ASSERT_TRUE(config.set("admin_port", "0").has_value());  // 0: the kernel chooses
+    const auto server = started(config);
+    ASSERT_NE(server->admin_port(), 0);
+    TcpClient admin{server->admin_port()};
+    ASSERT_TRUE(admin.valid());
+    ASSERT_TRUE(admin.send("GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n"));
+    const std::string head = admin.read_http_head();
+    EXPECT_EQ(head.rfind("HTTP/1.1 200 OK\r\n", 0), 0U) << head;
+}
+
+TEST(EmbeddedServer, WithoutAnAdminPortThereIsNoAdminListener) {
+    const auto server = started();
+    EXPECT_EQ(server->admin_port(), 0);
+}
+
 // ADR-0021: the limit is a text key like every other, so the C API, PHP and wsrvd get it for free.
 TEST(EmbeddedServer, ThePerIpCapKeyRefusesTheNextConnectionFromTheSameAddressWith429) {
     EmbeddedConfig config = base_config();

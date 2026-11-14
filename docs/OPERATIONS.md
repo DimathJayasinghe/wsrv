@@ -116,7 +116,16 @@ ADR-0023. Counters live in one bank per loop (relaxed atomics, no lock) and are 
 | `wsrv_config_reload_total{result}` | counter | planned (`wsrvd` reload) |
 
 ### 3.1 Admin endpoint
-Planned in the next slice: `/metrics`, `/healthz` (liveness), `/readyz` (accepting & not shutting down) on a separate listener, loopback by default, off unless configured. The admin port is never exposed publicly (documented).
+Off unless configured: embedded/`wsrvd` keys `admin_port` (setting it switches the listener on; 0 lets the kernel choose) and `admin_host` (default `127.0.0.1`); `wsrvd --admin-port=9100`. Plain HTTP, **no authentication**: keep it on loopback or behind a network policy (a non-loopback bind logs a warning at start). It serves exactly three pages:
+
+| Request | Answer |
+|---|---|
+| `GET /metrics` | `200`, the Prometheus text of section 3 |
+| `GET /healthz` | `200 ok` while loop 0 answers (liveness; a stalled loop 0 stalls this too, which is the signal) |
+| `GET /readyz` | `200 ready` while the server accepts; `503 not ready` once a shutdown has begun (take the instance out of the load balancer before the grace period ends) |
+| any other target | `404` (exact match: no query string, no case folding); other methods `405`, a malformed request `400` |
+
+Bounds (ADR-0023, SECURITY_DESIGN T21): the admin listener runs on loop 0 (no extra thread); at most 8 clients at once (more are closed at once), a request head of at most 2 KiB, 5 s to send it, one request per connection, one non-blocking send for the answer (a client that cannot take the whole page in one call is dropped, so a page is never silently truncated). Prometheus example: `scrape_configs: [{job_name: wsrv, static_configs: [{targets: ["127.0.0.1:9100"]}]}]`.
 
 ## 4. Lifecycle
 

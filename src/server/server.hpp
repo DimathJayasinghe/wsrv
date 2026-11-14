@@ -13,6 +13,7 @@
 #include "net/tcp_listener.hpp"
 #include "net/transport_wrapper.hpp"
 #include "protocol/handshake.hpp"
+#include "server/admin_endpoint.hpp"
 #include "server/config.hpp"
 #include "server/handler.hpp"
 #include "server/handshake_decider.hpp"
@@ -92,6 +93,10 @@ public:
 
     /// The address actually bound (the real port when 0 was configured).
     [[nodiscard]] Endpoint local_endpoint() const;
+    /// The admin listener's bound address (ADR-0023); empty when the admin listener is off.
+    [[nodiscard]] std::optional<Endpoint> admin_endpoint() const {
+        return admin_ ? std::optional<Endpoint>{admin_->local_endpoint()} : std::nullopt;
+    }
     /// Connections refused because max_connections was reached. Any-thread.
     [[nodiscard]] std::uint64_t rejected_connections() const noexcept {
         return metrics().value(Metric::RejectedGlobalCap);
@@ -135,6 +140,8 @@ private:
     void hand_off(std::size_t worker, Fd client, const Endpoint& peer, ConnectionId id);
     void begin_shutdown();
     void force_shutdown();
+    [[nodiscard]] Result<void> start_admin();
+    [[nodiscard]] Result<void> make_shared_state();
     void on_shard_drained();
     void on_signal(int signo);
 
@@ -163,6 +170,7 @@ private:
     std::vector<std::unique_ptr<WorkerThread>> workers_;  // shards 1..threads-1, started by run()
     std::unique_ptr<TcpListener> listener_;
     std::unique_ptr<Acceptor> acceptor_;
+    std::unique_ptr<AdminEndpoint> admin_;  // on loop 0; null = off; destroyed before loop 0
     std::unique_ptr<SignalWatcher> signals_;
 
     // Loop-0-thread state.

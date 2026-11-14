@@ -73,6 +73,15 @@ TEST(DaemonConfig, ThePerIpLimitsComeInAsFlagsLikeAnyOtherKey) {  // ADR-0021 se
     EXPECT_EQ(config.embedded().server().max_new_connections_per_ip_per_second, 0U);
 }
 
+TEST(DaemonConfig, TheAdminListenerComesInAsFlags) {  // ADR-0023 section 3
+    DaemonConfig config = with_socket();
+    ASSERT_TRUE(config.apply_argument("--admin-host=127.0.0.1").has_value());
+    ASSERT_TRUE(config.apply_argument("--admin-port=9100").has_value());
+    ASSERT_TRUE(config.finish().has_value());
+    EXPECT_TRUE(config.embedded().admin_requested());
+    EXPECT_EQ(config.embedded().admin_port(), 9100);
+}
+
 TEST(DaemonConfig, PermessageDeflateComesInAsFlagsLikeAnyOtherKey) {  // ADR-0020 section 6
     DaemonConfig config = with_socket();
     ASSERT_TRUE(config.apply_argument("--permessage-deflate=true").has_value());

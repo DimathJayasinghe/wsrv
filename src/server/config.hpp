@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,11 @@ struct ServerConfig {
     /// switch off.
     std::size_t max_connections_per_ip = 100;
     std::uint32_t max_new_connections_per_ip_per_second = 50;
+    /// The admin listener for /metrics, /healthz and /readyz (ADR-0023). Absent = off. Plain HTTP
+    /// and unauthenticated: keep it on loopback or behind a network policy.
+    std::optional<Endpoint> admin;
+    std::size_t admin_max_connections = 8;  ///< served at once; more are closed (1..64)
+    std::chrono::milliseconds admin_request_timeout{5000};  ///< a request head must end by then
     std::size_t threads = 1;  ///< loops: loop 0 on the caller's thread, the rest started by run()
 
     HttpLimits http;  ///< the request head (FR-H7)
@@ -69,6 +75,8 @@ struct ServerConfig {
 inline constexpr std::size_t kMaxConfiguredConnections = std::size_t{1} << 20;
 inline constexpr std::size_t kMaxConfiguredThreads = 256;
 inline constexpr std::uint32_t kMaxConfiguredNewConnectionsPerSecond = 1'000'000;
+inline constexpr std::size_t kMaxConfiguredAdminConnections = 64;
+inline constexpr std::chrono::milliseconds kMaxAdminRequestTimeout{60000};
 inline constexpr std::size_t kMaxConfiguredReadBytes = std::size_t{16} << 20;
 inline constexpr std::chrono::milliseconds kMinDecisionTimeout{100};
 inline constexpr std::chrono::milliseconds kMaxDecisionTimeout{60000};

@@ -30,6 +30,19 @@ Server::~Server() = default;
 
 namespace {
 
+/// 127.0.0.0/8 or ::1.
+[[nodiscard]] bool is_loopback(const Endpoint& endpoint) noexcept {
+    if (!endpoint.v6) {
+        return endpoint.address[0] == 127;
+    }
+    for (std::size_t i = 0; i + 1 < endpoint.address.size(); ++i) {
+        if (endpoint.address[i] != 0) {
+            return false;
+        }
+    }
+    return endpoint.address.back() == 1;
+}
+
 /// Descriptors the process needs besides one per connection (ADR-0022): the listener, the
 /// acceptor's EMFILE reserve, the signal descriptor, stdio, log and certificate files, and the
 /// embedding host's own. Generous on purpose: a too-small guess fails at start, a large one costs
@@ -96,13 +109,8 @@ Result<std::unique_ptr<Server>> Server::create(ServerConfig config, const Server
     return server;
 }
 
-/// The fallible half of construction, in dependency order: negotiator, loop 0's shard, listener
-/// (bind errors surface here, EC-N20), acceptor. The other loops start in run().
-Result<void> Server::init() {
-    if (const Result<void> descriptors = reserve_descriptors(config_, sys_, logger_);
-        !descriptors) {
-        return descriptors;
-    }
+/// Everything the shards share, in dependency order (ADR-0014 section 2).
+Result<void> Server::make_shared_state() {
     try {
         negotiator_ = std::make_unique<HandshakeNegotiator>(config_.handshake);
         pending_ = std::make_unique<PendingGate>(effective_max_pending_handshakes(config_));
@@ -127,6 +135,19 @@ Result<void> Server::init() {
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::ResourceExhausted, "server: out of memory");
     }
+    return {};
+}
+
+/// The fallible half of construction, in dependency order: negotiator, loop 0's shard, listener
+/// (bind errors surface here, EC-N20), acceptor. The other loops start in run().
+Result<void> Server::init() {
+    if (const Result<void> descriptors = reserve_descriptors(config_, sys_, logger_);
+        !descriptors) {
+        return descriptors;
+    }
+    if (const Result<void> shared = make_shared_state(); !shared) {
+        return shared;
+    }
     auto shard = LoopShard::create(*shared_, [this] { on_shard_drained(); });
     if (!shard) {
         return std::unexpected{shard.error()};
@@ -145,7 +166,45 @@ Result<void> Server::init() {
         sys_,
         [this](Fd client, Endpoint peer) { on_accept(std::move(client), peer); },
         AcceptorConfig{.metrics = &main_->metrics()});
-    return acceptor_->start();
+    if (const Result<void> started = acceptor_->start(); !started) {
+        return started;
+    }
+    return start_admin();
+}
+
+/// The admin listener, on loop 0 (ADR-0023 section 3). Its pages read what already exists: the
+/// counters, the live count and whether a shutdown has begun (a loop-0 flag, read on loop 0).
+Result<void> Server::start_admin() {
+    if (!config_.admin) {
+        return {};
+    }
+    AdminConfig admin;
+    admin.listen = *config_.admin;
+    admin.max_connections = config_.admin_max_connections;
+    admin.request_timeout = config_.admin_request_timeout;
+    AdminSources sources;
+    try {
+        sources.metrics_text = [this] { return metrics_text(); };
+        sources.ready = [this] { return !shutting_down_; };
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "server: out of memory");
+    }
+    auto endpoint = AdminEndpoint::create(main_->loop(), sys_, admin, std::move(sources));
+    if (!endpoint) {
+        return std::unexpected{endpoint.error()};
+    }
+    admin_ = std::move(*endpoint);
+    const Endpoint bound = admin_->local_endpoint();
+    try {
+        logger_.log(LogLevel::Info, "server: admin listening on " + format_endpoint(bound));
+        if (!is_loopback(bound)) {
+            logger_.log(LogLevel::Warn,
+                        "server: the admin port is not on loopback and has no authentication");
+        }
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "server: out of memory");
+    }
+    return {};
 }
 
 /// The per-IP table (ADR-0021), unless both limits are off. Its hash is keyed from the OS random
