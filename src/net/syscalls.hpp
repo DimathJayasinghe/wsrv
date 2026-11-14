@@ -43,6 +43,13 @@ struct FileInfo {
     }
 };
 
+/// RLIMIT_NOFILE in plain integers: how many descriptors this process may hold. "Unlimited"
+/// (RLIM_INFINITY) is the largest uint64, so a comparison with a need is always right.
+struct FdLimits {
+    std::uint64_t soft = 0;  ///< the limit in force: open()/accept() fail with EMFILE beyond it
+    std::uint64_t hard = 0;  ///< the ceiling an unprivileged process may raise `soft` to
+};
+
 /// Every kernel call the server makes, behind one interface (docs/TESTING_STRATEGY.md section 2,
 /// "Syscall layer"). Production code uses LinuxSyscalls; tests use a fake that injects failures
 /// (EINTR, EAGAIN, EMFILE, EPIPE...) so every error path runs without a misbehaving kernel.
@@ -94,6 +101,10 @@ public:
     virtual SysResult thread_sigmask(int how, const sigset_t* set, sigset_t* old_set) = 0;
     /// signalfd(2): `fd == -1` creates a new descriptor.
     virtual SysResult signalfd(int fd, const sigset_t* mask, int flags) = 0;
+    /// getrlimit(RLIMIT_NOFILE) (ADR-0022).
+    virtual SysResult get_fd_limits(FdLimits& limits) = 0;
+    /// setrlimit(RLIMIT_NOFILE) changing only the soft limit; the hard limit is kept as it is.
+    virtual SysResult set_fd_soft_limit(std::uint64_t soft) = 0;
     /// Close without retrying on EINTR (on Linux the descriptor is gone either way).
     virtual void close(int fd) noexcept = 0;
 };
@@ -125,6 +136,8 @@ public:
     SysResult open_null() override;
     SysResult thread_sigmask(int how, const sigset_t* set, sigset_t* old_set) override;
     SysResult signalfd(int fd, const sigset_t* mask, int flags) override;
+    SysResult get_fd_limits(FdLimits& limits) override;
+    SysResult set_fd_soft_limit(std::uint64_t soft) override;
     void close(int fd) noexcept override;
 };
 

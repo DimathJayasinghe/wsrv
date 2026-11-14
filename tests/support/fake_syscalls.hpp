@@ -4,7 +4,9 @@
 #include "net/syscalls.hpp"
 
 #include <array>
+#include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <mutex>
 #include <optional>
@@ -36,6 +38,8 @@ enum class Call : std::size_t {
     OpenNull,
     SigMask,
     SignalFd,
+    GetFdLimits,
+    SetFdSoftLimit,
     Close,
     Count
 };
@@ -56,6 +60,18 @@ public:
     void succeed(Call call, long value) {
         const std::lock_guard<std::mutex> lock{mutex_};
         script_[index(call)].push_back(SysResult{value, 0});
+    }
+    /// From now on getrlimit/setrlimit(RLIMIT_NOFILE) act on this in-memory pair, never on the
+    /// real process: a test can describe any host limit, and raising the soft limit above `hard`
+    /// is refused with EINVAL like the kernel does (soft > hard). Without this call the real limit
+    /// is used.
+    void pretend_fd_limits(std::uint64_t soft, std::uint64_t hard) {
+        const std::lock_guard<std::mutex> lock{mutex_};
+        pretended_ = FdLimits{soft, hard};
+    }
+    [[nodiscard]] FdLimits pretended_fd_limits() const {
+        const std::lock_guard<std::mutex> lock{mutex_};
+        return pretended_.value_or(FdLimits{});
     }
     [[nodiscard]] std::size_t calls(Call call) const {
         const std::lock_guard<std::mutex> lock{mutex_};
@@ -209,6 +225,35 @@ public:
         }
         return real_.signalfd(fd, mask, flags);
     }
+    SysResult get_fd_limits(FdLimits& limits) override {
+        if (const auto injected = scripted(Call::GetFdLimits)) {
+            return *injected;
+        }
+        {
+            const std::lock_guard<std::mutex> lock{mutex_};
+            if (pretended_) {
+                limits = *pretended_;
+                return SysResult{0, 0};
+            }
+        }
+        return real_.get_fd_limits(limits);
+    }
+    SysResult set_fd_soft_limit(std::uint64_t soft) override {
+        if (const auto injected = scripted(Call::SetFdSoftLimit)) {
+            return *injected;
+        }
+        {
+            const std::lock_guard<std::mutex> lock{mutex_};
+            if (pretended_) {
+                if (soft > pretended_->hard) {
+                    return SysResult{-1, EINVAL};
+                }
+                pretended_->soft = soft;
+                return SysResult{0, 0};
+            }
+        }
+        return real_.set_fd_soft_limit(soft);
+    }
     void close(int fd) noexcept override {
         {
             const std::lock_guard<std::mutex> lock{mutex_};
@@ -239,6 +284,7 @@ private:
     mutable std::mutex mutex_;
     std::array<std::deque<SysResult>, static_cast<std::size_t>(Call::Count)> script_;
     std::array<std::size_t, static_cast<std::size_t>(Call::Count)> count_{};
+    std::optional<FdLimits> pretended_;
 };
 
 }  // namespace wsrv::test

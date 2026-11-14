@@ -2,6 +2,7 @@
 #include "server/server.hpp"
 
 #include "base/assert.hpp"
+#include "net/fd_budget.hpp"
 #include "net/system_random.hpp"
 
 #include <array>
@@ -10,6 +11,7 @@
 #include <memory>
 #include <new>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -25,6 +27,55 @@ Server::Server(Key /*unused*/, ServerConfig config, const ServerDeps& deps)
       logger_{deps.logger != nullptr ? *deps.logger : static_cast<ILogger&>(own_logger_)} {}
 
 Server::~Server() = default;
+
+namespace {
+
+/// Descriptors the process needs besides one per connection (ADR-0022): the listener, the
+/// acceptor's EMFILE reserve, the signal descriptor, stdio, log and certificate files, and the
+/// embedding host's own. Generous on purpose: a too-small guess fails at start, a large one costs
+/// nothing.
+constexpr std::size_t kDescriptorReserve = 64;
+/// Each loop holds an epoll instance and its wake-up eventfd (plus slack).
+constexpr std::size_t kDescriptorsPerLoop = 4;
+
+[[nodiscard]] std::uint64_t required_descriptors(const ServerConfig& config) noexcept {
+    // Both factors are bounded by validate() (ceilings of 2^20 and 256), so this cannot overflow.
+    return static_cast<std::uint64_t>(config.max_connections + kDescriptorReserve +
+                                      kDescriptorsPerLoop * config.threads);
+}
+
+/// T4: a server that cannot hold its own cap would meet EMFILE under load. Say so now, with the
+/// numbers an operator needs, before anything is bound (ADR-0022).
+[[nodiscard]] Result<void>
+reserve_descriptors(const ServerConfig& config, ISyscalls& sys, ILogger& logger) {
+    const std::uint64_t needed = required_descriptors(config);
+    const Result<FdBudget> budget = ensure_fd_budget(sys, needed);
+    // Formatting the numbers allocates; out of memory at start is itself a reason not to start.
+    try {
+        if (!budget) {
+            FdLimits limits;
+            static_cast<void>(sys.get_fd_limits(limits));
+            logger.log(LogLevel::Error,
+                       "server: needs " + std::to_string(needed) +
+                           " descriptors (max_connections " +
+                           std::to_string(config.max_connections) +
+                           " + reserve) but the limit is " + std::to_string(limits.soft) +
+                           " soft / " + std::to_string(limits.hard) + " hard (RLIMIT_NOFILE)");
+        } else if (budget->raised) {
+            logger.log(LogLevel::Info,
+                       "server: raised the soft descriptor limit to " +
+                           std::to_string(budget->soft));
+        }
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "server: out of memory");
+    }
+    if (!budget) {
+        return std::unexpected{budget.error()};
+    }
+    return {};
+}
+
+}  // namespace
 
 Result<std::unique_ptr<Server>> Server::create(ServerConfig config, const ServerDeps& deps) {
     if (deps.factory == nullptr) {
@@ -48,6 +99,10 @@ Result<std::unique_ptr<Server>> Server::create(ServerConfig config, const Server
 /// The fallible half of construction, in dependency order: negotiator, loop 0's shard, listener
 /// (bind errors surface here, EC-N20), acceptor. The other loops start in run().
 Result<void> Server::init() {
+    if (const Result<void> descriptors = reserve_descriptors(config_, sys_, logger_);
+        !descriptors) {
+        return descriptors;
+    }
     try {
         negotiator_ = std::make_unique<HandshakeNegotiator>(config_.handshake);
         pending_ = std::make_unique<PendingGate>(effective_max_pending_handshakes(config_));

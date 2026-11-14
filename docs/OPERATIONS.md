@@ -117,7 +117,8 @@ Admin endpoints: `/metrics`, `/healthz` (liveness), `/readyz` (accepting & not s
 
 ## 4. Lifecycle
 
-- **Start:** validate config → check `RLIMIT_NOFILE` ≥ `max_connections + reserve` → bind → (optionally drop privileges) → start loops → log `listening`.
+- **Start:** validate config → check `RLIMIT_NOFILE` ≥ `max_connections + 64 + 4 × threads` (ADR-0022: a lower soft limit is raised to exactly that when the hard limit allows, otherwise the start fails with `FdLimit` and a log line naming needed, soft and hard) → bind → (optionally drop privileges) → start loops → log `listening`.
+- **Embedded hosts (C API, PHP):** the same check runs in `wsrv_server_start` and a raise changes the soft limit of the *host* process (only upwards, only to what the configuration needs). A host that must keep a small limit lowers `max_connections`.
 - **Reload (SIGHUP):** reload snapshot; on failure keep old and increment `config_reload_total{result="error"}`.
 - **Graceful stop (SIGTERM/SIGINT):** stop accepting (readyz fails) → send Close 1001 to all → wait up to `shutdown_grace` (default 10 s) → force close remaining → join threads → exit 0. Second signal ⇒ immediate exit.
 - **Crash policy:** invariant violation ⇒ abort with core dump (supervisor restarts); never continue in an unknown state.
@@ -135,7 +136,8 @@ Admin endpoints: `/metrics`, `/healthz` (liveness), `/readyz` (accepting & not s
 
 | Symptom | Check | Likely cause |
 |---|---|---|
-| Accept errors `EMFILE` | `wsrv_accept_errors_total`, `ulimit -n` | fd limit too low / leak |
+| Start fails with `FdLimit` | log line "needs N descriptors ... soft / hard" | `ulimit -Hn` or systemd `LimitNOFILE=` below `max_connections` + reserve: raise it or lower `max_connections` |
+| Accept errors `EMFILE` | `wsrv_accept_errors_total`, `ulimit -n` | descriptor leak, or other code in an embedding process using the headroom |
 | High `loop_lag` | handler profile | blocking user code |
 | Rising outbound queue / slow-consumer drops | per-conn histogram | slow clients, broadcast too large |
 | Real users get 429 | client address behind one proxy/NAT? | per-address limits (section 1.2): raise or set to 0, limit at the proxy |
