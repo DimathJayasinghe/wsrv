@@ -2,9 +2,11 @@
 #include "net/syscalls.hpp"
 
 #include <cerrno>
+#include <limits>
 
 #include <fcntl.h>
 #include <sys/eventfd.h>
+#include <sys/resource.h>
 #include <sys/signalfd.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -129,6 +131,39 @@ SysResult LinuxSyscalls::thread_sigmask(int how, const sigset_t* set, sigset_t* 
     const int err =
         ::pthread_sigmask(how, set, old_set);  // returns the error number, sets no errno
     return err == 0 ? SysResult{0, 0} : SysResult{-1, err};
+}
+
+namespace {
+
+/// RLIM_INFINITY is "no limit": the largest value, whatever width the platform gives rlim_t.
+[[nodiscard]] std::uint64_t from_rlim(rlim_t value) noexcept {
+    return value == RLIM_INFINITY ? std::numeric_limits<std::uint64_t>::max()
+                                  : static_cast<std::uint64_t>(value);
+}
+
+[[nodiscard]] rlim_t to_rlim(std::uint64_t value) noexcept {
+    return value >= static_cast<std::uint64_t>(RLIM_INFINITY) ? RLIM_INFINITY
+                                                              : static_cast<rlim_t>(value);
+}
+
+}  // namespace
+
+SysResult LinuxSyscalls::get_fd_limits(FdLimits& limits) {
+    rlimit current{};
+    const SysResult result = captured(::getrlimit(RLIMIT_NOFILE, &current));
+    if (result.err == 0) {
+        limits = FdLimits{from_rlim(current.rlim_cur), from_rlim(current.rlim_max)};
+    }
+    return result;
+}
+
+SysResult LinuxSyscalls::set_fd_soft_limit(std::uint64_t soft) {
+    rlimit current{};
+    if (const SysResult read = captured(::getrlimit(RLIMIT_NOFILE, &current)); read.err != 0) {
+        return read;
+    }
+    current.rlim_cur = to_rlim(soft);  // rlim_max stays: only the soft limit is ours to change
+    return captured(::setrlimit(RLIMIT_NOFILE, &current));
 }
 
 SysResult LinuxSyscalls::signalfd(int fd, const sigset_t* mask, int flags) {

@@ -3,6 +3,8 @@
 #include "server/message_writer.hpp"
 #include "server/server_builder.hpp"
 #include "server/session_handle.hpp"
+#include "support/fake_syscalls.hpp"
+#include "support/fakes.hpp"
 #include "support/running_server.hpp"
 #include "support/tcp_client.hpp"
 
@@ -212,6 +214,41 @@ TEST(ServerBuilder, APortAlreadyInUseIsAClearStartupError) {  // EC-N20
     } catch (const wsrv::ConfigError& error) {
         EXPECT_NE(std::string{error.what()}.find("AddressInUse"), std::string::npos);
     }
+}
+
+// ADR-0022: the descriptor budget is checked before anything is bound.
+TEST(ServerBuilder, ADescriptorLimitBelowTheCapRefusesToStartBeforeBinding) {  // T4
+    EchoFactory factory;
+    wsrv::test::FakeSyscalls sys;
+    sys.pretend_fd_limits(256, 256);
+    wsrv::test::RecordingLogger logger;
+    wsrv::ServerBuilder builder = echo_builder(factory);
+    builder.config().max_connections = 1000;
+    builder.syscalls(sys).logger(logger);
+    try {
+        static_cast<void>(builder.build());
+        FAIL() << "expected a ConfigError";
+    } catch (const wsrv::ConfigError& error) {
+        EXPECT_NE(std::string{error.what()}.find("FdLimit"), std::string::npos);
+    }
+    EXPECT_EQ(sys.calls(wsrv::test::Call::Bind), 0U) << "nothing was bound";
+    ASSERT_FALSE(logger.entries.empty());
+    const std::string& line = logger.entries.back().message;
+    EXPECT_NE(line.find("1000"), std::string::npos) << "the numbers are in the log: " << line;
+    EXPECT_NE(line.find("256"), std::string::npos) << line;
+}
+
+TEST(ServerBuilder, ALowSoftLimitIsRaisedAtStartAndTheServerRuns) {
+    EchoFactory factory;
+    wsrv::test::FakeSyscalls sys;
+    sys.pretend_fd_limits(256, 1'048'576);
+    wsrv::ServerBuilder builder = echo_builder(factory);
+    builder.config().max_connections = 1000;
+    builder.syscalls(sys);
+    RunningServer running{builder};
+    TcpClient client{running.port()};
+    EXPECT_TRUE(client.upgrade());
+    EXPECT_GE(sys.pretended_fd_limits().soft, 1000U);
 }
 
 // ---- Streaming writer (ADR-0015) ----------------------------------------------------------------
