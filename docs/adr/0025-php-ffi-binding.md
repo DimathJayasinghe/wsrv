@@ -54,3 +54,13 @@ The handshake hook (`authenticate`, `wsrv_handshake_accept/reject`), TLS setting
 ## Rejected details
 - Parsing the header at runtime in PHP: a regex over a C header is a parser we would then have to fuzz.
 - One `Wsrv\Server` name for both modes: the two have different failure shapes (status replies vs immediate statuses), and hiding that behind one class would hide the difference from the caller.
+
+## Amendments
+
+### A1 (2026-11-22, proposed): the handshake hook in the embedded binding
+Section 8 left the handshake hook out of slice 2. It comes now, on the C ABI of ADR-0018 (`WSRV_EV_HANDSHAKE`, `wsrv_handshake_accept/reject`, config keys `handshake_hook`, `handshake_forward_header`, `handshake_decision_timeout_ms`).
+
+- **Same contract as the sidecar.** `on('authenticate', fn (Wsrv\Embedded\Upgrade $u): bool|int|string|null)`: `true` accepts, `false` is 403, an int is that status (400 401 403 404 429 500 503), a string accepts with that subprotocol (it must be one the client offered), `null` means "answer later through `$u->accept()` / `$u->reject()`". `$u->request` is the existing `Wsrv\Ipc\HandshakeRequest` value class (path, query, Origin, offered subprotocols, forwarded headers, `cookie($name)`): one class for both modes, because it is a plain value. `Upgrade` is a separate class (it answers through the server, not through IPC) with the same methods.
+- **Fail closed.** A handler that throws gets 500 and its exception surfaces from `step()`; a return value of any other kind gets 500 and `UnexpectedValueException`; an answer that arrives after the library gave up is `ConnectionClosed`. No path accepts by default.
+- **The setting and the handler must agree, checked at `start()`.** `handshake_hook` on with no `authenticate` handler would make every upgrade wait out the timeout; a handler with the hook off would be a login check that never runs and looks like it does. Both throw `WsrvException` naming the missing half. This replaces slice 2's blanket refusal of `handshake_hook`.
+- **Copy before release.** The `wsrv_handshake` strings belong to the event; they are copied into the `HandshakeRequest` in `step()` before `wsrv_event_release`, like every other event field.

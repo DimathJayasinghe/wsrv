@@ -71,7 +71,8 @@ $server->run();
 - Settings are the library's text keys (`include/wsrv/wsrv.h`); a bad value makes `start()` throw with the library's message.
 - The library is found through the `WSRV_LIBRARY` environment variable or the second constructor argument. A library with a different ABI major, or an older minor than `Server::ABI_MINOR`, is refused with both versions named.
 - `send()` returns `false` when a queue is full (backpressure; nothing was queued) and throws `ConnectionClosed` once the connection has ended.
-- It refuses PHP-FPM and any SAPI but `cli`/`phpdbg`. Create the server after `fork()`. `handshake_hook` is not supported yet (use the sidecar `authenticate` handler); topics and rooms are not exposed yet.
+- It refuses PHP-FPM and any SAPI but `cli`/`phpdbg`. Create the server after `fork()`. Topics and rooms are not exposed yet.
+- **Authenticating** works as in the sidecar: set `'handshake_hook' => true` (and `'handshake_forward_header' => ['Cookie']`), register `on('authenticate', fn (Wsrv\Embedded\Upgrade $u) => $u->request->cookie('session') === lookup_session())`. Same return values; it fails closed (a throwing handler or an unusable value refuses with 500), and `start()` throws if the setting and the handler do not agree. See ADR-0025 A1.
 - Under a sanitizer build the library cannot be loaded into `php` (PHP loads extensions with `RTLD_DEEPBIND`), so the end-to-end test `php_embedded_interop` runs in the release preset only; the cdef drift test runs everywhere.
 
 `src/Embedded/wsrv.cdef` is generated from the C header: `php tools/gen_cdef.php`. A test fails when it is stale.
