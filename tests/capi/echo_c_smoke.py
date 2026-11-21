@@ -169,7 +169,10 @@ def main(binary: str) -> None:
     server = EchoC(binary)  # library defaults
     sock = connect(server.port)
     expect_echo(sock, 1, b"still works")
-    sock.sendall(client_frame(2, bytes(2 << 20)))
+    # Only the head of a 2 MiB frame: the limit is checked on the declared length (RFC 6455 section
+    # 5.2; never trust it), so the server answers 1009 at once. Sending all 2 MiB raced the server
+    # closing the socket (a broken pipe while writing, and a reset that can eat the Close frame).
+    sock.sendall(client_frame(2, bytes(2 << 20))[:14])  # 2 bytes + 8 length + 4 mask
     expect_close(sock, 1009)
     sock.close()
     server.stop()
@@ -180,4 +183,10 @@ def main(binary: str) -> None:
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         fail("usage: echo_c_smoke.py PATH_TO_echo_c")
-    main(sys.argv[1])
+    try:
+        main(sys.argv[1])
+    finally:
+        # Any exception, not only fail(): a server left running keeps CTest waiting on its pipe.
+        for proc in RUNNING:
+            if proc.poll() is None:
+                proc.kill()
