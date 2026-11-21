@@ -115,6 +115,13 @@ add_test(NAME capi_abi_symbols
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME capi_header_matches_symbols
     COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tools/check_c_api.py --root ${PROJECT_SOURCE_DIR})
+# The pure-C echo server of M11 (examples/echo_c): a real handshake and echo against the binary.
+# The examples are optional, so the test exists only when the program is built.
+if(TARGET echo_c)
+    add_test(NAME capi_echo_c_smoke
+        COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/capi/echo_c_smoke.py $<TARGET_FILE:echo_c>)
+    set_tests_properties(capi_echo_c_smoke PROPERTIES LABELS capi TIMEOUT 120)
+endif()
 set_tests_properties(capi_consumer capi_abi_symbols capi_header_matches_symbols PROPERTIES LABELS capi)
 
 # PHP binding (M12, bindings/php): unit tests of the pure-PHP sidecar client, and an interop test that

@@ -279,4 +279,48 @@ TEST(EmbeddedConfig, TheHandshakeHookIsOffByDefaultAndItsKeysAreChecked) {  // A
     EXPECT_EQ(config.server().handshake_decision_timeout, 1500ms) << "a refusal changes nothing";
 }
 
+// ---- ADR-0016 A1: the three limits a conformance run raises ---------------------------------
+
+TEST(EmbeddedConfig, TheThreeLimitKeysDefaultToTheLibraryDefaults) {
+    const EmbeddedConfig config;
+    EXPECT_EQ(config.server().session.parser.max_frame_payload, std::uint64_t{1} << 20);
+    EXPECT_EQ(config.server().session.assembler.max_fragments, 1024U);
+    EXPECT_EQ(config.server().session.max_data_frames_per_second, 10000U);
+}
+
+TEST(EmbeddedConfig, TheThreeLimitKeysAreStored) {
+    EmbeddedConfig config;
+    ASSERT_TRUE(config.set("max_frame_payload", "20971520").has_value());
+    ASSERT_TRUE(config.set("max_fragments", "1048576").has_value());
+    ASSERT_TRUE(config.set("max_data_frames_per_second", "2000000").has_value());
+    EXPECT_EQ(config.server().session.parser.max_frame_payload, std::uint64_t{20} << 20);
+    EXPECT_EQ(config.server().session.assembler.max_fragments, std::size_t{1} << 20);
+    EXPECT_EQ(config.server().session.max_data_frames_per_second, 2'000'000U);
+}
+
+TEST(EmbeddedConfig, TheThreeLimitKeysRefuseZeroAndAnythingAboveTheirCeiling) {
+    EmbeddedConfig config;
+    // Zero would mean "off" for the frame rate and is meaningless for the others: no unlimited
+    // value (SECURITY_DESIGN section 3).
+    for (const char* key : {"max_frame_payload", "max_fragments", "max_data_frames_per_second"}) {
+        EXPECT_FALSE(config.set(key, "0").has_value()) << key;
+        EXPECT_FALSE(config.set(key, "-1").has_value()) << key;
+        EXPECT_FALSE(config.set(key, "12x").has_value()) << key;
+        EXPECT_FALSE(config.set(key, "").has_value()) << key;
+    }
+    EXPECT_TRUE(config.set("max_frame_payload", "67108864").has_value());  // 64 MiB: the ceiling
+    EXPECT_FALSE(config.set("max_frame_payload", "67108865").has_value());
+    EXPECT_TRUE(config.set("max_fragments", "16777216").has_value());
+    EXPECT_FALSE(config.set("max_fragments", "16777217").has_value());
+    EXPECT_TRUE(config.set("max_data_frames_per_second", "10000000").has_value());
+    EXPECT_FALSE(config.set("max_data_frames_per_second", "10000001").has_value());
+}
+
+TEST(EmbeddedConfig, ARefusedLimitChangesNothing) {
+    EmbeddedConfig config;
+    ASSERT_TRUE(config.set("max_fragments", "5000").has_value());
+    EXPECT_FALSE(config.set("max_fragments", "0").has_value());
+    EXPECT_EQ(config.server().session.assembler.max_fragments, 5000U);
+}
+
 }  // namespace

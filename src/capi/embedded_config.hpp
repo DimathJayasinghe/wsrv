@@ -54,6 +54,10 @@ struct TlsSniSetting {
 /// start with permessage_deflate=true instead of quietly serving uncompressed.
 /// max_message_size also sizes the outbound queue at twice that, so a message that can be received
 /// can be sent back (as in the echo example).
+/// and three limits a trusted client may need raised (ADR-0016 A1), each 1..ceiling, never 0:
+/// max_frame_payload (bytes, default 1 MiB, ceiling 64 MiB), max_fragments (default 1024, ceiling
+/// 16777216) and max_data_frames_per_second (default 10000, ceiling 10000000). A refused value
+/// changes nothing.
 /// and for the admin listener (ADR-0023 section 3, off by default): admin_port (0..65535; setting
 /// it switches the listener on, 0 lets the kernel choose) and admin_host (an IP literal, default
 /// 127.0.0.1). It serves /metrics, /healthz and /readyz over plain HTTP with no authentication:
@@ -126,6 +130,9 @@ private:
     [[nodiscard]] Result<void> add_allow_origin(std::string_view value);
     [[nodiscard]] Result<void> set_allow_missing_origin(std::string_view value);
     [[nodiscard]] Result<void> set_max_message_size(std::string_view value);
+    [[nodiscard]] Result<void> set_max_frame_payload(std::string_view value);
+    [[nodiscard]] Result<void> set_max_fragments(std::string_view value);
+    [[nodiscard]] Result<void> set_max_data_frames_per_second(std::string_view value);
     [[nodiscard]] Result<void> set_max_connections(std::string_view value);
     [[nodiscard]] Result<void> set_admin_host(std::string_view value);
     [[nodiscard]] Result<void> set_admin_port(std::string_view value);

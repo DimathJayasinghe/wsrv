@@ -72,3 +72,28 @@ Implementation notes for slice 3b (no decision above changed):
 - A `Session`-level read pause is a new capability in the server layer, with an edge-triggered re-arm subtlety.
 - A slow host eventually costs its connections (1013, or timeouts while paused). That is deliberate: the alternative is unbounded memory.
 - `wsrv_server_stop` differs from the BINDINGS sketch (no `grace_ms` parameter); BINDINGS.md is updated in the same PR.
+
+## Amendments
+
+### A1 (2026-11-19, proposed): three limit keys, so a C consumer can run the conformance suite
+
+**Problem.** M11's exit criterion is "the C consumer passes Autobahn". The suite needs three limits that the library keeps low by default (FR-F6, FR-F10): one frame of up to 16 MiB, a 4 MiB message in 65 536 fragments, and bursts of small frames (`tests/autobahn/EXCLUDED.md`). The C++ echo raises them through `ServerConfig`; the C configuration has no key for them, and `max_message_size` alone moves neither the frame limit, the fragment limit nor the frame rate. Without keys a C host cannot serve those cases at all, and an embedder with a legitimate need (large uploads, a trusted batch client) has no way to say so.
+
+**Decision.** Three additive text keys, parsed and range-checked in `EmbeddedConfig` when they are set (so a bad value fails `wsrv_config_set` at once, not at start):
+
+| Key | Sets | Default (unchanged) | Accepted |
+|-----|------|---------------------|----------|
+| `max_frame_payload` | `session.parser.max_frame_payload` | 1 MiB | 1 .. 64 MiB (`kMaxConfiguredFrame`, the ceiling `Session` already enforces) |
+| `max_fragments` | `session.assembler.max_fragments` | 1024 | 1 .. 16 777 216 |
+| `max_data_frames_per_second` | `session.max_data_frames_per_second` | 10 000 | 1 .. 10 000 000 |
+
+- `Session` itself has no ceiling for the last two (`max_fragments` only must be non-zero; `0` for the frame rate means "off"). The C layer adds the ceilings and refuses `0`, because SECURITY_DESIGN section 3 says there is no "unlimited" value and a C host should not be able to switch the flood guard off by typo. The C++ API keeps its wider range; this is a deliberate asymmetry, recorded here.
+- A malformed or out-of-range value fails `wsrv_config_set` with `WSRV_ERR_INVALID_CONFIG` and changes nothing.
+- Defaults do not change, and no key lowers a hard ceiling. Raising a limit is the embedder's explicit act, named in its configuration.
+- The header lists the keys and says what each costs: a larger frame limit raises the worst-case buffer per connection, a larger fragment limit lets one message cost more bookkeeping, a larger rate limit weakens the flood guard (EC-F31).
+- `WSRV_ABI_VERSION`: the minor number goes from 3 to 4. No symbol changes; the version tells a binding that the keys exist, so it can probe with `wsrv_abi_version()` instead of trying a key and parsing an error.
+- The sidecar's text configuration is the same key table, so `wsrvd` gains the keys with no extra code.
+
+**Rejected.** (a) Deriving the three from `max_message_size`: hides a coupling and cannot express "big frames, few fragments". (b) A C-side "autobahn profile" key: puts test policy in the product ABI. (c) Running a reduced case set from C: the exit criterion would then not mean what it says.
+
+**Consequences.** + The C consumer can run the same 517 cases as the C++ echo. + Embedders get the knobs the C++ API already has. - Three more keys to keep forever; each is a limit, so each is also a way to configure an unsafe server. The header text and OPERATIONS say so.
