@@ -1,0 +1,92 @@
+uint32_t wsrv_abi_version(void);
+typedef enum wsrv_status {
+    WSRV_OK = 0,
+    WSRV_TIMEOUT = 1,
+    WSRV_ERR_INVALID_ARGUMENT = 2,
+    WSRV_ERR_INVALID_CONFIG = 3,
+    WSRV_ERR_ADDRESS_IN_USE = 4,
+    WSRV_ERR_NO_SUCH_CONN = 5,
+    WSRV_ERR_BACKPRESSURE = 6,
+    WSRV_ERR_INVALID_UTF8 = 7,
+    WSRV_ERR_WRONG_PROCESS = 8,
+    WSRV_ERR_RESOURCE = 9,
+    WSRV_ERR_IO = 10,
+    WSRV_ERR_INTERNAL = 11
+} wsrv_status;
+const char *wsrv_status_name(int status);
+typedef struct wsrv_error {
+    wsrv_status status;
+    char message[128];
+} wsrv_error;
+typedef uint64_t wsrv_conn_id;
+typedef struct wsrv_config wsrv_config;
+wsrv_config *wsrv_config_new(void);
+void wsrv_config_free(wsrv_config *config);
+wsrv_status wsrv_config_set(wsrv_config *config,
+                                     const char *key,
+                                     const char *value,
+                                     wsrv_error *error);
+typedef struct wsrv_server wsrv_server;
+wsrv_status
+wsrv_server_create(const wsrv_config *config, wsrv_server **out, wsrv_error *error);
+wsrv_status wsrv_server_start(wsrv_server *server, wsrv_error *error);
+uint16_t wsrv_server_port(const wsrv_server *server);
+int wsrv_server_event_fd(const wsrv_server *server);
+wsrv_status wsrv_server_reload_tls(wsrv_server *server, wsrv_error *error);
+wsrv_status wsrv_server_stop(wsrv_server *server);
+void wsrv_server_destroy(wsrv_server *server);
+typedef enum wsrv_event_type {
+    WSRV_EV_OPEN = 1,
+    WSRV_EV_TEXT = 2,
+    WSRV_EV_BINARY = 3,
+    WSRV_EV_CLOSE = 4,
+    WSRV_EV_ERROR = 5,
+    WSRV_EV_HANDSHAKE = 6
+} wsrv_event_type;
+typedef struct wsrv_str {
+    const char *data;
+    size_t len;
+} wsrv_str;
+typedef struct wsrv_header {
+    wsrv_str name;
+    wsrv_str value;
+} wsrv_header;
+typedef struct wsrv_handshake {
+    wsrv_str peer;
+    wsrv_str path;
+    wsrv_str query;
+    wsrv_str origin;
+    wsrv_str host;
+    wsrv_str subprotocol;
+    const wsrv_str *offered;
+    size_t offered_count;
+    const wsrv_header *headers;
+    size_t header_count;
+} wsrv_handshake;
+typedef struct wsrv_event {
+    uint32_t struct_size;
+    wsrv_event_type type;
+    wsrv_conn_id conn;
+    const uint8_t *data;
+    size_t len;
+    uint16_t close_code;
+    int clean;
+    void *reserved;
+    const wsrv_handshake *handshake;
+} wsrv_event;
+wsrv_status wsrv_poll(wsrv_server *server, wsrv_event *event, uint32_t timeout_ms);
+void wsrv_event_release(wsrv_event *event);
+wsrv_status wsrv_handshake_accept(wsrv_server *server,
+                                           wsrv_conn_id conn,
+                                           const char *subprotocol,
+                                           size_t subprotocol_len);
+wsrv_status wsrv_handshake_reject(wsrv_server *server, wsrv_conn_id conn, int status);
+wsrv_status
+wsrv_send_text(wsrv_server *server, wsrv_conn_id conn, const char *text, size_t len);
+wsrv_status
+wsrv_send_binary(wsrv_server *server, wsrv_conn_id conn, const uint8_t *data, size_t len);
+wsrv_status wsrv_close(wsrv_server *server,
+                                wsrv_conn_id conn,
+                                uint16_t code,
+                                const char *reason,
+                                size_t reason_len);

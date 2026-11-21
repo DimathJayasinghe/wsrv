@@ -88,3 +88,12 @@ race against the connection failing on the violation that follows, and we then d
 the same accepted outcome as the seven. Neither outcome is a FAILED. This is a stated cause from the case texts and the
 timing, not a traced one; to make it deterministic, the host would have to be allowed to flush its echo before the failure,
 which the library does not promise: it fails the connection at once.
+
+**Through the PHP binding (2026-11-22, M12).** `tests/autobahn/run.sh --php [--wss]` runs the same 517 cases against
+`bindings/php/examples/embedded_echo.php`: PHP 8.3 loading the release `libwsrv.so` through FFI (`Wsrv\Embedded\Server`,
+ADR-0025), with the same harness limits as the C consumer set through the same text keys (agent names `wsrv-php`,
+`wsrv-php-wss`). Plain: **1021 OK, 7 NON-STRICT, 6 INFORMATIONAL, 0 FAILED**; wss: **1021 OK, 7 NON-STRICT, 6 INFORMATIONAL,
+0 FAILED**. The seven NON-STRICT cases are exactly the C++ server's (3.2, 3.3, 4.1.3, 4.1.4, 4.2.3, 4.2.4, 5.15), with the
+same explanation. The PHP echo handler catches `ConnectionClosed`: a message right before a protocol violation arrives at the
+handler after the library has failed the connection, and the send then throws; the first run of this suite ended after 39
+cases because that exception left `run()` and stopped the server (the example now treats it as normal; lesson 37).

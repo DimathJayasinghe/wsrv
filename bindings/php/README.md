@@ -55,6 +55,27 @@ $worker->on('authenticate', fn (Upgrade $u) => $u->request->cookie('session') ==
 
 Return `true` (accept), `false` (403), an int status (`400, 401, 403, 404, 429, 500, 503`), a string (accept, choosing that subprotocol), or `null` to answer later with `$u->accept()` / `$u->reject()`. **It fails closed:** no handler, a handler that throws, an unusable return value, or no answer within the daemon's `handshake_decision_timeout_ms` (default 3 s) all refuse the browser (500 or 503), never accept. The daemon also refuses at once while your worker is not connected. Everything the request carries (`$u->request`) comes from the browser: validate it. See `examples/authenticate.php` and `docs/OPERATIONS.md`.
 
+## Embedded mode (FFI, PHP CLI only)
+
+No daemon: `Wsrv\Embedded\Server` loads `libwsrv.so` through `ext-ffi` and serves WebSockets from your own CLI process. The library's threads do the sockets; your handlers run on your thread when you call `run()` or `step()`. Handler names and arguments are the same as `Worker`'s, so moving between the modes changes the constructor, not the handlers. Design: [ADR-0025](../../docs/adr/0025-php-ffi-binding.md); example `examples/embedded_echo.php`.
+
+```php
+use Wsrv\Embedded\{Connection, Server};
+
+$server = new Server(['listen_port' => 8080, 'allow_origin' => ['https://app.example.com']]);
+$server->on('message', fn (Connection $c, string $data, bool $binary) => $binary ? $c->sendBinary($data) : $c->send($data));
+$server->start();
+$server->run();
+```
+
+- Settings are the library's text keys (`include/wsrv/wsrv.h`); a bad value makes `start()` throw with the library's message.
+- The library is found through the `WSRV_LIBRARY` environment variable or the second constructor argument. A library with a different ABI major, or an older minor than `Server::ABI_MINOR`, is refused with both versions named.
+- `send()` returns `false` when a queue is full (backpressure; nothing was queued) and throws `ConnectionClosed` once the connection has ended.
+- It refuses PHP-FPM and any SAPI but `cli`/`phpdbg`. Create the server after `fork()`. `handshake_hook` is not supported yet (use the sidecar `authenticate` handler); topics and rooms are not exposed yet.
+- Under a sanitizer build the library cannot be loaded into `php` (PHP loads extensions with `RTLD_DEEPBIND`), so the end-to-end test `php_embedded_interop` runs in the release preset only; the cdef drift test runs everywhere.
+
+`src/Embedded/wsrv.cdef` is generated from the C header: `php tools/gen_cdef.php`. A test fails when it is stale.
+
 ## Rules that keep it stable
 
 - **Read continuously.** The daemon slows browsers down when you read slowly and, after `ipc_stall_ms` (default 10 s) of you reading nothing, drops your worker and closes its connections with 1001. Keep handlers short; hand slow work to another process.
