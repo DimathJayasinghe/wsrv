@@ -34,6 +34,11 @@ The copy comes before the release because after the release the pointers in the 
 4. **An arrow function captures by value.** `pump($server, fn () => $log === [...])` never saw `$log` change and timed out. Closures that must see later changes use `use (&$log)`.
 5. **A sanitizer build cannot be loaded into `php`.** PHP opens its extensions with `RTLD_DEEPBIND`, which the ASan runtime refuses, even with the runtime preloaded. The end-to-end test is registered only for builds without a sanitizer (the release preset in CI); the cdef test runs everywhere.
 
+6. **An exception in a handler ends the server.** The first Autobahn run through PHP stopped after 39 cases. A message arrives right before a protocol violation; by the time the echo handler runs, the library has already failed the connection, so `send()` throws `ConnectionClosed`, which leaves `run()` by design. For an echo that race is normal, so the example catches it; an application decides per handler what a dead connection means.
+
+## Evidence
+Autobahn through PHP (`tests/autobahn/run.sh --php [--wss]`, PHP 8.3 + FFI + the release library): 1021 OK, 7 NON-STRICT (the same seven as the C++ server), 6 INFORMATIONAL, 0 FAILED, plain and over wss.
+
 ## Tests
 - `EmbeddedCdefTest` (3, in `php_unit`): the cdef equals the generator's output for the real header, every `WSRV_API` function is declared, the generator removes the guards and keeps the declarations.
 - `embedded_interop.php` (`php_embedded_interop`): the real `libwsrv.so` and a raw WebSocket client in one PHP thread: open, text echo, binary echo, clean close with a code, the server's own close code, `ConnectionClosed` after close, invalid UTF-8 refused before sending, `stop()` from a handler, a bad key named in the error, a missing library named, `handshake_hook` refused.

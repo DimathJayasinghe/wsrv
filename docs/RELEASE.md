@@ -37,7 +37,7 @@ Each is either a documented decision or a follow-up with an owner decision pendi
 - **From the second security review, still open:** `SessionHandle` sends copy whole messages into posted closures, bounded only by the task-queue size (a byte budget per loop link is not built; broadcasts now have a reserved lane, direct sends do not); no global buffered-bytes budget across connections (about 3 MiB per connection worst case with deflate, see OPERATIONS 1.1); the zlib state of a connection lives for the connection once used.
 - **`IpLimits::sweep`** scans the whole table under its mutex on the accept path when the table is full (low risk at the default rates; amortise it if the rate limit is set very low).
 - **Per-IP limits can be switched off** with `0`, which SECURITY_DESIGN's "no unlimited value" rule did not foresee; ADR-0021 allows it, the owner has not yet confirmed the exception.
-- **PHP binding** is the sidecar client and worker only; FFI binding, framework adapters and the Autobahn run through PHP are M12 work. The C consumer passes Autobahn (2026-11-21, run by hand with `tests/autobahn/run.sh --capi`, not in CI: the 1.5 GB suite image is not part of the CI cost design).
+- **PHP binding**: the sidecar client and worker, and the embedded FFI server (`Wsrv\Embedded\Server`, ADR-0025; no handshake hook yet). Loop adapters (ReactPHP, Revolt), framework adapters, topics and rooms, Composer publication and the PHP version matrix are M12 work. The C consumer and the PHP binding pass Autobahn (2026-11-21 and 2026-11-22, run by hand with `tests/autobahn/run.sh --capi` and `--php`, not in CI: the 1.5 GB suite image is not part of the CI cost design).
 - **Single-machine numbers** (PERFORMANCE.md): comparisons between loop counts, not capacity planning. There is no CI speed gate, by decision (PERFORMANCE.md "Regression gates").
 
 ## 4. Release checklist
@@ -57,7 +57,7 @@ Engineering
 - [x] ABI checks in CI
 - [ ] Coverage re-measured against the NFR-M4 thresholds for 1.0 (`coverage` preset exists; no figures were re-collected for this document)
 - [x] Autobahn through the C consumer (`examples/echo_c`, plain and wss, 517 cases, 0 FAILED; `tests/autobahn/EXCLUDED.md`)
-- [ ] Autobahn through PHP (M12)
+- [x] Autobahn through PHP (`bindings/php/examples/embedded_echo.php`, plain and wss, 517 cases, 0 FAILED; `tests/autobahn/EXCLUDED.md`)
 - [ ] The open items of section 3 either fixed or accepted by the owner
 
 Repository and launch (M14, listed here so nothing is forgotten)
