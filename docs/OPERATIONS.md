@@ -87,6 +87,18 @@ Two limits keep one client address from taking the whole server: `max_connection
 - **Behind a reverse proxy or NAT** every user shares one address, so the defaults can refuse real users. Raise the limits or set them to `0` and rate-limit at the proxy (real client addresses via the PROXY protocol are not implemented; EC-N21).
 - **Cost:** a table of at most `2 * max_connections` entries (about 40 bytes plus the map node each), one mutex taken twice per connection life. An idle server holds no per-address state. When the table is full a new address is refused (fail closed), after one sweep of entries that carry no information.
 
+### 1.3 Frame, fragment and frame-rate limits (ADR-0016 A1)
+
+Three per-connection limits protect the server from a single peer, and each has a text key in the embedded and `wsrvd` configuration. They exist because some legitimate clients need more than the defaults (a trusted batch uploader; the Autobahn conformance run), not because the defaults are wrong for the web.
+
+| Key | Default | Accepted | What raising it costs |
+|-----|---------|----------|-----------------------|
+| `max_frame_payload` | 1 MiB | 1 to 64 MiB | the largest buffer one connection can make the server hold for one frame; raise it with `max_message_size` |
+| `max_fragments` | 1024 | 1 to 16 777 216 | bookkeeping per fragment, not memory; a peer can make the server do more work per message |
+| `max_data_frames_per_second` | 10 000 | 1 to 10 000 000 | the flood guard: a peer may send that many frames per second before it is closed with 1008 |
+
+None of them has an "off" value; a refused value changes nothing and `wsrv_config_set` reports `WSRV_ERR_INVALID_CONFIG`. Whoever sets `max_message_size` above the event-queue size must also raise `event_queue_bytes`: the host receives messages whole, so a queue smaller than one message cannot deliver it.
+
 ## 2. Logging
 
 - Structured, one event per line. Fields: `ts` (RFC 3339 UTC), `level`, `conn` (ID), `peer`, `event`, `code`, `msg`.

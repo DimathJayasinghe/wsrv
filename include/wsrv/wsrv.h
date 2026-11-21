@@ -35,7 +35,7 @@ extern "C" {
 #endif
 
 /* (major << 16) | minor. Compare the major with the one you compiled against. */
-#define WSRV_ABI_VERSION ((0u << 16) | 3u)
+#define WSRV_ABI_VERSION ((0u << 16) | 4u)
 WSRV_API uint32_t wsrv_abi_version(void);
 
 typedef enum wsrv_status {
@@ -86,6 +86,14 @@ WSRV_API void wsrv_config_free(wsrv_config *config); /* NULL is fine */
  *                        Browsers are refused unless their Origin is listed.
  *   allow_missing_origin "true"/"false"/"1"/"0": accept clients that send no Origin header
  *   max_message_size     largest message in bytes, both directions
+ *   max_frame_payload    (0.4) largest single frame in bytes, 1 to 67108864; default 1 MiB.
+ *                        Raise it together with max_message_size, only for clients you trust:
+ *                        it is the biggest buffer one connection can ask the server to hold.
+ *   max_fragments        (0.4) most frames one message may be split into, 1 to 16777216; default
+ *                        1024. More fragments cost bookkeeping, not memory.
+ *   max_data_frames_per_second  (0.4) data frames one connection may send per second before it is
+ *                        closed with 1008, 1 to 10000000; default 10000. This is the flood guard:
+ *                        there is no "off". Raise it only for a trusted batch client.
  *   max_connections      simultaneous connections
  *   max_connections_per_ip  simultaneous connections from one client address (IPv4, or the /64
  *                        of an IPv6 address), default 100; 0 = no limit. Over it: HTTP 429.

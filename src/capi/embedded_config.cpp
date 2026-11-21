@@ -32,6 +32,21 @@ Result<std::size_t> parse_size(std::string_view value, std::string_view context)
     return fail(ErrorCode::InvalidConfig, context);
 }
 
+/// Ceilings the C layer adds where Session has none (ADR-0016 A1). The frame ceiling is Session's.
+constexpr std::uint64_t kMaxFragmentsCeiling = std::uint64_t{1} << 24;
+constexpr std::uint64_t kMaxDataFramesPerSecondCeiling = 10'000'000;
+
+/// A whole-string number in [1, ceiling]. There is no "0 = off" and no value above the ceiling: a
+/// limit key never switches a guard off by typo (SECURITY_DESIGN section 3, ADR-0016 A1).
+Result<std::uint64_t>
+parse_limit(std::string_view value, std::uint64_t ceiling, std::string_view context) {
+    const auto number = parse_number<std::uint64_t>(value);
+    if (!number || *number == 0 || *number > ceiling) {
+        return fail(ErrorCode::InvalidConfig, context);
+    }
+    return *number;
+}
+
 /// A boolean is exactly true, false, 1 or 0 (so "yes" or "True" cannot silently mean something).
 std::optional<bool> parse_bool(std::string_view value) {
     if (value == "true" || value == "1") {
@@ -71,6 +86,9 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
         KeyEntry{"allow_origin", &EmbeddedConfig::add_allow_origin},
         KeyEntry{"allow_missing_origin", &EmbeddedConfig::set_allow_missing_origin},
         KeyEntry{"max_message_size", &EmbeddedConfig::set_max_message_size},
+        KeyEntry{"max_frame_payload", &EmbeddedConfig::set_max_frame_payload},
+        KeyEntry{"max_fragments", &EmbeddedConfig::set_max_fragments},
+        KeyEntry{"max_data_frames_per_second", &EmbeddedConfig::set_max_data_frames_per_second},
         KeyEntry{"max_connections", &EmbeddedConfig::set_max_connections},
         KeyEntry{"admin_host", &EmbeddedConfig::set_admin_host},
         KeyEntry{"admin_port", &EmbeddedConfig::set_admin_port},
@@ -173,6 +191,40 @@ Result<void> EmbeddedConfig::set_max_message_size(std::string_view value) {
     }
     server_.session.assembler.max_message_size = *number;
     server_.session.outbound.max_queued_bytes = 2 * *number;
+    return {};
+}
+
+// ---- the three limits a conformance run raises (ADR-0016 A1) ----
+
+Result<void> EmbeddedConfig::set_max_frame_payload(std::string_view value) {
+    const Result<std::uint64_t> bytes = parse_limit(
+        value, kMaxConfiguredFrame, "config: max_frame_payload must be 1 to 67108864 (64 MiB)");
+    if (!bytes) {
+        return std::unexpected{bytes.error()};
+    }
+    server_.session.parser.max_frame_payload = *bytes;
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_max_fragments(std::string_view value) {
+    const Result<std::uint64_t> count =
+        parse_limit(value, kMaxFragmentsCeiling, "config: max_fragments must be 1 to 16777216");
+    if (!count) {
+        return std::unexpected{count.error()};
+    }
+    server_.session.assembler.max_fragments = static_cast<std::size_t>(*count);
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_max_data_frames_per_second(std::string_view value) {
+    const Result<std::uint64_t> rate =
+        parse_limit(value,
+                    kMaxDataFramesPerSecondCeiling,
+                    "config: max_data_frames_per_second must be 1 to 10000000");
+    if (!rate) {
+        return std::unexpected{rate.error()};
+    }
+    server_.session.max_data_frames_per_second = static_cast<std::uint32_t>(*rate);
     return {};
 }
 

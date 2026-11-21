@@ -72,3 +72,19 @@ sent, then a violation (RSV bit set, reserved opcode, or a continuation with not
 accepts both "the echo of the first message arrives, then the connection fails with 1002" and "the connection
 fails with 1002 at once". We fail the connection immediately and drop the unsent echo, which is the second,
 also accepted, outcome (RFC 6455 section 7.1.7: fail the connection). The close code is 1002 in all seven.
+
+**Through the C consumer (2026-11-21, M11 exit).** `tests/autobahn/run.sh --capi` (and `--capi --wss`) runs the same 517 cases
+against `examples/echo_c`, a C99 program that uses only `wsrv.h` (agent names `wsrv-c`, `wsrv-c-wss`). Results of the final
+runs: plain **1020 OK, 8 NON-STRICT, 6 INFORMATIONAL, 0 FAILED**; wss **1019 OK, 9 NON-STRICT, 6 INFORMATIONAL, 0 FAILED**
+(an earlier wss run gave the same totals as the second). The harness limits that the C++ example sets through structs are set
+through text keys (`max_message_size`, `max_frame_payload`, `max_fragments`, `max_data_frames_per_second`,
+`event_queue_bytes`; the first three except `max_message_size` are the new keys of ADR-0016 A1). The same seven cases are NON-STRICT as for the C++
+server. One to two more cases are NON-STRICT on any given run and **which ones changes between runs**: 4.2.5 (plain),
+3.4 and 4.1.5 (wss), 4.2.5 and 4.1.5 (the first wss run). They have the same shape as the seven: "send a small message, then a
+violation" (3.4: RSV = 4; 4.1.5: reserved data opcode 7 with payload; 4.2.5: a reserved control opcode, from the suite's 4.2.* group), they end
+with close code 1002, and the suite's verdict text is "Actual events match at least one expected". The difference from the C++
+server is timing: the echo of the first message goes through the host (event queue, poll, send), so it more often loses the
+race against the connection failing on the violation that follows, and we then drop the unsent echo (RFC 6455 section 7.1.7),
+the same accepted outcome as the seven. Neither outcome is a FAILED. This is a stated cause from the case texts and the
+timing, not a traced one; to make it deterministic, the host would have to be allowed to flush its echo before the failure,
+which the library does not promise: it fails the connection at once.

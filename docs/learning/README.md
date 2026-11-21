@@ -40,5 +40,6 @@ We teach as we build. Each lesson answers three questions: **What** are we build
 | 33 | [One message, many readers (the pub/sub broker)](33-one-message-many-readers.md) | M10 | written (slice 3) |
 | 34 | [An application on the broker (chat example)](34-an-application-on-the-broker.md) | M10 | written (slice 4a) |
 | 35 | [Evidence, not adjectives (release readiness)](35-evidence-not-adjectives.md) | M10 | written (slice 4c) |
+| 36 | [A C host proves the ABI (the C consumer passes Autobahn)](36-the-c-host-proves-the-abi.md) | M11 | written (exit criterion) |
 
 Lesson template: *Goal → Background (the problem) → Design (why this way) → Walkthrough (code, small steps) → Tests (what proves it works) → Pitfalls → Exercises.*

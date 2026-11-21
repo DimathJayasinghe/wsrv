@@ -5,6 +5,8 @@
 #   tests/autobahn/run.sh            full suite against the optimized build (the gate)
 #   tests/autobahn/run.sh --quick    sections 1-7 and 10 (what a PR needs)
 #   tests/autobahn/run.sh --wss      the same cases over TLS (wss://), with a throwaway certificate
+#   tests/autobahn/run.sh --capi     the full suite against examples/echo_c, the pure-C server built
+#                                    on wsrv.h only (M11 exit criterion); combine with --wss
 #
 # Host-side script: it drives `docker compose`. The server runs in the `dev` container, the suite in
 # its own container on the same compose network. The optimized build is used because the full run
@@ -14,18 +16,31 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 config=fuzzingclient.json
 wss=0
-case "${1:-}" in
-    --quick) config=fuzzingclient-quick.json ;;
-    --wss) config=fuzzingclient-wss.json; wss=1 ;;
-    "") ;;
-    *) echo "usage: $0 [--quick | --wss]" >&2; exit 2 ;;
-esac
+capi=0
+for arg in "$@"; do
+    case "$arg" in
+        --quick) config=fuzzingclient-quick.json ;;
+        --wss) wss=1 ;;
+        --capi) capi=1 ;;
+        *) echo "usage: $0 [--quick | --wss | --capi [--wss]]" >&2; exit 2 ;;
+    esac
+done
+if [[ "$wss" == 1 ]]; then config=fuzzingclient-wss.json; fi
+if [[ "$capi" == 1 ]]; then
+    # Its own agent name (wsrv-c, wsrv-c-wss) so the reports never mix with the C++ server's.
+    if [[ "$config" == fuzzingclient-quick.json ]]; then
+        echo "--capi runs the full suite; --quick does not apply" >&2; exit 2
+    fi
+    if [[ "$wss" == 1 ]]; then config=fuzzingclient-capi-wss.json; else config=fuzzingclient-capi.json; fi
+fi
+server=echo
+if [[ "$capi" == 1 ]]; then server=echo_c; fi
 report_dir=build/autobahn-reports
 mkdir -p "$report_dir"
 rm -f "$report_dir"/*.html "$report_dir"/*.json
 
 docker compose up -d dev
-docker compose exec -T dev bash -c 'cmake --preset release -DWSRV_ENABLE_TLS=ON -DWSRV_ENABLE_DEFLATE=ON >/dev/null && cmake --build --preset release -j --target echo'
+docker compose exec -T dev bash -c "cmake --preset release -DWSRV_ENABLE_TLS=ON -DWSRV_ENABLE_DEFLATE=ON >/dev/null && cmake --build --preset release -j --target $server"
 
 # --autobahn raises size/rate limits only (see examples/echo/main.cpp); --allow-missing-origin
 # because the suite is not a browser; --deflate offers permessage-deflate (cases 12.* and 13.*; the
@@ -40,8 +55,8 @@ if [[ "$wss" == 1 ]]; then
     tls_args="--tls-cert /tmp/wss.pem --tls-key /tmp/wss.key"
 fi
 docker compose exec -T -d dev bash -c \
-    "./build/release/examples/echo --host 0.0.0.0 --port 9001 --autobahn --deflate --allow-missing-origin $tls_args"
-trap 'docker compose exec -T dev pkill -INT -f build/release/examples/echo || true' EXIT
+    "./build/release/examples/$server --host 0.0.0.0 --port 9001 --autobahn --deflate --allow-missing-origin $tls_args"
+trap 'docker compose exec -T dev pkill -INT -f build/release/examples/$server || true' EXIT
 sleep 1
 
 AUTOBAHN_CONFIG="$config" docker compose --profile conformance run --rm autobahn
