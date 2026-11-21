@@ -70,7 +70,7 @@ jobs:
   clang:
     name: clang (libc++, dev, tsan, fuzz)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20  # a cold ccache plus the LTO link needs more than 10
+    timeout-minutes: 30  # dev, tsan and fuzz builds: 20 minutes was cancelled 16 s before the last step (PR #53)
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
