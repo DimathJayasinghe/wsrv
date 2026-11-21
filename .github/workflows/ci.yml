@@ -30,7 +30,7 @@ jobs:
   gcc:
     name: gcc (gates, dev, release)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20  # a cold ccache plus the LTO link needs more than 10
+    timeout-minutes: 30  # a cold ccache plus the LTO link needs more than 10; two runs of 20 were cancelled in the LTO link (PR #52)
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
