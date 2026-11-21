@@ -6,7 +6,7 @@ declare(strict_types=1);
 
 require __DIR__ . '/bootstrap.php';
 
-foreach (['LintTest', 'CodecTest', 'FrameDecoderTest', 'ClientTest', 'WorkerTest', 'HandshakeTest'] as $file) {
+foreach (['LintTest', 'CodecTest', 'FrameDecoderTest', 'ClientTest', 'WorkerTest', 'HandshakeTest', 'EmbeddedCdefTest'] as $file) {
     require __DIR__ . '/' . $file . '.php';
 }
 

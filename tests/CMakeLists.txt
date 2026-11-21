@@ -139,6 +139,16 @@ else()
     message(STATUS "php not found: the PHP binding tests are not registered")
 endif()
 
+# The embedded PHP binding (ADR-0025) loads libwsrv.so into the php process through FFI. PHP loads its
+# own extensions with RTLD_DEEPBIND, which the sanitizer runtimes refuse, so this test is registered
+# only for builds without a sanitizer (the release preset in CI); the cdef drift test runs everywhere
+# as part of php_unit.
+if(WSRV_PHP AND TARGET wsrv_shared AND WSRV_SANITIZER STREQUAL "none")
+    add_test(NAME php_embedded_interop
+        COMMAND ${WSRV_PHP} ${PROJECT_SOURCE_DIR}/bindings/php/tests/embedded_interop.php $<TARGET_FILE:wsrv_shared>)
+    set_tests_properties(php_embedded_interop PROPERTIES LABELS php TIMEOUT 120)
+endif()
+
 # Differential tests against OpenSSL are test-only and optional (ADR-0005: no runtime dependency).
 find_package(OpenSSL QUIET)
 
