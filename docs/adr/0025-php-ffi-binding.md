@@ -1,6 +1,6 @@
 # ADR-0025: PHP embedded binding over FFI (`Wsrv\Embedded\Server`)
 
-- Status: **Proposed** (2026-11-21; the owner moves it to Accepted)
+- Status: **Accepted** (2026-11-22; the project owner accepted it, including amendment A1)
 - Date: 2026-11-21
 - Deciders: project owner, maintainer assistant
 
@@ -57,7 +57,7 @@ The handshake hook (`authenticate`, `wsrv_handshake_accept/reject`), TLS setting
 
 ## Amendments
 
-### A1 (2026-11-22, proposed): the handshake hook in the embedded binding
+### A1 (2026-11-22, accepted): the handshake hook in the embedded binding
 Section 8 left the handshake hook out of slice 2. It comes now, on the C ABI of ADR-0018 (`WSRV_EV_HANDSHAKE`, `wsrv_handshake_accept/reject`, config keys `handshake_hook`, `handshake_forward_header`, `handshake_decision_timeout_ms`).
 
 - **Same contract as the sidecar.** `on('authenticate', fn (Wsrv\Embedded\Upgrade $u): bool|int|string|null)`: `true` accepts, `false` is 403, an int is that status (400 401 403 404 429 500 503), a string accepts with that subprotocol (it must be one the client offered), `null` means "answer later through `$u->accept()` / `$u->reject()`". `$u->request` is the existing `Wsrv\Ipc\HandshakeRequest` value class (path, query, Origin, offered subprotocols, forwarded headers, `cookie($name)`): one class for both modes, because it is a plain value. `Upgrade` is a separate class (it answers through the server, not through IPC) with the same methods.

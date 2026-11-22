@@ -33,10 +33,10 @@ Each is either a documented decision or a follow-up with an owner decision pendi
 - **permessage-deflate multiplies broadcast cost** per subscriber (ADR-0024 A2). Leave compression off for broadcast-heavy deployments, or lower `max_payload_bytes`.
 - **Broker bounds are global**, not per user (ADR-0024 A4): an application serving strangers adds its own quota.
 - **The admin listener has no authentication** and no `Host` check (SECURITY_DESIGN T21); keep it on loopback or behind a network policy.
-- **Metrics are counters and gauges only.** The histograms (`handshake_seconds`, `loop_lag_seconds`, `outbound_queue_bytes`) in OPERATIONS section 3 are planned; there is no loop-lag watchdog yet (SECURITY_DESIGN T16).
-- **From the second security review, still open:** `SessionHandle` sends copy whole messages into posted closures, bounded only by the task-queue size (a byte budget per loop link is not built; broadcasts now have a reserved lane, direct sends do not); no global buffered-bytes budget across connections (about 3 MiB per connection worst case with deflate, see OPERATIONS 1.1); the zlib state of a connection lives for the connection once used.
-- **`IpLimits::sweep`** scans the whole table under its mutex on the accept path when the table is full (low risk at the default rates; amortise it if the rate limit is set very low).
-- **Per-IP limits can be switched off** with `0`, which SECURITY_DESIGN's "no unlimited value" rule did not foresee; ADR-0021 allows it, the owner has not yet confirmed the exception.
+- **Metrics are counters and gauges only.** The histograms (`handshake_seconds`, `loop_lag_seconds`, `outbound_queue_bytes`) in OPERATIONS section 3 are planned; there is no loop-lag watchdog yet (SECURITY_DESIGN T16). **Decision: post-1.0**; the handlers run on the host thread, so a slow handler cannot stall an I/O loop.
+- **From the second security review, still open (owner delegated the decisions to the assistant on 2026-11-22; items 1, 2, 3 and 5 of that review were fixed in #43):** (a) `SessionHandle` sends copy whole messages into posted closures, bounded only by the task-queue size (broadcasts have a reserved lane, direct sends do not). The sender is the application's own code, not a peer, so this is a host-driven risk: **accepted for the release candidate, to be built before 1.0** as a per-loop-link byte budget. (b) No global buffered-bytes budget across connections (about 3 MiB per connection worst case with deflate, OPERATIONS 1.1): **accepted for 1.0 with the sizing formula documented; a budget key is post-1.0**. (c) The zlib state of a connection lives for the connection once used: **accepted**, it is bounded by the window setting.
+- **`IpLimits::sweep`** scans the whole table under its mutex on the accept path when the table is full (low risk at the default rates). **Accepted; amortise it when a benchmark or a report shows it matters.**
+- **Per-IP limits can be switched off** with `0`. **Decision (2026-11-22): confirmed as the one exception** to "no unlimited value": behind a reverse proxy or NAT every user is one address, and the defaults would refuse real users. They are on by default, and the C keys of ADR-0016 A1 refuse `0` (no "off" there).
 - **PHP binding**: the sidecar client and worker, and the embedded FFI server (`Wsrv\Embedded\Server`, ADR-0025; no handshake hook yet). A PHP chat example (`examples/chat`) and an embedded quick start exist. Loop adapters (ReactPHP, Revolt), framework adapters, topics and rooms, Composer publication (with the library) and the PHP version matrix are still open. The C consumer and the PHP binding pass Autobahn (2026-11-21 and 2026-11-22, run by hand with `tests/autobahn/run.sh --capi` and `--php`, not in CI: the 1.5 GB suite image is not part of the CI cost design).
 - **Single-machine numbers** (PERFORMANCE.md): comparisons between loop counts, not capacity planning. There is no CI speed gate, by decision (PERFORMANCE.md "Regression gates").
 
@@ -58,13 +58,15 @@ Engineering
 - [ ] Coverage re-measured against the NFR-M4 thresholds for 1.0 (`coverage` preset exists; no figures were re-collected for this document)
 - [x] Autobahn through the C consumer (`examples/echo_c`, plain and wss, 517 cases, 0 FAILED; `tests/autobahn/EXCLUDED.md`)
 - [x] Autobahn through PHP (`bindings/php/examples/embedded_echo.php`, plain and wss, 517 cases, 0 FAILED; `tests/autobahn/EXCLUDED.md`)
-- [ ] The open items of section 3 either fixed or accepted by the owner
+- [x] The open items of section 3 either fixed or accepted (decisions of 2026-11-22 above; the one build-before-1.0 item is the send byte budget, and the permessage-deflate answers are in ADR-0020 A2)
+- [ ] ADR-0020 A2 items 1 and 3 implemented with their tests, and a test for the release of the send scratch buffer (EC-D05 gap)
 
 Repository and launch (M14, listed here so nothing is forgotten)
 - [ ] Owner: final project name (`wsrv` is a working name, ADR-0011) and license confirmed
 - [ ] `NOTICE`, `CODE_OF_CONDUCT.md`, `CHANGELOG.md` added
 - [ ] Owner: review of the git history (author e-mail addresses) and a full-history secret scan before the repository goes public
 - [ ] Owner: branch protection on `main`; secret scanning, push protection, private vulnerability reporting enabled
+  - Recommendation (2026-11-22): block force pushes and branch deletion on `main`; do **not** require status checks while `ci.yml` uses `paths-ignore`, because a docs-only PR gets no status and would stay blocked forever. Required checks are an M14 decision. Not applied: a repository setting, and a private repository may need a paid plan for it.
 - [ ] Signed release artifacts and an SBOM
 - [ ] Versioning policy stated: the C ABI follows semantic versioning; the C++ headers are not stable before they move to `include/wsrv/`
 
