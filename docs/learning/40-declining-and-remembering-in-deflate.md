@@ -19,6 +19,9 @@ We did not call it a bug first. The test comes first: message 1 is the RFC's own
 ## 3. A test that can fail
 `TheSendScratchBufferIsReleasedAfterEverySend` asserts that an idle connection holds no compression memory (the buffer's capacity is 0 after each send). A test that cannot fail proves nothing, so we removed the release line, saw the test go red, and put the line back.
 
+## 4. The cost of remembering
+Keeping the window means copying 32 KiB at every restart, and an empty final block is only 5 octets of input that produce no output, so the inflate-ratio cap (which counts output) does not see it. A peer could have bought a lot of copying that way. The review that followed the first push found it; the inflater now allows one restart per message (`ASecondFinalBlockInOneMessageIsInvalid` sends 1000 empty final blocks and expects 1007). Any "do X for each Y in the input" needs a bound on Y, not only on the output.
+
 ## Pitfalls
 - Reading "MUST decline" as "MUST reject the connection".
 - Fixing a suspected bug without a failing test: you cannot tell afterwards whether the fix did anything.

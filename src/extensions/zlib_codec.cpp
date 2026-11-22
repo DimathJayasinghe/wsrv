@@ -145,6 +145,13 @@ private:
             // manner" as the others. zlib stopped at the final block; continue on a fresh stream
             // that keeps the window. Anything that is not valid DEFLATE after it still fails inside
             // zlib.
+            // At most once per message: every restart copies the whole window and yields no output,
+            // so the inflate-ratio cap would not bound a run of empty final blocks.
+            if (restarted_in_message_) {
+                return fail(ErrorCode::InvalidCompressedData,
+                            "deflate: data after the final block");
+            }
+            restarted_in_message_ = true;
             if (auto restarted = restart_keeping_window(); !restarted) {
                 return std::unexpected{restarted.error()};
             }
@@ -200,6 +207,7 @@ private:
         }
         tail_fed_ = 0;
         at_boundary_ = false;
+        restarted_in_message_ = false;
         return {};
     }
 
@@ -227,6 +235,7 @@ private:
 
     z_stream stream_{};
     bool no_context_takeover_;
+    bool restarted_in_message_ = false;  // a final block was followed by more data in this message
     bool initialised_ = false;
     bool stream_ended_ = false;
     bool at_boundary_ = false;  // finish(): zlib stood between blocks after its last useful call

@@ -344,6 +344,31 @@ TEST(ZlibCodec, NoContextTakeoverStillStartsFreshAfterABfinalBlock) {
     EXPECT_EQ(second.error().code, ErrorCode::InvalidCompressedData);
 }
 
+// Each restart after a final block copies the 32 KiB window and produces nothing, so without a cap
+// a peer could buy 32 KiB of copying with every 5 octets of input (a BFINAL stored empty block).
+// RFC 7692 section 7.2.3.4 needs at most one such restart per message.
+TEST(ZlibCodec, ASecondFinalBlockInOneMessageIsInvalid) {
+    auto codecs = make_codecs(params());
+    std::vector<std::byte> bomb;
+    for (int i = 0; i < 1000; ++i) {
+        const auto block = bytes_of({0x01, 0x00, 0x00, 0xff, 0xff});
+        bomb.insert(bomb.end(), block.begin(), block.end());
+    }
+    auto out = inflate_all(*codecs.inflater, bomb);
+    ASSERT_FALSE(out.has_value());
+    EXPECT_EQ(out.error().code, ErrorCode::InvalidCompressedData);
+}
+
+TEST(ZlibCodec, TheRestartAllowanceIsPerMessage) {
+    auto codecs = make_codecs(params());
+    for (int i = 0; i < 3; ++i) {  // three messages, each in the RFC's BFINAL form, in one inflater
+        auto out = inflate_all(*codecs.inflater,
+                               bytes_of({0xf3, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00, 0x00}));
+        ASSERT_TRUE(out.has_value()) << i;
+        EXPECT_EQ(*out, bytes_of("Hello")) << i;
+    }
+}
+
 TEST(ZlibCodec, DataAfterTheFinalBlockIsInvalid) {
     auto codecs = make_codecs(params());
     auto out = inflate_all(*codecs.inflater, bytes_of({0x01, 0x00, 0x00, 0xff, 0xff, 0x42}));
