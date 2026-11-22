@@ -62,7 +62,7 @@ Engineering
 - [x] ADR-0020 A2 items 1 and 3 implemented with their tests (EC-D08, EC-D09), and a test for the release of the send scratch buffer (EC-D05)
 
 Repository and launch (M14, listed here so nothing is forgotten)
-- [ ] Owner: final project name (`wsrv` is a working name, ADR-0011) and license confirmed
+- [x] Owner: final project name (`wsrv`, confirmed 2026-11-22; Composer name `wsrv/client`, found free on Packagist) and license confirmed
 - [ ] `NOTICE`, `CODE_OF_CONDUCT.md`, `CHANGELOG.md` added
 - [ ] Owner: review of the git history (author e-mail addresses) and a full-history secret scan before the repository goes public
 - [ ] Owner: branch protection on `main`; secret scanning, push protection, private vulnerability reporting enabled
@@ -81,7 +81,7 @@ Repository and launch (M14, listed here so nothing is forgotten)
 Done in the repository: `LICENSE`, `NOTICE`, `CODE_OF_CONDUCT.md`, `CHANGELOG.md`, `GOVERNANCE.md`, `SECURITY.md` (reports through GitHub's private advisory), `CONTRIBUTING.md` with a "Where to start" list, issue and PR templates (blank issues off, security link), README status banner, scan of the history and the tree for secrets and personal data (patterns only; no key, token or certificate found), branch protection on `main` (no force push, no deletion), repository-local commit email set to the GitHub noreply address.
 
 Owner decisions that cannot be made for the owner:
-- [ ] **The project name.** `wsrv` is a working name (ADR-0011); the Packagist name (`wsrv/client` today), the release file names and the install URL follow from it. Rename before the first tag, not after.
+- [x] **The project name**: `wsrv`, Composer package `wsrv/client` (owner, 2026-11-22; Packagist showed no `wsrv/` vendor).
 - [ ] **Commit history.** All commits carry the owner's personal email (`git log --format=%ae`). Rewriting history would break every PR and merge link; the alternative is to accept it. New commits use the noreply address. In GitHub, also tick "Block command line pushes that expose my email" (account settings, Emails).
 - [ ] **Flip the visibility** (settings, danger zone), or tell the assistant explicitly to.
 

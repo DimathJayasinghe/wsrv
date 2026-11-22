@@ -1,6 +1,6 @@
 # Project Plan
 
-Working name: **wsrv**. Owner: project lead. Status: planning.
+Name: **wsrv** (confirmed by the owner, 2026-11-22). Owner: project lead. Status: planning.
 
 ## 1. Vision
 

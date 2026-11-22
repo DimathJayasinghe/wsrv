@@ -1,4 +1,4 @@
-# wsrv — WebSocket Server in C++ (working name)
+# wsrv — WebSocket Server in C++
 
 A from-scratch, standards-compliant **RFC 6455** WebSocket server written in modern C++.
 No Boost, no Asio, no third-party WebSocket libraries. Quality over feature count.
@@ -10,7 +10,7 @@ No Boost, no Asio, no third-party WebSocket libraries. Quality over feature coun
 > Autobahn-clean (517 cases, 0 failed). Linux only (x86-64 and aarch64). What is not done, and what
 > stands between this and a 1.0, is listed in [docs/RELEASE.md](docs/RELEASE.md); changes are in
 > [CHANGELOG.md](CHANGELOG.md). The documents below are the contract the code satisfies; read them
-> before changing code. The name `wsrv` is a working name and may change before 1.0.
+> before changing code.
 
 ## Why this exists
 
