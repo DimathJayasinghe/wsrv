@@ -29,5 +29,6 @@ One decision per file, immutable once *Accepted* (supersede with a new ADR). Use
 | [0023](0023-metrics-and-admin-endpoint.md) | Metrics and the admin endpoint | Accepted |
 | [0024](0024-pub-sub-broker.md) | Pub/sub broker (topics and rooms) | Accepted |
 | [0025](0025-php-ffi-binding.md) | PHP embedded binding over FFI | Accepted |
+| [0026](0026-php-package-and-native-library-distribution.md) | Composer package and distribution of `libwsrv.so` | Proposed |
 
 Statuses: Proposed → Accepted → (Deprecated | Superseded by ADR-NNNN). The project owner moves Proposed → Accepted.
