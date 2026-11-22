@@ -42,5 +42,6 @@ We teach as we build. Each lesson answers three questions: **What** are we build
 | 35 | [Evidence, not adjectives (release readiness)](35-evidence-not-adjectives.md) | M10 | written (slice 4c) |
 | 36 | [A C host proves the ABI (the C consumer passes Autobahn)](36-the-c-host-proves-the-abi.md) | M11 | written (exit criterion) |
 | 37 | [PHP calls the C ABI through FFI](37-php-calls-the-c-abi-through-ffi.md) | M12 | written (slice 2) |
+| 38 | [The login check that never runs (handshake hook, embedded)](38-the-login-check-that-never-runs.md) | M12 | written (slice 3) |
 
 Lesson template: *Goal → Background (the problem) → Design (why this way) → Walkthrough (code, small steps) → Tests (what proves it works) → Pitfalls → Exercises.*

@@ -8,6 +8,8 @@ namespace Wsrv\Embedded;
 use FFI;
 use FFI\CData;
 use Wsrv\ConnectionClosed;
+use Wsrv\Ipc\Codec;
+use Wsrv\Ipc\HandshakeRequest;
 use Wsrv\WsrvException;
 
 /**
@@ -29,6 +31,16 @@ use Wsrv\WsrvException;
  *   message fn(Connection $c, string $data, bool $binary)
  *   close   fn(Connection $c, int $code, string $reason, bool $clean)   the last event for $c
  *   error   fn(Connection $c, string $name)                            best effort, may be missing
+ *   authenticate fn(Upgrade $u): bool|int|string|null   who may connect; needs the setting
+ *           `handshake_hook` => true (and `handshake_forward_header` => ['Cookie'] to see cookies).
+ *           Return true to accept, false for 403, an int status (400 401 403 404 429 500 503), a
+ *           string (accept, choosing that subprotocol: it must be one the client offered), or null to
+ *           answer later through `$u->accept()` / `$u->reject()` within `handshake_decision_timeout_ms`.
+ *           FAIL CLOSED: a handler that throws (500, then the exception surfaces from step()) and an
+ *           unusable return value (500, UnexpectedValueException) refuse the upgrade, never accept it.
+ *           start() throws if the setting and the handler do not agree: a hook nobody answers would
+ *           make every upgrade wait for the timeout, and a handler nobody asks would be a login check
+ *           that never runs. Everything in `$u->request` comes from the browser: validate it.
  * Handlers run on the calling thread, one event at a time. An exception from a handler leaves
  * step()/run(); the server stays usable, so the caller can log it and call run() again.
  */
@@ -38,7 +50,7 @@ final class Server
     public const ABI_MAJOR = 0;
     public const ABI_MINOR = 4;
 
-    private const HANDLERS = ['open', 'message', 'close', 'error'];
+    private const HANDLERS = ['open', 'message', 'close', 'error', 'authenticate'];
 
     // wsrv_status, wsrv_event_type (the cdef test checks these against the header).
     private const OK = 0;
@@ -51,6 +63,8 @@ final class Server
     private const EV_BINARY = 3;
     private const EV_CLOSE = 4;
     private const EV_ERROR = 5;
+    private const EV_HANDSHAKE = 6;
+    private const ERR_INVALID_ARGUMENT = 2;
 
     private readonly FFI $ffi;
     /** @var CData|null wsrv_server* */
@@ -114,7 +128,7 @@ final class Server
         if ($this->handle !== null) {
             throw new WsrvException('the server is already started');
         }
-        $this->refuseUnsupportedSettings();
+        $this->checkHandshakeSettings();
 
         $error = $this->ffi->new('wsrv_error');
         $config = $this->ffi->wsrv_config_new();
@@ -191,10 +205,11 @@ final class Server
             $data = $event->len > 0 ? FFI::string($event->data, $event->len) : '';
             $code = $event->close_code;
             $clean = $event->clean !== 0;
+            $request = $type === self::EV_HANDSHAKE ? $this->copyHandshake($event->handshake) : null;
         } finally {
             $this->ffi->wsrv_event_release(FFI::addr($event));
         }
-        $this->dispatch($type, $id, $data, $code, $clean);
+        $this->dispatch($type, $id, $data, $code, $clean, $request);
         return true;
     }
 
@@ -259,7 +274,7 @@ final class Server
 
     // ---- internals ---------------------------------------------------------------------------
 
-    private function dispatch(int $type, int $id, string $data, int $code, bool $clean): void
+    private function dispatch(int $type, int $id, string $data, int $code, bool $clean, ?HandshakeRequest $request): void
     {
         $connection = $this->connections[$id] ?? null;
         switch ($type) {
@@ -283,6 +298,13 @@ final class Server
             case self::EV_ERROR:
                 $connection ??= new Connection($this, $id);
                 $this->call('error', $connection, $data);
+                return;
+            case self::EV_HANDSHAKE:
+                if ($request === null) {
+                    $this->refuseQuietly($id, 500);
+                    throw new WsrvException('a handshake event carried no request');
+                }
+                $this->authenticate($id, $request);
                 return;
             default:
                 // A newer library may add event types (additive ABI): ignoring one is safe only
@@ -351,16 +373,130 @@ final class Server
         }
     }
 
-    /** Settings this slice cannot serve yet fail at start(), never silently later. */
-    private function refuseUnsupportedSettings(): void
+    /** The setting and the handler must agree (see the class comment); a mismatch fails at start(). */
+    private function checkHandshakeSettings(): void
     {
-        $hook = $this->config['handshake_hook'] ?? false;
-        if ($hook === true || $hook === 1 || $hook === '1' || $hook === 'true') {
+        $hook = self::isTrue($this->config['handshake_hook'] ?? false);
+        $handler = isset($this->handlers['authenticate']);
+        if ($hook && !$handler) {
             throw new WsrvException(
-                'handshake_hook is not supported by the embedded binding yet (every upgrade would wait for an '
-                . 'answer nobody gives); use the sidecar Worker `authenticate` handler, or leave it off'
+                'handshake_hook is on but no authenticate handler is registered: every upgrade would wait '
+                . 'for an answer nobody gives (register one with on(\'authenticate\', ...) before start())'
             );
         }
+        if (!$hook && $handler) {
+            throw new WsrvException(
+                'an authenticate handler is registered but handshake_hook is off: no upgrade would ever ask '
+                . 'it, so the login check would never run (set \'handshake_hook\' => true)'
+            );
+        }
+    }
+
+    private static function isTrue(mixed $value): bool
+    {
+        return $value === true || $value === 1 || $value === '1' || $value === 'true';
+    }
+
+    /** Copy a wsrv_handshake into PHP values. Runs before the event is released. */
+    private function copyHandshake(?CData $h): ?HandshakeRequest
+    {
+        if ($h === null) {
+            return null;
+        }
+        $str = static fn (CData $s): string => $s->len > 0 ? FFI::string($s->data, $s->len) : '';
+        $offered = [];
+        for ($i = 0; $i < $h->offered_count; $i++) {
+            $offered[] = $str($h->offered[$i]);
+        }
+        $headers = [];
+        for ($i = 0; $i < $h->header_count; $i++) {
+            $headers[] = [$str($h->headers[$i]->name), $str($h->headers[$i]->value)];
+        }
+        return new HandshakeRequest(
+            $str($h->peer), $str($h->path), $str($h->query), $str($h->origin),
+            $str($h->host), $str($h->subprotocol), $offered, $headers,
+        );
+    }
+
+    /** A browser's upgrade waits for us. Every path that does not accept, refuses. */
+    private function authenticate(int $id, HandshakeRequest $request): void
+    {
+        $upgrade = new Upgrade($this, $id, $request);
+        if (!isset($this->handlers['authenticate'])) {
+            $this->refuseQuietly($id, 503);  // start() prevents this; stay safe
+            return;
+        }
+        try {
+            $decision = ($this->handlers['authenticate'])($upgrade);
+            if (!$upgrade->answered()) {
+                $this->apply($upgrade, $decision);
+            }
+        } catch (\Throwable $e) {
+            if (!$upgrade->answered()) {
+                $this->refuseQuietly($id, 500);
+            }
+            throw $e;
+        }
+    }
+
+    private function apply(Upgrade $upgrade, mixed $decision): void
+    {
+        if ($decision === null) {
+            return;  // the handler answers later, through $upgrade
+        }
+        if ($decision === true) {
+            $upgrade->accept();
+        } elseif ($decision === false) {
+            $upgrade->reject(403);
+        } elseif (is_int($decision) && in_array($decision, Codec::REJECT_STATUSES, true)) {
+            $upgrade->reject($decision);
+        } elseif (is_string($decision) && in_array($decision, $upgrade->request->offered, true)) {
+            $upgrade->accept($decision);
+        } else {
+            throw new \UnexpectedValueException(
+                'authenticate must return true, false, null, one of ' . implode(', ', Codec::REJECT_STATUSES)
+                . ', or a subprotocol the client offered; got ' . get_debug_type($decision)
+            );
+        }
+    }
+
+    /** Best effort, for failure paths: the original problem is what the caller should see. */
+    private function refuseQuietly(int $id, int $status): void
+    {
+        try {
+            $this->rejectHandshake($id, $status);
+        } catch (ConnectionClosed) {
+            // the library no longer waits (timeout, or the client left): nothing to refuse
+        }
+    }
+
+    /** @internal used by Upgrade */
+    public function acceptHandshake(int $id, string $subprotocol): void
+    {
+        $status = $this->ffi->wsrv_handshake_accept(
+            $this->native(), $id, $subprotocol === '' ? null : $subprotocol, strlen($subprotocol)
+        );
+        $this->handshakeResult($status, $id);
+    }
+
+    /** @internal used by Upgrade */
+    public function rejectHandshake(int $id, int $status): void
+    {
+        $this->handshakeResult($this->ffi->wsrv_handshake_reject($this->native(), $id, $status), $id);
+    }
+
+    private function handshakeResult(int $status, int $id): void
+    {
+        match ($status) {
+            self::OK => null,
+            self::ERR_NO_SUCH_CONN => throw new ConnectionClosed(
+                "upgrade $id is no longer waiting (answered, timed out, or the client left)"
+            ),
+            self::ERR_INVALID_ARGUMENT => throw new \InvalidArgumentException(
+                "the library refused the answer for upgrade $id (a subprotocol not offered, or a status it does not send)"
+            ),
+            default => throw new WsrvException($this->statusName($status) . " answering upgrade $id"),
+        };
     }
 
     private static function text(string|int|bool $value): string
