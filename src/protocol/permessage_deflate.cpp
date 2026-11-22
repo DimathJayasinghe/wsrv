@@ -135,7 +135,15 @@ std::optional<DeflateAgreement> accept_offer(const ExtensionOffer& offer,
     state.params.server_no_context_takeover = policy.server_no_context_takeover;
     state.params.server_window_bits = policy.server_max_window_bits;
 
-    // The offer parser has already rejected duplicate parameter names inside one offer.
+    // RFC 7692 section 7: a server MUST decline an offer that repeats a parameter name. The list is
+    // short (the offer parser caps it), so the pairwise scan is bounded.
+    for (std::size_t i = 0; i < offer.params.size(); ++i) {
+        for (std::size_t j = i + 1; j < offer.params.size(); ++j) {
+            if (offer.params[i].first == offer.params[j].first) {
+                return std::nullopt;
+            }
+        }
+    }
     for (const auto& [name, value] : offer.params) {
         if (!apply_parameter(state, name, value, policy)) {
             return std::nullopt;

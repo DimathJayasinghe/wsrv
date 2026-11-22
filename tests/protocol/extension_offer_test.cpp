@@ -94,7 +94,6 @@ TEST(ExtensionOffer, MalformedOffersAreRejected) {
         "a; b=c d",             // two tokens where one is expected
         "a b",                  // space inside the name
         "a; b = c",             // no whitespace allowed around '='
-        "a; b=c; b=d",          // duplicate parameter
         "a; b=\"x\" y",         // junk after a quoted value
         "a; b=\"bad\\",         // backslash at the end of input
         "a(b)",                 // separator in the name
@@ -105,6 +104,19 @@ TEST(ExtensionOffer, MalformedOffersAreRejected) {
     }
     EXPECT_TRUE(
         parse_extension_offers(bad.back()).has_value());  // a trailing comma is an empty element
+}
+
+// RFC 7692 section 7: a server MUST *decline* an offer that repeats a parameter, which is a
+// decision about that offer (the next one may still be accepted), not a syntax error that fails the
+// whole header.
+TEST(ExtensionOffer, ARepeatedParameterIsKeptInOrderForTheNegotiationToJudge) {
+    const auto offers = parse_extension_offers("a; b=c; b=d, e");
+    ASSERT_TRUE(offers.has_value());
+    ASSERT_EQ(offers->size(), 2U);
+    ASSERT_EQ((*offers)[0].params.size(), 2U);
+    EXPECT_EQ((*offers)[0].params[0], (std::pair<std::string, std::string>{"b", "c"}));
+    EXPECT_EQ((*offers)[0].params[1], (std::pair<std::string, std::string>{"b", "d"}));
+    EXPECT_EQ((*offers)[1].name, "e");
 }
 
 TEST(ExtensionOffer, ControlCharactersAreRejected) {

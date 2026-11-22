@@ -7,9 +7,9 @@ name: ci
 on:
   push:
     branches: [main]
-    paths-ignore: ['docs/**', '**.md', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
+    paths-ignore: ['docs/**', '**.md', 'LICENSE', '.github/ISSUE_TEMPLATE/**', 'bindings/php/**']   # php.yml covers the PHP binding
   pull_request:
-    paths-ignore: ['docs/**', '**.md', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
+    paths-ignore: ['docs/**', '**.md', 'LICENSE', '.github/ISSUE_TEMPLATE/**', 'bindings/php/**']   # php.yml covers the PHP binding
 
 permissions:
   contents: read

@@ -3,6 +3,17 @@
 
 declare(strict_types=1);
 
+// Every notice, warning and deprecation is a test failure. A newer PHP deprecates things quietly (the
+// CLI php.ini of Debian and Ubuntu hides E_DEPRECATED), and "works on the latest PHP" must not mean
+// "works until somebody looks at the log". An `@` suppression is still respected.
+error_reporting(E_ALL);
+set_error_handler(static function (int $severity, string $message, string $file, int $line): bool {
+    if ((error_reporting() & $severity) === 0) {
+        return false;
+    }
+    throw new ErrorException($message, 0, $severity, $file, $line);
+});
+
 // A PSR-4 autoloader for Wsrv\ so the tests run without Composer.
 spl_autoload_register(static function (string $class): void {
     $prefix = 'Wsrv\\';

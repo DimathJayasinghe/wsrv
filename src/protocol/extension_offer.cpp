@@ -3,8 +3,6 @@
 
 #include "http/token.hpp"
 
-#include <algorithm>
-
 namespace wsrv {
 
 namespace {
@@ -71,8 +69,6 @@ private:
     std::string_view rest_;
 };
 
-/// param = token [ "=" ( token / quoted-string ) ]; appended to `offer`. False if malformed or
-/// duplicate.
 /// The part after '=': a token, or a quoted-string that is a token once unescaped (RFC 6455
 /// section 9.1).
 [[nodiscard]] std::optional<std::string> parse_param_value(Cursor& cursor) {
@@ -93,6 +89,8 @@ private:
     return std::string{token};
 }
 
+/// param = token [ "=" ( token / quoted-string ) ]; appended to `offer`. False if malformed or over
+/// the parameter cap.
 [[nodiscard]] bool parse_param(Cursor& cursor, ExtensionOffer& offer) {
     const std::string_view name = cursor.take_token();
     if (name.empty()) {
@@ -110,11 +108,9 @@ private:
     if (offer.params.size() >= kMaxExtensionParams) {
         return false;  // work cap
     }
-    const bool duplicate =
-        std::ranges::any_of(offer.params, [name](const auto& p) { return p.first == name; });
-    if (duplicate) {
-        return false;
-    }
+    // A repeated name is kept, not refused here: RFC 7692 section 7 makes it a reason to DECLINE
+    // that offer (the next offer may still be accepted), which is the negotiation's decision, not a
+    // syntax error that fails the whole header. The work cap above bounds the list either way.
     offer.params.emplace_back(std::string{name}, std::move(value));
     return true;
 }

@@ -573,6 +573,51 @@ private:
     wsrv::InflateStep step_;
 };
 
+// EC-D05 (ADR-0020 A1, "no idle compression memory"): the send scratch buffer is released after
+// every send. The spy keeps a pointer to the vector the session hands to deflate(), which is the
+// session's own member, and the test looks at its capacity once send_message() has returned.
+class SpyDeflater final : public wsrv::IMessageDeflater {
+public:
+    wsrv::Result<void> deflate(wsrv::ByteView message, std::vector<std::byte>& out) override {
+        scratch = &out;
+        out.insert(out.end(), message.begin(), message.end());
+        peak_capacity = out.capacity();
+        return {};
+    }
+
+    const std::vector<std::byte>* scratch = nullptr;
+    std::size_t peak_capacity = 0;
+};
+
+class SpyFactory final : public wsrv::IDeflateCodecFactory {
+public:
+    wsrv::Result<wsrv::DeflateCodecs> create(const DeflateParams& /*params*/) const override {
+        auto deflater = std::make_unique<SpyDeflater>();
+        spy = deflater.get();
+        return wsrv::DeflateCodecs{std::make_unique<RogueInflater>(wsrv::InflateStep{}),
+                                   std::move(deflater)};
+    }
+
+    mutable SpyDeflater* spy = nullptr;
+};
+
+TEST(SessionDeflate, TheSendScratchBufferIsReleasedAfterEverySend) {
+    SessionConfig config = deflate_config();
+    const auto factory = std::make_shared<SpyFactory>();
+    config.deflate->codecs = factory;
+    Rig rig{std::move(config)};
+    for (int i = 0; i < 3; ++i) {
+        ASSERT_TRUE(
+            rig.session().send_text(std::string(std::size_t{100} * 1024U, 'a')).has_value());
+        ASSERT_NE(factory->spy, nullptr);
+        ASSERT_NE(factory->spy->scratch, nullptr);
+        EXPECT_GE(factory->spy->peak_capacity, 100U * 1024U) << "the compressor did use the buffer";
+        EXPECT_EQ(factory->spy->scratch->capacity(), 0U)
+            << "send " << i << ": an idle connection keeps no compression memory";
+        EXPECT_TRUE(factory->spy->scratch->empty());
+    }
+}
+
 /// A session whose inflater always answers `step`, fed one compressed frame of 100 bytes.
 std::vector<Seen> feed_rogue(wsrv::InflateStep step) {
     SessionConfig config = deflate_config();

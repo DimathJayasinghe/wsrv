@@ -190,6 +190,8 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | EC-D05 | Context takeover memory per connection | Bounded, budgeted |
 | EC-D06 | Empty compressed message | Valid |
 | EC-D07 | Uncompressed message when extension negotiated | Valid |
+| EC-D08 | `permessage-deflate` offer that repeats a parameter | That offer is declined (RFC 7692 §7); the next offer is tried; the handshake is not failed (no 400) |
+| EC-D09 | Message ended with a BFINAL=1 block (RFC 7692 §7.2.3.4), with or without the extra `00` octet | Decodes; the sliding window carries over to the next message when context takeover is on; a second final block in the same message is invalid data (1007), because each restart copies the window and yields no output |
 
 ## 9. Test mapping
 
@@ -235,7 +237,8 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | EC-A07..A10 (topic names, broker bounds, per-subscriber isolation, no leaked subscriptions), FR-S7 (ADR-0024) | done (M10 slice 3) | `BrokerTest.*`, `SmallQueueBrokerTest.*`, `SharedMessage.*`, `SessionHandleTest.*SharedMessage*`, `BrokerServer.*` |
 | EC-H26 | M10 (MAY) | - |
 | EC-D01 (negotiation permutations), D02 (fragmented compressed message, RSV1 on the first frame only), D03 (bomb: size and ratio), D04 (invalid stream: 1007), D06 (empty message), D07 (plain message while negotiated) | done (M9) | `PermessageDeflate.*`, `DeflatePolicyCheck.*`, `SessionDeflate.*`, `ZlibCodec.*`, `ServerDeflate.*`, `fuzz_inflate`, Autobahn 12.* and 13.* (216 cases) |
-| EC-D05 (memory per compressed connection: bounded, budgeted) | bound done (M9): window and level are range-checked, the per-connection figures are in `docs/OPERATIONS.md` section 1.1. **Gap:** the release of the send scratch buffer after every send is by design and review (ADR-0020 A1) and is not asserted by a test; a global budget across connections is M10 | `SessionDeflate.TheConfigurationIsChecked`, `ZlibCodec.TheFactoryRefusesWindowsAndLevelsZlibCannotDo`, `ServerDeflate.ImpossibleSettingsAreRefusedAtBuildTimeNamingTheFeature`, `ServerDeflate.ChurnOfCompressedConnectionsLeavesNoDescriptorsBehind` |
+| EC-D05 (memory per compressed connection: bounded, budgeted) | bound done (M9): window and level are range-checked, the per-connection figures are in `docs/OPERATIONS.md` section 1.1. The release of the send scratch buffer after every send is asserted (`SessionDeflate.TheSendScratchBufferIsReleasedAfterEverySend`); a global budget across connections is post-1.0 (RELEASE section 3) | `SessionDeflate.TheConfigurationIsChecked`, `ZlibCodec.TheFactoryRefusesWindowsAndLevelsZlibCannotDo`, `ServerDeflate.ImpossibleSettingsAreRefusedAtBuildTimeNamingTheFeature`, `ServerDeflate.ChurnOfCompressedConnectionsLeavesNoDescriptorsBehind`, `SessionDeflate.TheSendScratchBufferIsReleasedAfterEverySend` |
+| EC-D08 (repeated parameter declines that offer), EC-D09 (BFINAL message ends, window kept) | done (M12 follow-up, ADR-0020 A2) | `PermessageDeflate.ARepeatedParameter*`, `ExtensionOffer.ARepeatedParameter*`, `Handshake.NoDeflateAnswer*`, `ZlibCodec.TheRfcsOwnBfinalExampleDecodes`, `ZlibCodec.TheWindowSurvivesA*`, `ZlibCodec.ASecondFinalBlockInOneMessageIsInvalid`, `ZlibCodec.NoContextTakeoverStillStartsFreshAfterABfinalBlock` |
 | EC-F*, EC-C*, EC-N*, EC-A*, EC-T* (rows not listed above) | later milestones | - |
 
 ## 11. Maintenance

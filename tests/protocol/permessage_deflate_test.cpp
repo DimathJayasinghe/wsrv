@@ -123,6 +123,28 @@ TEST(PermessageDeflate, ValuesOnParametersThatTakeNoneDeclineTheOffer) {
     EXPECT_EQ(answer(pmd({{"client_no_context_takeover", "true"}}), relaxed()), "<declined>");
 }
 
+TEST(PermessageDeflate, ARepeatedParameterDeclinesTheOffer) {  // RFC 7692 section 7, third bullet
+    EXPECT_EQ(answer(pmd({{"server_no_context_takeover", ""}, {"server_no_context_takeover", ""}}),
+                     relaxed()),
+              "<declined>");
+    // Even when both copies carry the same acceptable value, and for the parameters with values.
+    EXPECT_EQ(answer(pmd({{"server_max_window_bits", "10"}, {"server_max_window_bits", "10"}}),
+                     relaxed()),
+              "<declined>");
+    EXPECT_EQ(
+        answer(pmd({{"client_max_window_bits", ""}, {"client_max_window_bits", "12"}}), relaxed()),
+        "<declined>");
+}
+
+TEST(PermessageDeflate, ARepeatedParameterDeclinesOnlyThatOfferAndTheNextOneIsTried) {
+    const std::vector<ExtensionOffer> offers{
+        pmd({{"server_no_context_takeover", ""}, {"server_no_context_takeover", ""}}),  // declined
+        pmd({{"server_max_window_bits", "10"}})};                                       // this one
+    const auto agreement = negotiate_permessage_deflate(offers, relaxed());
+    ASSERT_TRUE(agreement.has_value());
+    EXPECT_EQ(agreement->response, "permessage-deflate; server_max_window_bits=10");
+}
+
 TEST(PermessageDeflate, AnUnknownParameterDeclinesTheOfferNotTheConnection) {  // section 5.2
     EXPECT_EQ(answer(pmd({{"unknown_parameter", ""}}), relaxed()), "<declined>");
 }
