@@ -1,0 +1,21 @@
+wsrv
+Copyright 2026 The wsrv contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+wsrv itself contains no third-party source code: SHA-1, Base64, UTF-8 validation and the
+WebSocket and HTTP logic are written in this repository (ADR-0005).
+
+It is built against, and at run time links dynamically to, these system libraries, which are
+not distributed with it and keep their own licenses:
+  - zlib (zlib License), for permessage-deflate (ADR-0020)
+  - OpenSSL 3 (Apache-2.0), for TLS (ADR-0019)
+  - the C++ standard library and the C library of your toolchain
+
+Used only to build and test, never shipped:
+  - GoogleTest 1.15.2 (BSD-3-Clause), fetched by CMake (cmake/WsrvTests.cmake)
+  - Autobahn|Testsuite (Apache-2.0), run from its own container image (tests/autobahn)
+  - clang-format, clang-tidy, ccache, and the sanitizers of GCC and Clang
+
+The prebuilt libwsrv.so and wsrvd of a release are dynamically linked to the libraries above
+(ADR-0026); the SHA256SUMS file and build attestation of each release identify the files.

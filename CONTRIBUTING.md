@@ -2,6 +2,15 @@
 
 Thanks for helping. This project aims for protocol-correct, secure, maintainable code; the rules below keep it that way. Read [docs/CODING_STANDARDS.md](docs/CODING_STANDARDS.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and [docs/SECURITY_DESIGN.md](docs/SECURITY_DESIGN.md) before your first PR. By participating you agree to the Code of Conduct (Contributor Covenant 2.1, added with the repo bootstrap).
 
+## Where to start
+Small, well-bounded tasks that need no deep knowledge of the core (each has an acceptance test in the same place as its neighbours):
+- Docs: a missing example in `docs/OPERATIONS.md`, a typo, a clearer error message in a README (`docs:` PRs skip CI).
+- PHP: tests for `Wsrv\Install\LibraryInstaller` over a real local HTTPS server, a `Wsrv\Embedded\Server` example with TLS (`bindings/php`).
+- Edge cases: pick a row of `docs/PROTOCOL_EDGE_CASES.md` marked "later" and write its failing test first.
+- Tooling: musl (Alpine) build in CI, or a macOS `IPoller` design note (ADR first).
+- Bindings: a second language over the C ABI (`include/wsrv/wsrv.h`, `examples/echo_c` is the reference consumer).
+Open an issue before starting so nobody duplicates it.
+
 ## Workflow
 
 1. **Discuss first** for anything non-trivial: open an issue (bug / feature / design). Structural changes need an ADR ([docs/adr/](docs/adr/)).

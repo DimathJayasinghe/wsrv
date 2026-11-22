@@ -75,3 +75,18 @@ Repository and launch (M14, listed here so nothing is forgotten)
 **Release candidate for evaluation: yes.** The server core, TLS, deflate, limits, broker, metrics, C ABI and sidecar are built, tested under every sanitizer, fuzzed and reviewed three times; the claims in section 2 can be checked by running the named commands.
 
 **Public 1.0: not yet.** The unchecked boxes above are the gap. The engineering boxes are small (coverage figures, the three open review items); the repository boxes are owner decisions and the M14 work. This document does not change repository visibility; that is the owner's call.
+
+## 6. Going public (checklist, 2026-11-22)
+
+Done in the repository: `LICENSE`, `NOTICE`, `CODE_OF_CONDUCT.md`, `CHANGELOG.md`, `GOVERNANCE.md`, `SECURITY.md` (reports through GitHub's private advisory), `CONTRIBUTING.md` with a "Where to start" list, issue and PR templates (blank issues off, security link), README status banner, scan of the history and the tree for secrets and personal data (patterns only; no key, token or certificate found), branch protection on `main` (no force push, no deletion), repository-local commit email set to the GitHub noreply address.
+
+Owner decisions that cannot be made for the owner:
+- [ ] **The project name.** `wsrv` is a working name (ADR-0011); the Packagist name (`wsrv/client` today), the release file names and the install URL follow from it. Rename before the first tag, not after.
+- [ ] **Commit history.** All commits carry the owner's personal email (`git log --format=%ae`). Rewriting history would break every PR and merge link; the alternative is to accept it. New commits use the noreply address. In GitHub, also tick "Block command line pushes that expose my email" (account settings, Emails).
+- [ ] **Flip the visibility** (settings, danger zone), or tell the assistant explicitly to.
+
+Right after the flip (not available while the repository is private):
+- [ ] Settings, Code security: enable private vulnerability reporting, secret scanning, push protection, Dependabot alerts.
+- [ ] Confirm the Security tab shows "Report a vulnerability" (SECURITY.md and the issue template link depend on it).
+- [ ] Push an `-rc` tag to run `release.yml` for the first time (the arm runner and the attestation need a public repository), then submit the repository URL on packagist.org.
+- [ ] Optionally create the first "good first issue" labels and issues from CONTRIBUTING.md's list.
