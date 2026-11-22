@@ -323,7 +323,12 @@ TEST(Handshake, PermessageDeflateIsAnsweredWhenConfiguredAndOffered) {  // EC-D0
 TEST(Handshake, NoDeflateAnswerWhenTheClientDidNotOfferItOrNoOfferIsAcceptable) {
     HandshakeConfig config = default_config();
     config.permessage_deflate = wsrv::DeflatePolicy{};
-    for (const char* offers : {"x-unknown", "permessage-deflate; bogus"}) {
+    // A repeated parameter declines the offer (RFC 7692 section 7); it is not a malformed header
+    // (400).
+    for (const char* offers :
+         {"x-unknown",
+          "permessage-deflate; bogus",
+          "permessage-deflate; server_no_context_takeover; server_no_context_takeover"}) {
         const HandshakeDecision decision = HandshakeNegotiator{config}.negotiate(
             with(valid_request(), "Sec-WebSocket-Extensions", offers));
         ASSERT_TRUE(std::holds_alternative<HandshakeAccept>(decision))
@@ -347,7 +352,7 @@ TEST(Handshake, AnInvalidDeflatePolicyIsAConfigurationError) {
 }
 
 TEST(Handshake, MalformedExtensionOffersAreRejected) {
-    for (const char* value : {"permessage-deflate;", "a; b=c; b=d", "a; b=\"open", ";x"}) {
+    for (const char* value : {"permessage-deflate;", "a; b=\"open", ";x"}) {
         EXPECT_EQ(run_status(with(valid_request(), "Sec-WebSocket-Extensions", value)), 400)
             << value;
     }

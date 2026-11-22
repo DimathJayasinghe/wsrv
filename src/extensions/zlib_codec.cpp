@@ -94,9 +94,7 @@ public:
         InflateStep step;
         if (stream_ended_) {
             // The sender used a final block (section 7.2.3.4); there is nothing left to feed.
-            end_message();
-            step.done = true;
-            return step;
+            return complete(step);
         }
         const ByteView rest = ByteView{kTail}.subspan(tail_fed_);
         auto result = run(rest, out);
@@ -111,9 +109,7 @@ public:
             at_boundary_ = (stream_.data_type & kAtBlockBoundary) != 0;
         }
         if (stream_ended_) {
-            end_message();
-            step.done = true;
-            return step;
+            return complete(step);
         }
         if (tail_fed_ == kTail.size() && step.produced < out.size()) {
             // All input used and no output waiting: the message must have ended between blocks.
@@ -121,8 +117,7 @@ public:
                 return fail(ErrorCode::InvalidCompressedData,
                             "deflate: message ends inside a block");
             }
-            end_message();
-            step.done = true;
+            return complete(step);
         }
         return step;
     }
@@ -145,7 +140,14 @@ private:
 
     Result<InflateStep> run(ByteView in, MutableByteView out) {
         if (stream_ended_ && !in.empty()) {
-            return fail(ErrorCode::InvalidCompressedData, "deflate: data after the final block");
+            // Section 7.2.3.4: a message may end with a BFINAL=1 block followed by one more octet
+            // (the start of an empty non-final stored block) so that it decodes "in the same
+            // manner" as the others. zlib stopped at the final block; continue on a fresh stream
+            // that keeps the window. Anything that is not valid DEFLATE after it still fails inside
+            // zlib.
+            if (auto restarted = restart_keeping_window(); !restarted) {
+                return std::unexpected{restarted.error()};
+            }
         }
         const std::size_t in_size = std::min(in.size(), kMaxZlibChunk);
         const std::size_t out_size = std::min(out.size(), kMaxZlibChunk);
@@ -175,14 +177,52 @@ private:
         return step;
     }
 
-    void end_message() noexcept {
-        if (stream_ended_ || no_context_takeover_) {
+    /// The message is complete: reset or keep the window (end_message) and report `step` as done.
+    Result<InflateStep> complete(InflateStep step) {
+        if (auto ended = end_message(); !ended) {
+            return std::unexpected{ended.error()};
+        }
+        step.done = true;
+        return step;
+    }
+
+    Result<void> end_message() {
+        if (no_context_takeover_) {
             // Window and block state start afresh; the allocation is reused.
             inflateReset(&stream_);
+            stream_ended_ = false;
+        } else if (stream_ended_) {
+            // Section 7.2.2: the next message is decompressed with the window of this one, also
+            // when this one ended with a final block.
+            if (auto restarted = restart_keeping_window(); !restarted) {
+                return restarted;
+            }
         }
-        stream_ended_ = false;
         tail_fed_ = 0;
         at_boundary_ = false;
+        return {};
+    }
+
+    /// inflate() stops at a BFINAL=1 block (Z_STREAM_END) and inflateReset() drops the window. Save
+    /// the window, reset the stream, put the window back. inflateGetDictionary needs zlib 1.2.9
+    /// (ADR-0020 A2).
+    Result<void> restart_keeping_window() {
+        std::vector<Bytef> window;
+        try {
+            window.resize(std::size_t{1} << kInflateWindowBits);
+        } catch (const std::bad_alloc&) {
+            return fail(ErrorCode::ResourceExhausted, "deflate: cannot allocate the window copy");
+        }
+        uInt length = 0;
+        if (inflateGetDictionary(&stream_, window.data(), &length) != Z_OK) {
+            return fail(ErrorCode::InvalidArgument, "deflate: cannot read the window");
+        }
+        inflateReset(&stream_);
+        if (length > 0 && inflateSetDictionary(&stream_, window.data(), length) != Z_OK) {
+            return fail(ErrorCode::InvalidArgument, "deflate: cannot restore the window");
+        }
+        stream_ended_ = false;
+        return {};
     }
 
     z_stream stream_{};

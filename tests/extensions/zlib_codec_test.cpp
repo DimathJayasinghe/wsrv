@@ -291,6 +291,59 @@ TEST(ZlibCodec, AFinalBlockEndsTheMessageAndTheNextOneStartsFresh) {  // section
     EXPECT_EQ(*second, bytes_of("Hello"));
 }
 
+// RFC 7692 section 7.2.3.4 shows a message ended with a BFINAL=1 block: the 7 octets of the block
+// plus one 0x00 octet (the start of an empty non-final stored block; the receiver appends 00 00 ff
+// ff after it), so that it "can be decompressed in the same manner as messages flushed using
+// DEFLATE blocks with BFINAL unset". Section 7.2.2 then requires the next message to use the window
+// of the last one.
+TEST(ZlibCodec, TheRfcsOwnBfinalExampleDecodes) {
+    auto codecs = make_codecs(params());
+    auto out =
+        inflate_all(*codecs.inflater, bytes_of({0xf3, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00, 0x00}));
+    ASSERT_TRUE(out.has_value()) << std::string{out.error().context};
+    EXPECT_EQ(*out, bytes_of("Hello"));
+}
+
+TEST(ZlibCodec, TheWindowSurvivesAMessageThatEndedWithABfinalBlock) {
+    auto codecs = make_codecs(params());
+    auto first =
+        inflate_all(*codecs.inflater, bytes_of({0xf3, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00, 0x00}));
+    ASSERT_TRUE(first.has_value());
+    // Made with Python: zlib.compressobj(6, DEFLATED, -15, 8, Z_DEFAULT_STRATEGY, zdict=b"Hello")
+    // on "Hello, Hello", sync-flushed, the trailing 00 00 ff ff removed. The 2nd "Hello" is a back
+    // reference into the first message: only a receiver that kept the window can decode it.
+    auto second =
+        inflate_all(*codecs.inflater, bytes_of({0xf2, 0x00, 0x11, 0x3a, 0x0a, 0x60, 0x0a, 0x00}));
+    ASSERT_TRUE(second.has_value()) << std::string{second.error().context};
+    EXPECT_EQ(*second, bytes_of("Hello, Hello"));
+}
+
+TEST(ZlibCodec, TheWindowSurvivesAFinalBlockWithNothingAfterIt) {
+    auto codecs = make_codecs(params());
+    // "Hello" as a BFINAL=1 block with no extra octet (the sender used a stored final block
+    // instead).
+    auto first =
+        inflate_all(*codecs.inflater, bytes_of({0xf3, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00}));
+    ASSERT_TRUE(first.has_value()) << std::string{first.error().context};
+    EXPECT_EQ(*first, bytes_of("Hello"));
+    auto second =
+        inflate_all(*codecs.inflater, bytes_of({0xf2, 0x00, 0x11, 0x3a, 0x0a, 0x60, 0x0a, 0x00}));
+    ASSERT_TRUE(second.has_value()) << std::string{second.error().context};
+    EXPECT_EQ(*second, bytes_of("Hello, Hello"));
+}
+
+TEST(ZlibCodec, NoContextTakeoverStillStartsFreshAfterABfinalBlock) {
+    auto codecs =
+        make_codecs(params(15, false, true));  // client_no_context_takeover: our inflater resets
+    auto first =
+        inflate_all(*codecs.inflater, bytes_of({0xf3, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00, 0x00}));
+    ASSERT_TRUE(first.has_value());
+    auto second =
+        inflate_all(*codecs.inflater, bytes_of({0xf2, 0x00, 0x11, 0x3a, 0x0a, 0x60, 0x0a, 0x00}));
+    ASSERT_FALSE(second.has_value());  // the back reference points at a window that was dropped
+    EXPECT_EQ(second.error().code, ErrorCode::InvalidCompressedData);
+}
+
 TEST(ZlibCodec, DataAfterTheFinalBlockIsInvalid) {
     auto codecs = make_codecs(params());
     auto out = inflate_all(*codecs.inflater, bytes_of({0x01, 0x00, 0x00, 0xff, 0xff, 0x42}));
