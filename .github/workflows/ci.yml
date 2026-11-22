@@ -115,7 +115,7 @@ jobs:
   tidy:
     name: clang-tidy (libc++)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20  # tidy is not cacheable and grows with the test count; 10 was cancelled at ~100/164 steps
+    timeout-minutes: 30  # tidy is not cacheable and grows with the test count; 20 was cancelled on PR #55 (and ran 19m52s on #52)
     env:
       CMAKE_CXX_COMPILER_LAUNCHER: ''   # tidy runs are not cacheable; ccache is not installed in this job
     steps:
