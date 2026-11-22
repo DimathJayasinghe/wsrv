@@ -1,0 +1,78 @@
+name: php
+
+# The PHP binding (bindings/php) on the oldest PHP with security support and on the latest PHP, in ONE
+# job and only when something it depends on changes. Cost design (the repository's CI minutes are
+# scarce): ci.yml ignores bindings/php/**, so a PHP-only change costs this job (one build of wsrvd and
+# libwsrv.so, two quick test runs) and not the three C++ jobs; a change to the C ABI or the sidecar
+# runs both workflows. The floor is 8.2 (8.1 reached end of life on 2025-12-31); "latest" follows the
+# newest stable PHP, so a new release is tested without editing this file. Both runs fail on any
+# PHP notice, warning or deprecation (tests/bootstrap.php turns them into exceptions).
+on:
+  push:
+    branches: [main]
+    paths: ['bindings/php/**', 'include/wsrv/wsrv.h', 'src/capi/**', 'apps/wsrvd/**', 'src/ipc/**', '.github/workflows/php.yml']
+  pull_request:
+    paths: ['bindings/php/**', 'include/wsrv/wsrv.h', 'src/capi/**', 'apps/wsrvd/**', 'src/ipc/**', '.github/workflows/php.yml']
+
+permissions:
+  contents: read
+
+env:
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 400M
+  CCACHE_COMPILERCHECK: content
+  CMAKE_CXX_COMPILER_LAUNCHER: ccache
+
+concurrency:
+  group: php-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  php:
+    name: php (8.2 and latest)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: ccache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: .ccache
+          key: ccache-php-${{ github.sha }}
+          restore-keys: ccache-php-
+      - name: Toolchain
+        run: |
+          command -v ccache >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ccache; }
+          dpkg -s libssl-dev >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libssl-dev; }
+          g++ --version | head -1
+      - name: Build the daemon and the shared library (once)
+        run: |
+          cmake --preset release
+          cmake --build --preset release --target wsrvd wsrv_shared
+      - name: PHP 8.2 (the floor)
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.2'
+          extensions: ffi
+          coverage: none
+      - name: Test on the floor
+        run: |
+          php --version | head -1
+          cmake --preset release -DWSRV_PHP="$(command -v php)" > /dev/null
+          ctest --preset release -R '^php_' --output-on-failure
+      - name: PHP latest
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: latest
+          extensions: ffi
+          coverage: none
+      - name: Test on the latest
+        run: |
+          php --version | head -1
+          cmake --preset release -DWSRV_PHP="$(command -v php)" > /dev/null
+          ctest --preset release -R '^php_' --output-on-failure
+      - name: ccache statistics
+        if: always()
+        run: ccache --show-stats --verbose | head -12

@@ -4,9 +4,10 @@
     "type": "library",
     "license": "Apache-2.0",
     "require": {
-        "php": ">=8.1"
+        "php": ">=8.2"
     },
     "suggest": {
+        "ext-ffi": "Needed only for the embedded server, Wsrv\\Embedded\\Server (PHP CLI); the sidecar client does not use it",
         "ext-pcntl": "Needed only for signal handling in worker scripts (see examples/echo.php)"
     },
     "autoload": {
