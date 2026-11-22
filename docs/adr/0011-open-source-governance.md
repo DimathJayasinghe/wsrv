@@ -1,6 +1,6 @@
 # ADR-0011: Open-source licensing and governance
 
-- Status: Accepted (owner confirmed Apache-2.0, 2026-10-24; project name `wsrv` remains a working name)
+- Status: Accepted (owner confirmed Apache-2.0, 2026-10-24; project name `wsrv` confirmed by the owner on 2026-11-22; the PHP package keeps the placeholder `wsrv/client` as its Composer name)
 - Date: 2026-10-24
 
 ## Context
