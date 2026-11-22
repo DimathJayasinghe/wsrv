@@ -7,9 +7,9 @@ name: ci
 on:
   push:
     branches: [main]
-    paths-ignore: ['docs/**', '**.md', 'LICENSE', '.github/ISSUE_TEMPLATE/**', 'bindings/php/**']   # php.yml covers the PHP binding
+    paths-ignore: ['docs/**', '**.md', 'LICENSE', '.github/ISSUE_TEMPLATE/**', 'bindings/php/**', 'composer.json', '.gitattributes', '.github/workflows/release.yml']   # php.yml covers the PHP binding, release.yml runs on tags
   pull_request:
-    paths-ignore: ['docs/**', '**.md', 'LICENSE', '.github/ISSUE_TEMPLATE/**', 'bindings/php/**']   # php.yml covers the PHP binding
+    paths-ignore: ['docs/**', '**.md', 'LICENSE', '.github/ISSUE_TEMPLATE/**', 'bindings/php/**', 'composer.json', '.gitattributes', '.github/workflows/release.yml']   # php.yml covers the PHP binding, release.yml runs on tags
 
 permissions:
   contents: read

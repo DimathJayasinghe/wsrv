@@ -10,7 +10,7 @@ The PHP binding is complete (sidecar client, embedded server over FFI, examples,
 1. **PHP code** (`bindings/php/src`): installed by Composer from Packagist.
 2. **The native library** (`libwsrv.so`, for the embedded mode) and the `wsrvd` daemon (for the sidecar mode). Composer installs PHP files from a git tag; it does not build C++ and a binary does not belong in git history.
 
-Facts that shape the choice:
+Facts that shape the choice (the "Implementation notes" at the end record what building it changed):
 - Packagist reads a `composer.json` at the **root** of a git repository. Ours is in `bindings/php/`.
 - `libwsrv.so` needs glibc, OpenSSL 3 (`libssl.so.3`, `libcrypto.so.3`), zlib and libstdc++ at run time (checked with `ldd` on the release build). musl (Alpine) is not covered by a glibc build.
 - `Server` already refuses a library with a different ABI major or an older minor, so a wrong library fails with a clear message, never with a crash.
@@ -57,6 +57,13 @@ These are outward-facing and need the owner, because they cannot be undone or ar
 - A Composer plugin or post-install script that fetches the library: runs code at install time with the user's rights.
 - A `latest` download: the helper installs the library of its own version only.
 - Bundling OpenSSL and zlib into the `.so` (static linking): a security update would then need a new wsrv release; the system libraries keep getting patched by the distribution.
+
+## Implementation notes (2026-11-22, written while building it)
+- **Raw files, not archives.** The release carries `libwsrv-<version>-linux-<arch>-glibc.so` and `wsrvd-<version>-linux-<arch>-glibc` next to `SHA256SUMS`. The helper needs no tar/zip extraction, so there is no path traversal to defend against, and each file is verified as a whole. (Decision 2 said `.tar.gz`; this replaces it.)
+- **glibc floor is 2.39, not 2.35.** The release builds on `ubuntu-24.04`, the toolchain CI already proves; building C++23 on 22.04 would need a toolchain PPA that nothing tests. Debian 12 and Ubuntu 22.04 users build from source until the matrix grows. (Decision 6 said 2.35.)
+- **aarch64 needs a hosted arm runner, which GitHub offers for public repositories only.** That is one more reason publication waits for the repository to be public; the workflow would otherwise queue forever.
+- **The package version has three homes** (the tag, `CMakeLists.txt`, `bindings/php/src/Version.php`). A unit test compares the last two, and the release workflow compares all three before building.
+- **The helper's first test found a hole**: PCRE `$` accepts a trailing newline, so `"1.2.3\n"` passed as a version. All anchors are `\z` now, and the test lists the bad inputs.
 
 ## Revisit trigger
 Users on musl or macOS asking for prebuilt libraries (then add targets to the release matrix), or a second language binding that needs the same artifacts (then the helper's logic moves to a shared script).

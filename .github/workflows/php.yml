@@ -10,9 +10,9 @@ name: php
 on:
   push:
     branches: [main]
-    paths: ['bindings/php/**', 'include/wsrv/wsrv.h', 'src/capi/**', 'apps/wsrvd/**', 'src/ipc/**', '.github/workflows/php.yml']
+    paths: ['composer.json', '.gitattributes', 'bindings/php/**', 'include/wsrv/wsrv.h', 'src/capi/**', 'apps/wsrvd/**', 'src/ipc/**', '.github/workflows/php.yml']
   pull_request:
-    paths: ['bindings/php/**', 'include/wsrv/wsrv.h', 'src/capi/**', 'apps/wsrvd/**', 'src/ipc/**', '.github/workflows/php.yml']
+    paths: ['composer.json', '.gitattributes', 'bindings/php/**', 'include/wsrv/wsrv.h', 'src/capi/**', 'apps/wsrvd/**', 'src/ipc/**', '.github/workflows/php.yml']
 
 permissions:
   contents: read
