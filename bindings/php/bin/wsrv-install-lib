@@ -1,0 +1,93 @@
+#!/usr/bin/env php
+<?php
+// SPDX-License-Identifier: Apache-2.0
+// Installs the native libwsrv.so (and optionally wsrvd) of this package's version, verified by SHA-256.
+// Run it yourself; Composer never runs it for you (ADR-0026 section 3).
+
+declare(strict_types=1);
+
+use Wsrv\Install\InstallException;
+use Wsrv\Install\LibraryInstaller;
+use Wsrv\Version;
+
+spl_autoload_register(static function (string $class): void {
+    $prefix = 'Wsrv\\';
+    if (strncmp($class, $prefix, strlen($prefix)) === 0) {
+        $file = __DIR__ . '/../src/' . str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
+        if (is_file($file)) {
+            require $file;
+        }
+    }
+});
+
+const DEFAULT_BASE = 'https://github.com/DimathJayasinghe/wsrv/releases/download/v%s/';
+
+function usage(): never
+{
+    fwrite(STDERR, <<<'TXT'
+usage: wsrv-install-lib [--dir=DIR] [--daemon] [--sha256=HASH] [--from-dir=DIR] [--version=X.Y.Z]
+
+  --dir=DIR       where to put libwsrv.so (default: ./wsrv-lib)
+  --daemon        also install wsrvd, the sidecar daemon
+  --sha256=HASH   a SHA-256 you trust for libwsrv.so (for instance from `gh attestation verify`),
+                  used instead of the SHA256SUMS file of the release
+  --from-dir=DIR  take the files from a directory you downloaded them to (offline install);
+                  they are verified the same way
+  --version=X.Y.Z the release to install (default: the version of this package)
+
+Prebuilt libraries exist for glibc Linux on x86_64 and aarch64; elsewhere build from source.
+
+TXT);
+    exit(2);
+}
+
+$options = getopt('', ['dir:', 'daemon', 'sha256:', 'from-dir:', 'version:', 'help']);
+if ($options === false || isset($options['help'])) {
+    usage();
+}
+$str = static fn (string $key, ?string $default): ?string => isset($options[$key]) && is_string($options[$key]) ? $options[$key] : $default;
+
+try {
+    $version = $str('version', Version::PACKAGE) ?? Version::PACKAGE;
+    LibraryInstaller::checkVersion($version);
+    $fromDir = $str('from-dir', null);
+    if ($fromDir !== null) {
+        $fetch = static function (string $name, int $max) use ($fromDir): string {
+            $path = rtrim($fromDir, '/') . '/' . $name;
+            $size = is_file($path) ? filesize($path) : false;
+            if ($size === false || $size > $max) {
+                throw new InstallException("cannot read $path (missing, or larger than $max bytes)");
+            }
+            return (string) file_get_contents($path);
+        };
+    } else {
+        $base = sprintf(DEFAULT_BASE, $version);
+        $fetch = static function (string $name, int $max) use ($base): string {
+            fwrite(STDERR, "downloading $name\n");
+            $context = stream_context_create(['http' => ['timeout' => 60, 'follow_location' => 1, 'max_redirects' => 5, 'ignore_errors' => false]]);
+            $bytes = @file_get_contents($base . $name, false, $context, 0, $max + 1);
+            if ($bytes === false) {
+                throw new InstallException("cannot download $base$name");
+            }
+            if (strlen($bytes) > $max) {
+                throw new InstallException("$name is larger than $max bytes; refusing it");
+            }
+            return $bytes;
+        };
+    }
+    $written = (new LibraryInstaller($fetch))->install(
+        $version,
+        php_uname('m'),
+        $str('dir', 'wsrv-lib') ?? 'wsrv-lib',
+        $str('sha256', null),
+        isset($options['daemon']),
+    );
+} catch (InstallException $e) {
+    fwrite(STDERR, 'wsrv-install-lib: ' . $e->getMessage() . "\n");
+    exit(1);
+}
+
+foreach ($written as $kind => $path) {
+    echo "installed $kind: " . (realpath($path) ?: $path) . "\n";
+}
+echo 'use it with: export WSRV_LIBRARY=' . (realpath($written['libwsrv']) ?: $written['libwsrv']) . "\n";

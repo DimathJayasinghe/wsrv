@@ -45,5 +45,6 @@ We teach as we build. Each lesson answers three questions: **What** are we build
 | 38 | [The login check that never runs (handshake hook, embedded)](38-the-login-check-that-never-runs.md) | M12 | written (slice 3) |
 | 39 | [A chat where the bounds are yours (PHP chat)](39-a-chat-where-the-bounds-are-yours.md) | M12 | written (slice 4) |
 | 40 | [Declining an offer, remembering a window (deflate edge cases)](40-declining-and-remembering-in-deflate.md) | M12 | written |
+| 41 | [Shipping a native library with a PHP package](41-shipping-a-native-library-with-a-php-package.md) | M12 | written |
 
 Lesson template: *Goal → Background (the problem) → Design (why this way) → Walkthrough (code, small steps) → Tests (what proves it works) → Pitfalls → Exercises.*

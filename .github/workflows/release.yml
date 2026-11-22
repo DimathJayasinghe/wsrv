@@ -1,0 +1,90 @@
+name: release
+
+# ADR-0026: on a version tag only (so it costs CI minutes only when releasing), build libwsrv.so and wsrvd
+# for glibc Linux on x86_64 and aarch64, publish them with a SHA256SUMS file and a build attestation.
+# Users verify a download with `bin/wsrv-install-lib` (checksum) or `gh attestation verify` (provenance).
+# Tags with a '-' (v1.0.0-rc.1) become GitHub pre-releases, which Composer ignores by default.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm   # hosted arm runners are available for public repositories
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: The tag, the project and the PHP package agree on the version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cmake_version="$(sed -n 's/^ *VERSION \([0-9][0-9.]*\)$/\1/p' CMakeLists.txt | head -1)"
+          php_version="$(sed -n "s/.*PACKAGE = '\(.*\)';/\1/p" bindings/php/src/Version.php)"
+          core="${version%%-*}"
+          echo "tag=$version cmake=$cmake_version php=$php_version"
+          [ "$core" = "$cmake_version" ] && [ "$core" = "$php_version" ]
+      - name: Toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libssl-dev cmake ninja-build
+          g++ --version | head -1
+      - name: Build (release preset, hardened, LTO)
+        run: |
+          cmake --preset release
+          cmake --build --preset release -j2 --target wsrvd wsrv_shared
+      - name: Name the files
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir out
+          lib="$(find build/release -name 'libwsrv.so.*.*.*' -type f | head -1)"
+          daemon="$(find build/release -name wsrvd -type f -perm -u+x | head -1)"
+          cp "$lib" "out/libwsrv-$version-linux-${{ matrix.arch }}-glibc.so"
+          cp "$daemon" "out/wsrvd-$version-linux-${{ matrix.arch }}-glibc"
+          ls -l out
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wsrv-${{ matrix.arch }}
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write        # create the release
+      id-token: write        # keyless attestation
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          path: out
+          pattern: wsrv-*
+          merge-multiple: true
+      - name: SHA256SUMS
+        run: |
+          cd out
+          sha256sum libwsrv-* wsrvd-* > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with:
+          subject-path: 'out/*'
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=""
+          case "$GITHUB_REF_NAME" in *-*) flags="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes $flags

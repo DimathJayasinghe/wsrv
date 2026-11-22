@@ -57,7 +57,17 @@ Return `true` (accept), `false` (403), an int status (`400, 401, 403, 404, 429, 
 
 ## Quick start: embedded mode (about five minutes)
 
-No daemon, but you need `libwsrv.so` and PHP with `ext-ffi` (the CLI default allows it). Until a release ships the library, build it once (any C++23 toolchain, or the dev container):
+No daemon, but you need `libwsrv.so` and PHP with `ext-ffi` (the CLI default allows it).
+
+**Get the library.** On glibc Linux (x86_64 or aarch64, glibc 2.39 or newer, OpenSSL 3) a release has a prebuilt one. Install it on purpose, with a checksum check (Composer never downloads it for you, ADR-0026):
+
+```sh
+composer require wsrv/client                      # the PHP code (the package name may change before the first release)
+vendor/bin/wsrv-install-lib --dir=wsrv-lib        # downloads libwsrv.so of this package's version, checks SHA-256
+export WSRV_LIBRARY=$PWD/wsrv-lib/libwsrv.so      # the command prints this line
+```
+
+Add `--daemon` to get `wsrvd` too, `--sha256=HASH` to pin a hash you trust (for example after `gh attestation verify wsrv-lib/libwsrv.so --repo OWNER/wsrv`), or `--from-dir=DIR` to install from files you downloaded yourself (offline). Anything else (musl, macOS, older glibc), or no release yet: build it once (any C++23 toolchain, or the dev container):
 
 ```sh
 cmake --preset release && cmake --build --preset release --target wsrv_shared   # build/release/src/capi/libwsrv.so

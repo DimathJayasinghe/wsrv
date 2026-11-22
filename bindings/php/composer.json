@@ -8,7 +8,7 @@
     },
     "suggest": {
         "ext-ffi": "Needed only for the embedded server, Wsrv\\Embedded\\Server (PHP CLI); the sidecar client does not use it",
-        "ext-pcntl": "Needed only for signal handling in worker scripts (see examples/echo.php)"
+        "ext-pcntl": "Needed only for signal handling in worker scripts (see the echo example in bindings/php/examples)"
     },
     "autoload": {
         "psr-4": {
@@ -17,5 +17,8 @@
     },
     "scripts": {
         "test": "php tests/run.php"
-    }
+    },
+    "bin": [
+        "bin/wsrv-install-lib"
+    ]
 }
