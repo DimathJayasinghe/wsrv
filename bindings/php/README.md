@@ -55,6 +55,19 @@ $worker->on('authenticate', fn (Upgrade $u) => $u->request->cookie('session') ==
 
 Return `true` (accept), `false` (403), an int status (`400, 401, 403, 404, 429, 500, 503`), a string (accept, choosing that subprotocol), or `null` to answer later with `$u->accept()` / `$u->reject()`. **It fails closed:** no handler, a handler that throws, an unusable return value, or no answer within the daemon's `handshake_decision_timeout_ms` (default 3 s) all refuse the browser (500 or 503), never accept. The daemon also refuses at once while your worker is not connected. Everything the request carries (`$u->request`) comes from the browser: validate it. See `examples/authenticate.php` and `docs/OPERATIONS.md`.
 
+## Quick start: embedded mode (about five minutes)
+
+No daemon, but you need `libwsrv.so` and PHP with `ext-ffi` (the CLI default allows it). Until a release ships the library, build it once (any C++23 toolchain, or the dev container):
+
+```sh
+cmake --preset release && cmake --build --preset release --target wsrv_shared   # build/release/src/capi/libwsrv.so
+export WSRV_LIBRARY=$PWD/build/release/src/capi/libwsrv.so
+php bindings/php/examples/embedded_echo.php --port 8080 --allow-missing-origin     # echo server
+php bindings/php/examples/chat/main.php --port 9002 --allow-missing-origin         # chat rooms
+```
+
+Connect a WebSocket client to `ws://127.0.0.1:8080/` (the echo) or `ws://127.0.0.1:9002/` (send `join lobby`, then `say lobby hello`). `--allow-missing-origin` is for command-line clients, which send no `Origin`; a browser page needs `--allow-origin` instead. The chat is `examples/chat/Chat.php`, about 150 lines, in the text protocol of the C++ `examples/chat`; PHP has no broker yet, so it keeps the rooms itself and owns every bound (lesson 39).
+
 ## Embedded mode (FFI, PHP CLI only)
 
 No daemon: `Wsrv\Embedded\Server` loads `libwsrv.so` through `ext-ffi` and serves WebSockets from your own CLI process. The library's threads do the sockets; your handlers run on your thread when you call `run()` or `step()`. Handler names and arguments are the same as `Worker`'s, so moving between the modes changes the constructor, not the handlers. Design: [ADR-0025](../../docs/adr/0025-php-ffi-binding.md); example `examples/embedded_echo.php`.

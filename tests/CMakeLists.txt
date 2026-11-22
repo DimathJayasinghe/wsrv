@@ -148,7 +148,10 @@ if(WSRV_PHP AND TARGET wsrv_shared AND WSRV_SANITIZER STREQUAL "none")
         COMMAND ${WSRV_PHP} ${PROJECT_SOURCE_DIR}/bindings/php/tests/embedded_interop.php $<TARGET_FILE:wsrv_shared>)
     add_test(NAME php_embedded_handshake_interop
         COMMAND ${WSRV_PHP} ${PROJECT_SOURCE_DIR}/bindings/php/tests/embedded_handshake_interop.php $<TARGET_FILE:wsrv_shared>)
-    set_tests_properties(php_embedded_interop php_embedded_handshake_interop PROPERTIES LABELS php TIMEOUT 120)
+    add_test(NAME php_chat_interop
+        COMMAND ${WSRV_PHP} ${PROJECT_SOURCE_DIR}/bindings/php/tests/chat_interop.php $<TARGET_FILE:wsrv_shared>)
+    set_tests_properties(php_embedded_interop php_embedded_handshake_interop php_chat_interop
+        PROPERTIES LABELS php TIMEOUT 120)
 endif()
 
 # Differential tests against OpenSSL are test-only and optional (ADR-0005: no runtime dependency).
