@@ -28,6 +28,6 @@ One decision per file, immutable once *Accepted* (supersede with a new ADR). Use
 | [0022](0022-descriptor-budget-check.md) | Descriptor budget check at start (RLIMIT_NOFILE) | Accepted |
 | [0023](0023-metrics-and-admin-endpoint.md) | Metrics and the admin endpoint | Accepted |
 | [0024](0024-pub-sub-broker.md) | Pub/sub broker (topics and rooms) | Accepted |
-| [0025](0025-php-ffi-binding.md) | PHP embedded binding over FFI | Proposed |
+| [0025](0025-php-ffi-binding.md) | PHP embedded binding over FFI | Accepted |
 
 Statuses: Proposed → Accepted → (Deprecated | Superseded by ADR-NNNN). The project owner moves Proposed → Accepted.
