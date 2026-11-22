@@ -41,7 +41,7 @@ test('package: every top-level entry is either in the package or export-ignored'
     $attributes = (string) file_get_contents($repository . '/.gitattributes');
     preg_match_all('#^/(\S+) export-ignore$#m', $attributes, $m);
     $ignored = $m[1];
-    $kept = ['bindings', 'LICENSE', 'README.md', 'composer.json'];
+    $kept = ['bindings', 'LICENSE', 'NOTICE', 'CHANGELOG.md', 'README.md', 'composer.json'];
     // Only tracked entries end up in the archive; untracked local files (tooling, build output) do not matter.
     is_dir($repository . '/.git') || skip('not a git checkout');
     exec('git -C ' . escapeshellarg($repository) . ' ls-files', $files, $status);

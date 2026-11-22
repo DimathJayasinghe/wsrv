@@ -6,7 +6,7 @@ Latest minor release of the current major, plus the previous major for 6 months 
 
 ## Reporting a vulnerability
 
-**Do not file a public issue.** Use GitHub "Report a vulnerability" (private security advisory) on the repository, or email the address in the repo's security contact (to be set at repo creation). Include affected version, platform, impact, minimal reproduction (fuzzer input or script if possible).
+**Do not file a public issue.** Use GitHub's "Report a vulnerability" button on the repository's Security tab (a private security advisory). If that button is not shown, open an issue titled "security contact request" **without any details** and a maintainer will arrange a private channel. Include affected version, platform, impact, minimal reproduction (fuzzer input or script if possible).
 
 ## Our process
 

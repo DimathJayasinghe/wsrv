@@ -3,18 +3,20 @@
 A from-scratch, standards-compliant **RFC 6455** WebSocket server written in modern C++.
 No Boost, no Asio, no third-party WebSocket libraries. Quality over feature count.
 
-> Status: **1.0 release candidate for evaluation (end of M10).** RFC 6455 + permessage-deflate +
-> TLS, multi-loop server, per-IP limits, pub/sub broker, Prometheus metrics, C ABI, `wsrvd` sidecar
-> and a pure-PHP client are built, tested under ASan/UBSan/TSan, fuzzed, and Autobahn-clean
-> (517 cases, 0 failed). Linux only. What is not done, and what stands between this and a public
-> 1.0, is listed in [docs/RELEASE.md](docs/RELEASE.md). The documents below are the contract the
-> code satisfies; read them before changing code.
+> Status: **pre-release, no tagged version yet; for evaluation, not for production.** RFC 6455 +
+> permessage-deflate + TLS, multi-loop server, per-IP limits, pub/sub broker (C++), Prometheus
+> metrics, C ABI, the `wsrvd` sidecar and a PHP package (sidecar client and embedded server over
+> FFI, PHP 8.2 to the latest release) are built, tested under ASan/UBSan/TSan, fuzzed, and
+> Autobahn-clean (517 cases, 0 failed). Linux only (x86-64 and aarch64). What is not done, and what
+> stands between this and a 1.0, is listed in [docs/RELEASE.md](docs/RELEASE.md); changes are in
+> [CHANGELOG.md](CHANGELOG.md). The documents below are the contract the code satisfies; read them
+> before changing code. The name `wsrv` is a working name and may change before 1.0.
 
 ## Why this exists
 
 Languages such as PHP cannot hold long-lived sockets in their normal request model. wsrv is one
 audited C++ core exposed through a stable C ABI and a sidecar daemon, so PHP (first) and other
-languages get production-grade WebSocket servers. Open source, community-driven (license proposed: Apache-2.0).
+languages get production-grade WebSocket servers. Open source under the [Apache License 2.0](LICENSE) ([NOTICE](NOTICE)); contributions welcome under the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Goals in one paragraph
 
@@ -43,6 +45,8 @@ replaceable shell around it. Every design choice is traceable to an ADR in [docs
 | [docs/RELEASE.md](docs/RELEASE.md) | 1.0-rc claims, evidence, known limitations, release checklist | Deciding whether to ship |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Workflow, commit rules, PR checklist, Definition of Done | Every PR |
 | [SECURITY.md](SECURITY.md) | Vulnerability reporting policy | Found a vuln |
+| [CHANGELOG.md](CHANGELOG.md) | What changed, per release | Upgrading |
+| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | How we treat each other | Joining the community |
 | [CLAUDE.md](CLAUDE.md) | Rules for AI coding agents working in this repo | Using an agent |
 
 ## Planned layout
