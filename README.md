@@ -1,16 +1,37 @@
-# wsrv — WebSocket Server in C++
+# wsrv: a WebSocket server for PHP, with a C++ core
 
-A from-scratch, standards-compliant **RFC 6455** WebSocket server written in modern C++.
-No Boost, no Asio, no third-party WebSocket libraries. Quality over feature count.
+Hold thousands of WebSocket connections in one small daemon and write the logic in PHP (or any
+language that can call a C ABI). A from-scratch **RFC 6455** implementation in modern C++23: no Boost,
+no Asio, no third-party WebSocket library. Open source under the [Apache License 2.0](LICENSE).
 
-> Status: **0.1.x, usable today to build real-time features; the API is not frozen until 1.0.**
-> RFC 6455 + permessage-deflate + TLS, a multi-loop server, per-IP limits, a pub/sub broker, Prometheus
-> metrics, a C ABI, the `wsrvd` sidecar (with an HTTP publish endpoint) and a PHP package are built,
-> tested under ASan/UBSan/TSan, fuzzed, and Autobahn-clean (517 cases, 0 failed). Linux only (x86-64
-> and aarch64). Before 1.0 an API can change between minor versions, so pin the version you use. What
-> stands between this and a 1.0 is listed in [docs/RELEASE.md](docs/RELEASE.md); changes are in
-> [CHANGELOG.md](CHANGELOG.md). The documents below are the contract the code satisfies; read them
-> before changing code.
+> Status: **heading to 1.0.** The latest release is 0.1.0. The 1.0 line freezes the IPC protocol, the C
+> ABI and the PHP API (see [Stability](#stability)); what stands between this and a 1.0 is in
+> [docs/RELEASE.md](docs/RELEASE.md), and changes are in [CHANGELOG.md](CHANGELOG.md). Linux only
+> (x86-64 and aarch64).
+
+## What you get
+
+- **A daemon, `wsrvd`, that owns the sockets.** RFC 6455 and permessage-deflate (RFC 7692), TLS, Origin
+  checks on by default, per-IP and global limits, and a bound on every queue and buffer.
+- **Rooms and push.** A pub/sub broker and an HTTP publish endpoint, so a controller or a queue job can
+  send to browsers without holding a connection.
+- **A PHP package** (`composer require wsrv/client`, PHP 8.2 or newer, no extension for the sidecar): a
+  worker that reconnects after a daemon restart, a `Publisher`, and a [Laravel guide](docs/LARAVEL.md).
+- **A JavaScript client** that reconnects with backoff and rejoins its rooms
+  ([clients/js](clients/js/README.md)).
+- **Operations built in:** Prometheus metrics, `/healthz` and `/readyz`, graceful shutdown, and a
+  [deployment guide](docs/DEPLOYMENT.md) (Docker, Compose, systemd, Kubernetes, reverse proxies).
+- **Tested hard:** Autobahn|Testsuite (517 cases, 0 failed, also over `wss://`), the whole suite under
+  ASan, UBSan and TSan, and 12 fuzz targets.
+
+```
+browser ──WebSocket──▶ wsrvd (C++: sockets, TLS, limits, rooms) ──Unix socket──▶ your PHP worker
+                           ▲
+controller / queue job ──HTTP POST /publish (token)
+```
+
+PHP never runs on the daemon's I/O threads: a slow handler does not block the sockets (pings, handshakes and
+limits keep working), and a worker that stalls for good is cut off after a timeout and its clients are closed with 1001.
 
 ## Run it in 60 seconds (PHP, Docker; no C++ and no compiler)
 
@@ -58,17 +79,44 @@ wsrv is ahead when it has several cores and behind per core on echo: the daemon 
 two processes, the others are one. One laptop, a load generator written by this project, small messages
 and no TLS: read the page before you quote a number.
 
-## Why this exists
+## Stability
+
+From 1.0, across every 1.x release:
+
+- the **IPC protocol** between `wsrvd` and a worker (version 0.3): frames and fields are never removed
+  or changed, and minors only add;
+- the **C ABI** (`include/wsrv/wsrv.h`), which CI checks against the exported symbols;
+- the **PHP package** follows [semantic versioning](https://semver.org/), and the daemon and the package
+  are versioned together, so you can upgrade them one at a time (daemon first).
+
+Not promised: the C++ headers under `src/`, metrics marked experimental in
+[docs/OPERATIONS.md](docs/OPERATIONS.md), and anything under `bench/` or `tests/`. How to upgrade a
+running system with no more than a reconnect: [docs/DEPLOYMENT.md, section 10](docs/DEPLOYMENT.md#10-upgrading).
+Security reports: [SECURITY.md](SECURITY.md).
+
+## Documentation
+
+| You want to | Read |
+|---|---|
+| Put it in production (Docker, systemd, Kubernetes, proxies, sizing, go-live checklist) | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
+| Configure, monitor and harden it (limits, TLS, metrics, shutdown) | [docs/OPERATIONS.md](docs/OPERATIONS.md) |
+| Use it from PHP | [bindings/php/README.md](bindings/php/README.md) |
+| Use it from Laravel | [docs/LARAVEL.md](docs/LARAVEL.md) |
+| Write a client or another language binding | [docs/IPC_PROTOCOL.md](docs/IPC_PROTOCOL.md), [docs/BINDINGS.md](docs/BINDINGS.md) |
+| Know what it costs and how it compares | [docs/BENCHMARKS.md](docs/BENCHMARKS.md), [docs/PERFORMANCE.md](docs/PERFORMANCE.md) |
+| Judge how safe it is | [docs/SECURITY_DESIGN.md](docs/SECURITY_DESIGN.md), [docs/RELEASE.md](docs/RELEASE.md) |
+
+## For contributors
 
 Languages such as PHP cannot hold long-lived sockets in their normal request model. wsrv is one
-audited C++ core exposed through a stable C ABI and a sidecar daemon, so PHP (first) and other
-languages get production-grade WebSocket servers. Open source under the [Apache License 2.0](LICENSE) ([NOTICE](NOTICE)); contributions welcome under the [Code of Conduct](CODE_OF_CONDUCT.md).
+audited C++ core exposed through a stable C ABI and a sidecar daemon, so PHP (first) and other languages
+get a production-grade WebSocket server. Contributions are welcome under the
+[Code of Conduct](CODE_OF_CONDUCT.md); start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Goals in one paragraph
-
-Correct (passes the full Autobahn|Testsuite), secure by default, observable, and maintainable.
-The protocol logic is *sans-I/O* (pure, deterministic, fuzzable); the networking layer is a thin,
-replaceable shell around it. Every design choice is traceable to an ADR in [docs/adr/](docs/adr/).
+The goals: correct (passes the full Autobahn|Testsuite), secure by default, observable, and
+maintainable. The protocol logic is *sans-I/O* (pure, deterministic, fuzzable); the networking layer is
+a thin, replaceable shell around it. Every design choice is traceable to an ADR in [docs/adr/](docs/adr/).
+The documents below are the contract the code satisfies; read them before changing code.
 
 ## Document map
 
@@ -97,7 +145,7 @@ replaceable shell around it. Every design choice is traceable to an ADR in [docs
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | How we treat each other | Joining the community |
 | [CLAUDE.md](CLAUDE.md) | Rules for AI coding agents working in this repo | Using an agent |
 
-## Planned layout
+## Source layout
 
 ```
 include/wsrv/      public API headers only (stable surface)
