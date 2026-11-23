@@ -59,6 +59,60 @@ jobs:
           path: out/*
           if-no-files-found: error
 
+  # ADR-0026 A1: the wsrvd container image (docker/wsrvd.Dockerfile), built natively on each architecture
+  # (no emulation), pushed under an arch tag, then joined into one multi-arch tag by `image-manifest`.
+  image:
+    name: image (${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build and push (one architecture)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/wsrvd"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker build -f docker/wsrvd.Dockerfile \
+            --build-arg "VERSION=$version" --build-arg "REVISION=$GITHUB_SHA" \
+            -t "$repo:$version-${{ matrix.arch }}" .
+          docker push "$repo:$version-${{ matrix.arch }}"
+
+  image-manifest:
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Join the two architectures under the version tag (and latest, for a final release)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/wsrvd"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          tags="-t $repo:$version"
+          case "$version" in *-*) ;; *) tags="$tags -t $repo:latest" ;; esac
+          docker buildx imagetools create $tags "$repo:$version-amd64" "$repo:$version-arm64"
+          docker buildx imagetools inspect "$repo:$version"
+
   publish:
     needs: build
     runs-on: ubuntu-24.04
