@@ -31,5 +31,6 @@ One decision per file, immutable once *Accepted* (supersede with a new ADR). Use
 | [0025](0025-php-ffi-binding.md) | PHP embedded binding over FFI | Accepted |
 | [0026](0026-php-package-and-native-library-distribution.md) | Composer package and distribution of `libwsrv.so` | Proposed |
 | [0027](0027-broker-through-the-c-abi.md) | Topics and rooms through the C ABI (ABI 0.5) | Proposed |
+| [0028](0028-publish-from-anywhere.md) | Publish from anywhere: rooms and an HTTP publish endpoint for `wsrvd` | Proposed |
 
 Statuses: Proposed → Accepted → (Deprecated | Superseded by ADR-NNNN). The project owner moves Proposed → Accepted.
