@@ -13,10 +13,10 @@ test('codec: PING is length 2, type 6, flags 0', function () {
     assertSame(hex('00 00 00 02 06 00'), Codec::ping());
 });
 
-test('codec: HELLO carries version 0.2 and the token', function () {
+test('codec: HELLO carries version 0.3 and the token', function () {
     // length = 2 + (2+2+2+3) = 11
-    assertSame(hex('00 00 00 0b 01 00  00 00  00 02  00 03  61 62 63'), Codec::hello('abc'));
-    assertSame(hex('00 00 00 08 01 00  00 00  00 02  00 00'), Codec::hello());
+    assertSame(hex('00 00 00 0b 01 00  00 00  00 03  00 03  61 62 63'), Codec::hello('abc'));
+    assertSame(hex('00 00 00 08 01 00  00 00  00 03  00 00'), Codec::hello());
 });
 
 test('codec: SEND_TEXT is request, connection, payload', function () {
@@ -99,3 +99,43 @@ test('codec: handshake answers refuse what no daemon would accept', function () 
     }
 });
 
+
+// IPC 0.3 (ADR-0028), written out by hand from docs/IPC_PROTOCOL.md.
+test('codec: SUBSCRIBE and UNSUBSCRIBE are request, connection, topic to the end', function () {
+    // length = 2 + 4 + 8 + 4 = 18
+    assertSame(
+        hex('00 00 00 12 0c 00  00 00 00 01  00 00 00 00 00 00 00 02  72 6f 6f 6d'),
+        Codec::subscribe(1, 2, 'room')
+    );
+    assertSame(
+        hex('00 00 00 12 0d 00  00 00 00 01  00 00 00 00 00 00 00 02  72 6f 6f 6d'),
+        Codec::unsubscribe(1, 2, 'room')
+    );
+});
+
+test('codec: PUBLISH is request, kind, except, topic length, topic, payload', function () {
+    // length = 2 + 4 + 1 + 8 + 2 + 1 + 2 = 20
+    assertSame(
+        hex('00 00 00 14 0e 00  00 00 00 05  01  00 00 00 00 00 00 00 00  00 01  74  68 69'),
+        Codec::publish(5, 't', 'hi')
+    );
+    // binary, leaving connection 258 out
+    assertSame(
+        hex('00 00 00 14 0e 00  00 00 00 05  02  00 00 00 00 00 00 01 02  00 01  74  ff 00'),
+        Codec::publish(5, 't', "\xff\x00", true, 258)
+    );
+});
+
+test('codec: a topic outside the broker alphabet, or an id of 0, is refused before it is sent', function () {
+    foreach (['', 'a b', "a\nb", 'a%20b', 'room!', 'a?b', str_repeat('a', 65536)] as $bad) {
+        assertThrows(ProtocolError::class, fn () => Codec::subscribe(1, 2, $bad), 'subscribe ' . show($bad));
+        assertThrows(ProtocolError::class, fn () => Codec::publish(1, $bad, 'x'), 'publish ' . show($bad));
+    }
+    foreach (['a', 'room.1', 'a_b:c/d@e-f', 'ROOM9'] as $good) {
+        assertSame(true, strlen(Codec::subscribe(1, 2, $good)) > 0, $good);
+    }
+    assertThrows(ProtocolError::class, fn () => Codec::subscribe(0, 2, 'r'), 'request 0');
+    assertThrows(ProtocolError::class, fn () => Codec::subscribe(1, 0, 'r'), 'conn 0');
+    assertThrows(ProtocolError::class, fn () => Codec::publish(0, 'r', 'x'), 'request 0');
+    assertThrows(ProtocolError::class, fn () => Codec::publish(1, 'r', 'x', false, -1), 'negative except');
+});

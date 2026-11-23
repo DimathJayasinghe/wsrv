@@ -40,6 +40,8 @@ Protocol: [`docs/IPC_PROTOCOL.md`](../../docs/IPC_PROTOCOL.md). Lesson: [`docs/l
 | `Worker::on('open'\|'message'\|'close'\|'error'\|'status'\|'authenticate', $fn)` | callbacks (signatures in `src/Worker.php`) |
 | `Worker::run()` / `step($timeout)` / `stop()` | blocking loop, or one step for your own loop |
 | `Connection::send/sendBinary/close` | handle given to callbacks |
+| `Connection::subscribe($topic)` / `unsubscribe($topic)`, `Worker::publish($topic, $payload, $binary = false, $except = 0)` | rooms over IPC (daemon with `--broker=true`) |
+| `new Publisher($url, $token)` then `->publish($topic, $payload, $binary = false, $except = 0)` | publish from any process over HTTP; returns `PublishResult`, throws `PublishFailed` |
 | `Upgrade::accept($subprotocol = null)` / `reject($status = 403)` | answer a waiting upgrade (`authenticate`) |
 | `HandshakeRequest::cookie($name)` / `header($name)` / `headers($name)` | read the request in `authenticate` |
 
@@ -54,6 +56,32 @@ $worker->on('authenticate', fn (Upgrade $u) => $u->request->cookie('session') ==
 ```
 
 Return `true` (accept), `false` (403), an int status (`400, 401, 403, 404, 429, 500, 503`), a string (accept, choosing that subprotocol), or `null` to answer later with `$u->accept()` / `$u->reject()`. **It fails closed:** no handler, a handler that throws, an unusable return value, or no answer within the daemon's `handshake_decision_timeout_ms` (default 3 s) all refuse the browser (500 or 503), never accept. The daemon also refuses at once while your worker is not connected. Everything the request carries (`$u->request`) comes from the browser: validate it. See `examples/authenticate.php` and `docs/OPERATIONS.md`.
+
+## Rooms, and publishing from a controller or a job
+
+Start the daemon with the broker and the publish endpoint (the token is a file, mode 0600, at least 32 bytes):
+
+```
+wsrvd --ipc-socket=/run/wsrv/ipc.sock --broker=true --publish-port=9200 --publish-token-file=/run/wsrv/publish.token
+```
+
+The **worker** decides who joins which room (it has the session), the **publisher** sends:
+
+```php
+// worker (long-running CLI process): the browser asks, your code decides, then
+$worker->on('message', function (Connection $c, string $data) {
+    if (userMayJoin($c, $data)) { $c->subscribe($data); }   // e.g. "room.7"
+});
+
+// anywhere else (PHP-FPM controller, queued job, cron): one short HTTP call
+$publisher = new Publisher('http://127.0.0.1:9200', trim(file_get_contents('/run/wsrv/publish.token')));
+$result = $publisher->publish('room.7', json_encode(['text' => 'hello']), except: $senderConnectionId);
+// $result->subscribers, ->accepted, ->refused
+```
+
+`publish()` throws `PublishFailed` on anything but a 200; `$e->status` is the HTTP status and `$e->isRetryable()` is true for 429, 503 and an unreachable daemon. A subscription ends with its connection, and also at once if the worker disconnects. Only `http://` is supported (the token travels in clear text: keep the daemon on a private network or behind a TLS proxy). Endpoint reference and bounds: `docs/OPERATIONS.md` 3.1.1.
+
+Using Laravel? `docs/LARAVEL.md` has the ticket login, an Artisan worker and a queued publisher.
 
 ## Quick start: embedded mode (about five minutes)
 

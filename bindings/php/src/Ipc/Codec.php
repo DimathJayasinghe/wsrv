@@ -21,7 +21,7 @@ use Wsrv\ProtocolError;
 final class Codec
 {
     public const VERSION_MAJOR = 0;
-    public const VERSION_MINOR = 2;  // 0.2: the handshake hook (ADR-0018)
+    public const VERSION_MINOR = 3;  // 0.3: the broker frames (ADR-0028); 0.2 was the handshake hook
 
     public const TYPE_HELLO = 1;
     public const TYPE_HELLO_OK = 2;
@@ -34,8 +34,13 @@ final class Codec
     public const TYPE_STATUS = 9;
     public const TYPE_HANDSHAKE_ACCEPT = 10;
     public const TYPE_HANDSHAKE_REJECT = 11;
+    public const TYPE_SUBSCRIBE = 12;
+    public const TYPE_UNSUBSCRIBE = 13;
+    public const TYPE_PUBLISH = 14;
 
     public const HEADER_SIZE = 6;
+    /** The topic is a u16 length in PUBLISH. The daemon's own (smaller) limit decides the rest. */
+    public const MAX_TOPIC = 0xFFFF;
     public const MAX_TOKEN = 256;
     /** RFC 6455 section 5.5: a control frame carries at most 125 bytes, 2 of them the close code. */
     public const MAX_CLOSE_REASON = 123;
@@ -96,6 +101,44 @@ final class Codec
             );
         }
         return self::frame(self::TYPE_HANDSHAKE_REJECT, self::commandHead($request, $conn) . pack('n', $status));
+    }
+
+    /** Put connection $conn in $topic (a room). The application decides who may; the daemon never asks a browser. */
+    public static function subscribe(int $request, int $conn, string $topic): string
+    {
+        return self::frame(self::TYPE_SUBSCRIBE, self::commandHead($request, $conn) . self::topic($topic));
+    }
+
+    public static function unsubscribe(int $request, int $conn, string $topic): string
+    {
+        return self::frame(self::TYPE_UNSUBSCRIBE, self::commandHead($request, $conn) . self::topic($topic));
+    }
+
+    /**
+     * Send $payload to every subscriber of $topic except connection $except (0 = nobody). A text
+     * message must be valid UTF-8 (the daemon answers INVALID_UTF8 otherwise).
+     */
+    public static function publish(int $request, string $topic, string $payload, bool $binary = false, int $except = 0): string
+    {
+        if ($request < 1 || $request > 0xFFFFFFFF) {
+            throw new ProtocolError('request id must be 1..4294967295 (0 is reserved for the handshake)');
+        }
+        if ($except < 0) {
+            throw new ProtocolError('except must be a connection id or 0');
+        }
+        return self::frame(
+            self::TYPE_PUBLISH,
+            pack('NCJn', $request, $binary ? 2 : 1, $except, strlen(self::topic($topic))) . $topic . $payload
+        );
+    }
+
+    /** The characters the broker accepts in a topic (ADR-0024 section 2); anything else is refused here. */
+    public static function topic(string $topic): string
+    {
+        if ($topic === '' || strlen($topic) > self::MAX_TOPIC || preg_match('/\A[A-Za-z0-9._:\/@-]+\z/', $topic) !== 1) {
+            throw new ProtocolError('a topic is 1 or more of letters, digits and . _ : / @ -');
+        }
+        return $topic;
     }
 
     public static function ping(): string
