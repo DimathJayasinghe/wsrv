@@ -5,8 +5,10 @@
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "capi/embedded_config.hpp"
 #include "ipc/message.hpp"
@@ -19,6 +21,8 @@ namespace wsrv::wsrvd {
 ///
 ///   ipc_socket           path of the Unix socket (required)
 ///   ipc_token_file       file holding the shared token; must be readable by its owner only
+///   publish_token_file   file holding the publish token (ADR-0028), same rules, at least 32 bytes;
+///                        required with publish_port, and there is no publish_token key
 ///   ipc_max_frame        largest IPC frame after HELLO; default max_message_size + 64 KiB
 ///   ipc_hello_timeout_ms how long a new connection may take to say HELLO (default 5000)
 ///   ipc_stall_ms         how long the application may leave our output unread before we close
@@ -66,6 +70,15 @@ public:
     [[nodiscard]] const std::string& token_file() const noexcept {
         return token_file_;
     }
+    /// The file holding the publish token (ADR-0028); empty when none is configured. The token
+    /// itself is read by prepare() and given to the embedded config with set_publish_token().
+    [[nodiscard]] const std::string& publish_token_file() const noexcept {
+        return publish_token_file_;
+    }
+    /// Hand the publish token (already read from its file) to the embedded server's config.
+    [[nodiscard]] Result<void> set_publish_token(std::string token) {
+        return embedded_.set_publish_token(std::move(token));
+    }
     [[nodiscard]] std::uint32_t max_frame() const noexcept {
         return max_frame_;
     }
@@ -78,9 +91,12 @@ public:
     }
 
 private:
+    [[nodiscard]] std::optional<Result<void>> set_publish_key(std::string_view key,
+                                                             std::string_view value);
     EmbeddedConfig embedded_;
     std::string socket_path_;
     std::string token_file_;
+    std::string publish_token_file_;
     std::uint64_t explicit_max_frame_ = 0;  // 0 = not set
     std::uint32_t max_frame_ = 0;
     std::chrono::milliseconds hello_timeout_ = kDefaultHelloTimeout;

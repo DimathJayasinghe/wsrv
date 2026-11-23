@@ -49,6 +49,19 @@ enum class Metric : std::uint8_t {
     // wsrv_broker_deliveries_total{result}
     BrokerDeliveriesAccepted,
     BrokerDeliveriesRefused,
+    // wsrv_publish_http_total{status}: answers of the publish endpoint (ADR-0028), by HTTP status
+    PublishHttp200,
+    PublishHttp400,
+    PublishHttp401,
+    PublishHttp404,
+    PublishHttp405,
+    PublishHttp411,
+    PublishHttp413,
+    PublishHttp415,
+    PublishHttp417,
+    PublishHttp429,
+    PublishHttp501,
+    PublishHttp503,
     Count  ///< not a metric: the size of the enumeration
 };
 

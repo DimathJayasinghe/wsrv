@@ -64,6 +64,18 @@ Result<Startup> prepare(std::span<const std::string_view> args, ISyscalls& sys) 
         }
         startup.token = std::move(*token);
     }
+    if (!startup.config.publish_token_file().empty()) {
+        // The same checks as the IPC token (a regular file, ours, mode 0600), plus the length floor
+        // of set_publish_token(). The secret goes straight into the embedded config, never through
+        // the key table.
+        Result<std::string> token = read_token_file(sys, startup.config.publish_token_file());
+        if (!token) {
+            return std::unexpected{token.error()};
+        }
+        if (const Result<void> done = startup.config.set_publish_token(std::move(*token)); !done) {
+            return std::unexpected{done.error()};
+        }
+    }
     return startup;
 }
 
@@ -83,6 +95,12 @@ std::string_view usage() noexcept {
            "                             /readyz over plain HTTP on this address; off unless\n"
            "                             a port is given; there is no authentication, so keep\n"
            "                             it on loopback or behind a network policy\n"
+           "  --publish-port=PORT  --publish-host=ADDR (127.0.0.1)  --publish-token-file=FILE\n"
+           "                             accept `POST /publish?topic=T` from other processes and\n"
+           "                             send the body to the subscribers of T (needs\n"
+           "                             --broker=true); FILE holds a token of at least 32 bytes,\n"
+           "                             mode 0600; plain HTTP: keep it on loopback or a private\n"
+           "                             network, or put TLS in front\n"
            "  --max-connections-per-ip=N (100)  --max-new-connections-per-ip-per-second=N (50)\n"
            "                             per client address (IPv6: per /64); over a limit the\n"
            "                             client gets 429; 0 = no limit (behind a proxy every user\n"

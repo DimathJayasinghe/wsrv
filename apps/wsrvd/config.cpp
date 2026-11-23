@@ -59,6 +59,25 @@ parse_millis(std::string_view value, const MillisRule& rule, std::chrono::millis
 
 }  // namespace
 
+/// The publish file keys (ADR-0028), apart from `set` so it stays within the size the linter
+/// allows. @return nothing when `key` is not one of them.
+std::optional<Result<void>> DaemonConfig::set_publish_key(std::string_view key,
+                                                          std::string_view value) {
+    if (key == "publish_token") {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: there is no publish_token; put the token in a file and use "
+                    "publish_token_file");
+    }
+    if (key == "publish_token_file") {
+        if (value.empty()) {
+            return fail(ErrorCode::InvalidConfig, "config: publish_token_file needs a path");
+        }
+        publish_token_file_ = std::string{value};
+        return Result<void>{};
+    }
+    return std::nullopt;
+}
+
 Result<void> DaemonConfig::set(std::string_view key, std::string_view value) {
     if (key == "ipc_socket") {
         if (value.empty()) {
@@ -78,6 +97,9 @@ Result<void> DaemonConfig::set(std::string_view key, std::string_view value) {
         }
         token_file_ = std::string{value};
         return {};
+    }
+    if (const std::optional<Result<void>> publish = set_publish_key(key, value)) {
+        return *publish;
     }
     if (key == "ipc_max_frame") {
         const auto number = parse_number(value);
@@ -141,6 +163,12 @@ Result<void> DaemonConfig::apply_file_text(std::string_view text) {
 Result<void> DaemonConfig::finish() {
     if (socket_path_.empty()) {
         return fail(ErrorCode::InvalidConfig, "config: ipc_socket is required");
+    }
+    // The endpoint and its secret come as a pair: a port without a token file would serve nobody,
+    // and a token file without a port is most likely a mistyped key.
+    if (embedded_.publish_requested() == publish_token_file_.empty()) {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: publish_port and publish_token_file go together");
     }
     const std::size_t message = embedded_.server().session.assembler.max_message_size;
     if (explicit_max_frame_ != 0) {

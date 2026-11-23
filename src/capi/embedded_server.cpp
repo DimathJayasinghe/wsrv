@@ -116,6 +116,10 @@ Result<void> EmbeddedServer::start() {
     if (started_.exchange(true)) {
         return fail(ErrorCode::InvalidArgument, "embedded server: already started");
     }
+    if (const Result<void> publish = prepare_publish(); !publish) {
+        started_.store(false);
+        return publish;
+    }
     if (const Result<void> secured = prepare_tls(); !secured) {
         started_.store(false);  // nothing was started: the host may fix the settings and retry
         return secured;
@@ -140,6 +144,36 @@ Result<void> EmbeddedServer::start() {
     }
     port_.store(*result.port);
     admin_port_.store(result.admin_port);
+    publish_port_.store(result.publish_port);
+    return {};
+}
+
+/// The publish endpoint's token and action (ADR-0028). The action is the bridge's broker publish:
+/// it is called on loop 0 with a message that is already authenticated and bounded. Runs in
+/// start(), before the thread exists, so a missing broker or token is reported by start().
+Result<void> EmbeddedServer::prepare_publish() {
+    if (const Result<void> valid = config_.check_publish(); !valid) {
+        start_error_ = "publish_port needs broker=true and a publish token";
+        return valid;
+    }
+    if (!config_.publish_requested()) {
+        return {};
+    }
+    HostBridge* const bridge = bridge_.get();
+    try {
+        publish_sources_.token = config_.publish_token();
+        publish_sources_.publish = [bridge](const PublishMessage& message) {
+            if (message.binary) {
+                return bridge->publish_binary(message.topic, message.payload, message.except);
+            }
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): bytes seen as text
+            const std::string_view text{reinterpret_cast<const char*>(message.payload.data()),
+                                        message.payload.size()};
+            return bridge->publish_text(message.topic, text, message.except);
+        };
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "embedded server: out of memory");
+    }
     return {};
 }
 
@@ -214,6 +248,9 @@ void EmbeddedServer::io_thread_main(std::promise<Started>& ready) {
     try {
         ServerBuilder builder;
         config_.apply_to(builder);
+        if (config_.publish_requested()) {
+            builder.publish(config_.publish_host(), config_.publish_port(), publish_sources_);
+        }
         builder.handler_factory(*bridge_);
         if (config_.handshake_hook()) {
             builder.handshake_decider(*bridge_);
@@ -240,8 +277,11 @@ void EmbeddedServer::io_thread_main(std::promise<Started>& ready) {
     }
     running_.store(true);
     const std::optional<Endpoint> admin = server->admin_endpoint();
-    ready.set_value(
-        Started{server->local_endpoint().port, {}, admin ? admin->port : std::uint16_t{0}});
+    const std::optional<Endpoint> publish = server->publish_endpoint();
+    ready.set_value(Started{server->local_endpoint().port,
+                            {},
+                            admin ? admin->port : std::uint16_t{0},
+                            publish ? publish->port : std::uint16_t{0}});
     static_cast<void>(server->run().has_value());  // a loop failure ends it too; events remain
     {
         const std::lock_guard lock{server_mutex_};

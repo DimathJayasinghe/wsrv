@@ -141,6 +141,31 @@ Off unless configured: embedded/`wsrvd` keys `admin_port` (setting it switches t
 
 Bounds (ADR-0023, SECURITY_DESIGN T21): the admin listener runs on loop 0 (no extra thread); at most 8 clients at once (more are closed at once), a request head of at most 2 KiB, 5 s to send it, one request per connection, one non-blocking send for the answer (a client that cannot take the whole page in one call is dropped, so a page is never silently truncated). Prometheus example: `scrape_configs: [{job_name: wsrv, static_configs: [{targets: ["127.0.0.1:9100"]}]}]`.
 
+### 3.1.1 Publish endpoint (HTTP publish from any process)
+ADR-0028, SECURITY_DESIGN T22. Lets a PHP-FPM request, a queue job or a cron script push a message to the browsers in a room with one HTTP call. Off unless `publish_port` is set: `wsrvd --broker=true --publish-port=9200 --publish-token-file=/run/secrets/wsrv_publish --publish-host=127.0.0.1`. It needs the broker (rooms are what it publishes to) and a token file (a regular file, owned by the service user, mode 0600, at least 32 bytes; one trailing newline is ignored). The token is never a key or a flag: it would show in `ps` and in config repositories.
+
+```
+POST /publish?topic=room.7[&except=<connection id>][&binary=1]
+Authorization: Bearer <token>
+Content-Length: <n>
+
+<the message bytes>
+```
+| Answer | Meaning |
+|---|---|
+| `200` | `subscribers=<n> accepted=<n> refused=<n>`: how many were in the room, took the message, or had a full queue (a slow subscriber is isolated, as in ADR-0024) |
+| `400` | bad request: repeated or non-decimal `Content-Length`, bad or unknown query parameter (no `%`-escapes), a topic the broker does not accept, bytes after the body |
+| `401` | no, wrong or malformed token (always the same words) |
+| `404` / `405` | not exactly `/publish` / not `POST` |
+| `411` / `501` / `417` | no `Content-Length` / any `Transfer-Encoding` (chunked included) / any `Expect` |
+| `413` | `Content-Length` over `broker_max_payload_bytes` (checked only after the token) |
+| `415` | a text message that is not UTF-8 (send `binary=1` for other bytes) |
+| `429` | there were subscribers and every delivery was refused: the loops' queues are full, retry later |
+| `503` | the server is shutting down, or out of memory |
+
+No JSON: the body is the message, so you send what you already built. Bounds: head at most 4 KiB, 5 s for head and body together, at most 16 clients at once, one request per connection. **Plain HTTP:** on a non-loopback `publish_host` the daemon logs a warning, because the token travels in clear text. In containers put `wsrvd` and the application on an internal network and use `expose:`, not `ports:` (see `examples/docker`). Counters: `wsrv_publish_http_total{status}` on the admin page. `curl`:
+`curl -sS -X POST "http://127.0.0.1:9200/publish?topic=room.7" -H "Authorization: Bearer $(cat token)" --data-binary 'hello'`.
+
 ### 3.2 Pub/sub broker (C++ API)
 ADR-0024. `Broker` is an object of the application's composition root: handlers call `subscribe`, `unsubscribe`, `publish_text` and `publish_binary` from any thread; a room is a topic. Hold a `BrokerMembership` in each handler so its subscriptions end with its connection. Every bound is a `BrokerConfig` field and every overflow is a refusal that changes nothing:
 

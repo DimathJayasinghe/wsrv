@@ -47,6 +47,14 @@ struct ServerConfig {
     std::optional<Endpoint> admin;
     std::size_t admin_max_connections = 8;  ///< served at once; more are closed (1..64)
     std::chrono::milliseconds admin_request_timeout{5000};  ///< a request head must end by then
+    /// The publish listener (ADR-0028): `POST /publish` with a bearer token. Absent = off. The
+    /// token and the publish action come from the composition root (ServerDeps::publish), never
+    /// from the config, so a config file or a command line cannot carry the secret.
+    std::optional<Endpoint> publish;
+    std::size_t publish_max_connections = 16;  ///< served at once; more are closed (1..64)
+    std::chrono::milliseconds publish_request_timeout{5000};  ///< head and body must end by then
+    std::size_t publish_max_body_bytes =
+        std::size_t{64} * 1024;  ///< 1 .. kMaxConfiguredPublishBody
     std::size_t threads = 1;  ///< loops: loop 0 on the caller's thread, the rest started by run()
 
     HttpLimits http;  ///< the request head (FR-H7)
@@ -77,6 +85,9 @@ inline constexpr std::size_t kMaxConfiguredThreads = 256;
 inline constexpr std::uint32_t kMaxConfiguredNewConnectionsPerSecond = 1'000'000;
 inline constexpr std::size_t kMaxConfiguredAdminConnections = 64;
 inline constexpr std::chrono::milliseconds kMaxAdminRequestTimeout{60000};
+inline constexpr std::size_t kMaxConfiguredPublishConnections = 64;
+inline constexpr std::chrono::milliseconds kMaxPublishRequestTimeout{60000};
+inline constexpr std::size_t kMaxConfiguredPublishBody = std::size_t{1} << 20U;  // 1 MiB
 inline constexpr std::size_t kMaxConfiguredReadBytes = std::size_t{16} << 20;
 inline constexpr std::chrono::milliseconds kMinDecisionTimeout{100};
 inline constexpr std::chrono::milliseconds kMaxDecisionTimeout{60000};

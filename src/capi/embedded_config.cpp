@@ -132,6 +132,8 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
 std::optional<Result<void>> EmbeddedConfig::set_broker_key(std::string_view key,
                                                            std::string_view value) {
     static constexpr std::array kBrokerKeys{
+        KeyEntry{"publish_host", &EmbeddedConfig::set_publish_host},
+        KeyEntry{"publish_port", &EmbeddedConfig::set_publish_port},
         KeyEntry{"broker", &EmbeddedConfig::set_broker},
         KeyEntry{"broker_max_topics", &EmbeddedConfig::set_broker_max_topics},
         KeyEntry{"broker_max_subscribers_per_topic",
@@ -155,9 +157,49 @@ void EmbeddedConfig::apply_to(ServerBuilder& builder) const {
     if (admin_port_) {
         builder.admin(admin_host_, *admin_port_);  // build() checks the address and the bounds
     }
+    builder.config().publish_max_body_bytes =
+        broker_.max_payload_bytes;  // one bound for both doors
     if (deflate_enabled_) {
         builder.permessage_deflate(deflate_);  // build() checks the ranges and the zlib build
     }
+}
+
+Result<void> EmbeddedConfig::set_publish_host(std::string_view value) {
+    if (value.empty()) {
+        return fail(ErrorCode::InvalidConfig, "config: publish_host is empty");
+    }
+    publish_host_ = std::string{value};  // an address literal; ServerBuilder::build() checks it
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_publish_port(std::string_view value) {
+    const auto port = parse_number<std::uint16_t>(value);
+    if (!port) {
+        return fail(ErrorCode::InvalidConfig, "config: publish_port needs a number 0..65535");
+    }
+    publish_port_ = port;
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_publish_token(std::string token) {
+    if (token.size() < kMinPublishTokenBytes) {
+        return fail(ErrorCode::InvalidConfig, "config: the publish token needs at least 32 bytes");
+    }
+    publish_token_ = std::move(token);
+    return {};
+}
+
+Result<void> EmbeddedConfig::check_publish() const {
+    if (!publish_port_) {
+        return {};
+    }
+    if (!broker_enabled_) {
+        return fail(ErrorCode::InvalidConfig, "config: publish_port needs broker=true");
+    }
+    if (publish_token_.empty()) {
+        return fail(ErrorCode::InvalidConfig, "config: publish_port needs a token");
+    }
+    return {};
 }
 
 Result<void> EmbeddedConfig::set_listen_host(std::string_view value) {
