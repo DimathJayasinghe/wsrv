@@ -1,4 +1,4 @@
-# IPC protocol v0.2 (`wsrvd`)
+# IPC protocol v0.3 (`wsrvd`)
 
 The wire contract between the `wsrvd` sidecar and ONE application (ADR-0017). Any language that can open a Unix socket can implement a client in a few hundred lines. The reference implementation of the codec is `src/ipc/` (sans-I/O, fuzzed); the behaviour described here is implemented in `apps/wsrvd/`.
 
@@ -39,6 +39,9 @@ u8  flags     reserved; MUST be 0
 | 9 | `STATUS` | daemon to app | `u32 request, u8 status` |
 | 10 | `HANDSHAKE_ACCEPT` | app to daemon | `u32 request, u64 conn, subprotocol` (empty = none; at most 256 bytes) (0.2) |
 | 11 | `HANDSHAKE_REJECT` | app to daemon | `u32 request, u64 conn, u16 http_status` (0.2) |
+| 12 | `SUBSCRIBE` | app to daemon | `u32 request, u64 conn, topic` (topic = the rest of the frame) (0.3) |
+| 13 | `UNSUBSCRIBE` | app to daemon | `u32 request, u64 conn, topic` (0.3) |
+| 14 | `PUBLISH` | app to daemon | `u32 request, u8 kind (1 text, 2 binary), u64 except (0 = nobody), u16 topic_len, topic, payload` (0.3) |
 
 `conn` is never 0. Sending a daemon-only type (2, 7, 8, 9) is a protocol error, as is a second `HELLO`.
 
@@ -51,6 +54,12 @@ Per connection the order is always Open, then messages, then exactly one Close. 
 Answers every command (`SEND_*`, `CLOSE`, `HANDSHAKE_ACCEPT`, `HANDSHAKE_REJECT`) with the command's `request` id. `status` uses the values of `wsrv_status` in `include/wsrv/wsrv.h` (0 OK, 2 INVALID_ARGUMENT, 5 NO_SUCH_CONN, 6 BACKPRESSURE, 7 INVALID_UTF8, ...). **OK means accepted for sending, not delivered** (ADR-0016 section 5).
 - `request` is chosen by the application; number commands from 1. **Request id 0 is reserved**: a command with id 0 is refused with `INVALID_ARGUMENT` and not executed, and a `STATUS` with request 0 can only be about the handshake.
 - A command for a connection the application was not told about, or that has ended, gets `NO_SUCH_CONN`. (Handshake answers have their own rule, section 9.)
+
+### Broker commands (0.3, ADR-0027 and ADR-0028)
+Need a daemon started with `broker = true` (otherwise every one answers `INVALID_ARGUMENT`) and a `HELLO` that says minor 3 or higher: an application that said less and sends frame 12, 13 or 14 is a protocol error (the link closes with no reply).
+- **`SUBSCRIBE` / `UNSUBSCRIBE`**: put one of *your* connections in a topic, or take it out. The same rule as `SEND_*`: a connection the application was not told about is `NO_SUCH_CONN`. The decision to let a browser join a topic is the application's (the daemon never reads a topic from a browser). A bound refused (topics, subscribers per topic, topics per connection, total) is `LIMIT` (12), not `BACKPRESSURE`: waiting does not help until someone leaves. A bad topic name is `INVALID_ARGUMENT`. A subscription ends when its connection closes, and also at once when the application disconnects (the daemon drops them for every connection that application knew; they close with 1012 after the grace period as before).
+- **`PUBLISH`**: send to every subscriber of `topic` except `except`. `OK` means the publish was valid and handed to the broker; the per-subscriber report (how many were accepted or refused) is not in this answer (the HTTP publish endpoint of ADR-0028 returns it). Text that is not UTF-8 is `INVALID_UTF8`. Request id 0 is refused as everywhere.
+- The topic is not length-prefixed in 12 and 13 (it is the rest of the frame); in 14 it has a `u16` length because the payload follows.
 
 ## 4. Session
 1. The application connects and sends `HELLO` within `ipc_hello_timeout_ms` (default 5000).
@@ -70,9 +79,9 @@ Answers every command (`SEND_*`, `CLOSE`, `HANDSHAKE_ACCEPT`, `HANDSHAKE_REJECT`
 - Delivery is at most once across a disconnect: events already written to a dying link are lost with it.
 
 ## 7. Versioning
-Major version in `HELLO` must equal the daemon's (currently 0); minors are additive. `HELLO_OK` carries the daemon's own minor (currently 2). Version 0 is not frozen: until 1.0, the frame set may change between minors with an ADR.
+Major version in `HELLO` must equal the daemon's (currently 0); minors are additive. `HELLO_OK` carries the daemon's own minor (currently 3). Version 0 is not frozen: until 1.0, the frame set may change between minors with an ADR.
 
-Minor 2 added the handshake hook. A daemon started **with** `handshake_hook` refuses (like any other bad `HELLO`: `STATUS(request 0, INVALID_ARGUMENT)`) an application whose `HELLO` says minor below 2, because that application could not read a Handshake event and every browser would wait for a 503. Without `handshake_hook` an older minor is fine.
+Minor 3 added the broker frames (12 to 14) and the status value `LIMIT` (12). Minor 2 added the handshake hook. A daemon started **with** `handshake_hook` refuses (like any other bad `HELLO`: `STATUS(request 0, INVALID_ARGUMENT)`) an application whose `HELLO` says minor below 2, because that application could not read a Handshake event and every browser would wait for a 503. Without `handshake_hook` an older minor is fine.
 
 ## 8. Reference clients
 - PHP: `bindings/php` (`Wsrv\Client`, `Wsrv\Worker`).

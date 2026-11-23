@@ -43,7 +43,8 @@ Handshake::Outcome Handshake::on_first_message(const ipc::Message& first) const 
     return Outcome{.accepted = true,
                    .reply = ipc::HelloOk{.major = ipc::kVersionMajor,
                                          .minor = ipc::kVersionMinor,
-                                         .max_frame = max_frame_}};
+                                         .max_frame = max_frame_},
+                   .peer_minor = hello->minor};
 }
 
 }  // namespace wsrv::wsrvd

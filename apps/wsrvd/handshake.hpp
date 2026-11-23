@@ -27,6 +27,7 @@ public:
     struct Outcome {
         bool accepted = false;
         ipc::Message reply;  ///< HELLO_OK when accepted, else the refusing STATUS (then close)
+        std::uint16_t peer_minor = 0;  ///< the minor the application said in HELLO (when accepted)
     };
 
     /// @param token the shared secret; empty means "no token required" (then only the peer uid

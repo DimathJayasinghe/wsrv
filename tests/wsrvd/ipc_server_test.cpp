@@ -463,6 +463,55 @@ TEST_F(IpcServerTest, ACommandIsForwardedToTheBackendAndAnsweredWithItsRequestId
     EXPECT_EQ(commands[0].data, payload);
 }
 
+TEST_F(IpcServerTest, BrokerCommandsAreForwardedAndAnsweredLikeAnyOther) {  // IPC 0.3, ADR-0028
+    const RunningServer server{sys, backend, config()};
+    const auto client = connect_ready(path());
+    ASSERT_TRUE(backend.push(HostEventType::Open, 3, "a").has_value());
+    ASSERT_EQ(client->receive()->event, ipc::EventKind::Open);
+
+    const std::string topic = "room.1";
+    const std::string payload = "hello room";
+    ipc::TopicCommand subscribe;
+    subscribe.request = 51;
+    subscribe.conn = 3;
+    subscribe.topic = wsrv::as_bytes(std::string_view{topic});
+    client->send_message(subscribe);
+    ipc::Publish publish;
+    publish.request = 52;
+    publish.topic = wsrv::as_bytes(std::string_view{topic});
+    publish.payload = wsrv::as_bytes(std::string_view{payload});
+    client->send_message(publish);
+
+    const auto first = client->receive();
+    const auto second = client->receive();
+    ASSERT_TRUE(first && second);
+    EXPECT_EQ(first->request, 51U);
+    EXPECT_EQ(first->status, kOk);
+    EXPECT_EQ(second->request, 52U);
+    EXPECT_EQ(second->status, kOk);
+    const auto subscribes = backend.commands_of(RecordedCommand::Kind::Subscribe);
+    ASSERT_EQ(subscribes.size(), 1U);
+    EXPECT_EQ(subscribes[0].conn, 3U);
+    EXPECT_EQ(subscribes[0].topic, topic);
+    const auto publishes = backend.commands_of(RecordedCommand::Kind::PublishText);
+    ASSERT_EQ(publishes.size(), 1U);
+    EXPECT_EQ(publishes[0].data, payload);
+}
+
+TEST_F(IpcServerTest, AnApplicationThatSaidMinor2CannotKnowBrokerFramesAndIsCutOff) {
+    const RunningServer server{sys, backend, config()};
+    Client client{path()};
+    ipc::Hello hello;
+    hello.minor = 2;  // before the broker existed
+    client.send_message(hello);
+    ASSERT_EQ(client.receive()->kind, Reply::Kind::HelloOk);
+    ipc::Publish publish;
+    publish.request = 1;
+    client.send_message(publish);
+    EXPECT_TRUE(client.closed_by_server());
+    EXPECT_TRUE(backend.commands().empty());
+}
+
 TEST_F(IpcServerTest, BadCommandsAreAnsweredAndTheLinkStaysOpen) {
     const RunningServer server{sys, backend, config()};
     const auto client = connect_ready(path());
@@ -657,13 +706,30 @@ TEST_F(IpcServerTest, ConnectionsOfADisconnectedApplicationAreClosedWith1012Afte
         ASSERT_EQ(app->receive()->event, ipc::EventKind::Open);
     }  // the application disconnects, knowing connection 5
     std::this_thread::sleep_for(200ms);
-    EXPECT_TRUE(backend.commands().empty()) << "the grace period has not passed yet";
-    ASSERT_TRUE(eventually([&] { return !backend.commands().empty(); }));
-    const auto commands = backend.commands();
+    EXPECT_TRUE(backend.commands_of(RecordedCommand::Kind::Close).empty())
+        << "the grace period has not passed yet";
+    ASSERT_TRUE(
+        eventually([&] { return !backend.commands_of(RecordedCommand::Kind::Close).empty(); }));
+    const auto commands = backend.commands_of(RecordedCommand::Kind::Close);
     ASSERT_EQ(commands.size(), 1U);
     EXPECT_EQ(commands[0].kind, RecordedCommand::Kind::Close);
     EXPECT_EQ(commands[0].conn, 5U);
     EXPECT_EQ(commands[0].code, 1012U);
+}
+
+TEST_F(IpcServerTest, WhenTheApplicationDisconnectsItsConnectionsLoseTheirSubscriptionsAtOnce) {
+    IpcServerConfig c = config();
+    c.restart_grace = 5000ms;  // the 1012 close is far away; the drop must not wait for it
+    const RunningServer server{sys, backend, c};
+    {
+        const auto app = connect_ready(path());
+        ASSERT_TRUE(backend.push(HostEventType::Open, 7, "a").has_value());
+        ASSERT_EQ(app->receive()->event, ipc::EventKind::Open);
+    }
+    ASSERT_TRUE(eventually(
+        [&] { return !backend.commands_of(RecordedCommand::Kind::DropSubscriptions).empty(); }));
+    EXPECT_EQ(backend.commands_of(RecordedCommand::Kind::DropSubscriptions)[0].conn, 7U);
+    EXPECT_TRUE(backend.commands_of(RecordedCommand::Kind::Close).empty());
 }
 
 TEST_F(IpcServerTest, ANewApplicationNeverSeesTheTrafficOfConnectionsItWasNotToldAbout) {
@@ -708,8 +774,9 @@ TEST_F(IpcServerTest, ACutOffApplicationsConnectionsAreClosedWith1001WithoutWait
     for (std::size_t i = 0; i < kBurst; ++i) {  // the application now stops reading
         ASSERT_TRUE(backend.push(HostEventType::Text, 1, numbered(i, kBurstPayload)).has_value());
     }
-    ASSERT_TRUE(eventually([&] { return !backend.commands().empty(); }, 10000ms));
-    const auto commands = backend.commands();
+    ASSERT_TRUE(eventually(
+        [&] { return !backend.commands_of(RecordedCommand::Kind::Close).empty(); }, 10000ms));
+    const auto commands = backend.commands_of(RecordedCommand::Kind::Close);
     EXPECT_EQ(commands[0].kind, RecordedCommand::Kind::Close);
     EXPECT_EQ(commands[0].conn, 1U);
     EXPECT_EQ(commands[0].code, 1001U);

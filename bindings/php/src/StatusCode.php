@@ -20,11 +20,13 @@ final class StatusCode
     public const RESOURCE = 9;
     public const IO = 10;
     public const INTERNAL = 11;
+    /** A broker bound refused a subscription; retrying does not help until someone leaves. */
+    public const LIMIT = 12;
 
     private const NAMES = [
         0 => 'OK', 1 => 'TIMEOUT', 2 => 'INVALID_ARGUMENT', 3 => 'INVALID_CONFIG',
         4 => 'ADDRESS_IN_USE', 5 => 'NO_SUCH_CONN', 6 => 'BACKPRESSURE', 7 => 'INVALID_UTF8',
-        8 => 'WRONG_PROCESS', 9 => 'RESOURCE', 10 => 'IO', 11 => 'INTERNAL',
+        8 => 'WRONG_PROCESS', 9 => 'RESOURCE', 10 => 'IO', 11 => 'INTERNAL', 12 => 'LIMIT',
     ];
 
     public static function name(int $status): string

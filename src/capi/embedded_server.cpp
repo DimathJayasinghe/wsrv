@@ -345,6 +345,12 @@ Result<std::size_t> EmbeddedServer::topic_subscribers(std::string_view topic) co
     return bridge_->topic_subscribers(topic);
 }
 
+void EmbeddedServer::drop_subscriptions(ConnectionId id) noexcept {
+    if (check_process()) {
+        bridge_->drop_subscriptions(id);
+    }
+}
+
 Result<void> EmbeddedServer::accept_handshake(ConnectionId id,
                                               std::optional<std::string_view> subprotocol) {
     if (const Result<void> same = check_process(); !same) {

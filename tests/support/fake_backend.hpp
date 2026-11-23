@@ -25,11 +25,24 @@
 namespace wsrv::testing {
 
 struct RecordedCommand {
-    enum class Kind : std::uint8_t { Text, Binary, Close, Accept, Reject };
+    enum class Kind : std::uint8_t {
+        Text,
+        Binary,
+        Close,
+        Accept,
+        Reject,
+        Subscribe,
+        Unsubscribe,
+        PublishText,
+        PublishBinary,
+        DropSubscriptions
+    };
     Kind kind = Kind::Text;
     ConnectionId conn = 0;
-    std::string data;        // payload, the close reason, or the chosen subprotocol (Accept)
-    std::uint16_t code = 0;  // close code, or the HTTP status (Reject)
+    std::string data;         // payload, the close reason, or the chosen subprotocol (Accept)
+    std::uint16_t code = 0;   // close code, or the HTTP status (Reject)
+    std::string topic;        // broker commands
+    ConnectionId except = 0;  // PublishText / PublishBinary: the connection left out
 };
 
 class FakeBackend final : public wsrvd::IBackend {
@@ -67,6 +80,17 @@ public:
     [[nodiscard]] std::vector<RecordedCommand> commands() const {
         const std::lock_guard lock{mutex_};
         return commands_;
+    }
+    /// The recorded commands of one kind, oldest first.
+    [[nodiscard]] std::vector<RecordedCommand> commands_of(RecordedCommand::Kind kind) const {
+        const std::lock_guard lock{mutex_};
+        std::vector<RecordedCommand> out;
+        for (const RecordedCommand& command : commands_) {
+            if (command.kind == kind) {
+                out.push_back(command);
+            }
+        }
+        return out;
     }
     /// Every set_handshake_intake(open) call, oldest first.
     [[nodiscard]] std::vector<bool> intake_calls() const {
@@ -113,14 +137,64 @@ public:
         const std::lock_guard lock{mutex_};
         intake_.push_back(open);
     }
+    Result<void> subscribe(ConnectionId conn, std::string_view topic) override {
+        return record_broker(RecordedCommand::Kind::Subscribe, conn, topic, {}, 0);
+    }
+    Result<void> unsubscribe(ConnectionId conn, std::string_view topic) override {
+        return record_broker(RecordedCommand::Kind::Unsubscribe, conn, topic, {}, 0);
+    }
+    Result<PublishReport>
+    publish(std::string_view topic, ByteView payload, bool text, ConnectionId except) override {
+        const Result<void> recorded = record_broker(text ? RecordedCommand::Kind::PublishText
+                                                         : RecordedCommand::Kind::PublishBinary,
+                                                    0,
+                                                    topic,
+                                                    as_chars(payload),
+                                                    except);
+        if (!recorded) {
+            return std::unexpected{recorded.error()};
+        }
+        return PublishReport{};
+    }
+    void drop_subscriptions(ConnectionId conn) noexcept override {
+        const std::lock_guard lock{mutex_};
+        RecordedCommand command;
+        command.kind = RecordedCommand::Kind::DropSubscriptions;
+        command.conn = conn;
+        commands_.push_back(std::move(command));
+    }
 
 private:
+    Result<void> record_broker(RecordedCommand::Kind kind,
+                               ConnectionId conn,
+                               std::string_view topic,
+                               std::string_view data,
+                               ConnectionId except) {
+        const std::lock_guard lock{mutex_};
+        RecordedCommand command;
+        command.kind = kind;
+        command.conn = conn;
+        command.topic = std::string{topic};
+        command.data = std::string{data};
+        command.except = except;
+        commands_.push_back(std::move(command));
+        if (command_result_) {
+            return fail(*command_result_, "fake backend: scripted failure");
+        }
+        return {};
+    }
+
     Result<void> record(RecordedCommand::Kind kind,
                         ConnectionId conn,
                         std::string_view data,
                         std::uint16_t code) {
         const std::lock_guard lock{mutex_};
-        commands_.push_back(RecordedCommand{kind, conn, std::string{data}, code});
+        RecordedCommand command;
+        command.kind = kind;
+        command.conn = conn;
+        command.data = std::string{data};
+        command.code = code;
+        commands_.push_back(std::move(command));
         if (command_result_) {
             return fail(*command_result_, "fake backend: scripted failure");
         }

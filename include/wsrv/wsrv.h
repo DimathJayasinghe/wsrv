@@ -50,7 +50,9 @@ typedef enum wsrv_status {
     WSRV_ERR_WRONG_PROCESS = 8,     /* used from a forked child of the creating process */
     WSRV_ERR_RESOURCE = 9,          /* out of memory or descriptors */
     WSRV_ERR_IO = 10,               /* an operating-system failure */
-    WSRV_ERR_INTERNAL = 11          /* a bug; please report it */
+    WSRV_ERR_INTERNAL = 11,         /* a bug; please report it */
+    WSRV_ERR_LIMIT = 12             /* a broker bound refused a subscription (0.5; wsrvd reports it
+                                       over IPC 0.3); retrying does not help until someone leaves */
 } wsrv_status;
 
 /* A short constant name such as "WSRV_ERR_NO_SUCH_CONN", or "WSRV_ERR_UNKNOWN" for a number this

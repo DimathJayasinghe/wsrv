@@ -106,6 +106,8 @@ public:
     [[nodiscard]] Result<PublishReport>
     publish_binary(std::string_view topic, ByteView data, ConnectionId except = 0);
     [[nodiscard]] Result<std::size_t> topic_subscribers(std::string_view topic) const;
+    /// Remove every subscription of `id`; does nothing from a forked child or without a broker.
+    void drop_subscriptions(ConnectionId id) noexcept;
 
     /// Answer a HostEventType::Handshake (only with handshake_hook on); see HostBridge.
     [[nodiscard]] Result<void> accept_handshake(ConnectionId id,
