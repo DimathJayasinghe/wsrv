@@ -47,8 +47,8 @@ using Clock = std::chrono::steady_clock;
 /// An unspecified listen address is probed on loopback of the same family.
 [[nodiscard]] Endpoint probe_address(Endpoint endpoint) {
     const std::size_t used = endpoint.v6 ? 16 : 4;
-    const auto end = endpoint.address.begin() + static_cast<std::ptrdiff_t>(used);
-    if (std::all_of(endpoint.address.begin(), end, [](std::uint8_t b) { return b == 0; })) {
+    auto* const end = endpoint.address.data() + static_cast<std::ptrdiff_t>(used);
+    if (std::all_of(endpoint.address.data(), end, [](std::uint8_t b) { return b == 0; })) {
         endpoint.address = {};
         if (endpoint.v6) {
             endpoint.address[15] = 1;

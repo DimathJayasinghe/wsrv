@@ -111,6 +111,43 @@ Result<void> apply(DaemonConfig& config, std::string_view arg) {
     return config.apply_file_text(*text);
 }
 
+[[nodiscard]] bool is_help(std::string_view arg) noexcept {
+    return arg == "--help" || arg == "-h";
+}
+
+/// The arguments in order (`--config=FILE` and `--key=value`); `--healthcheck` is a mode.
+Result<void> apply_arguments(Startup& startup, std::span<const std::string_view> args) {
+    for (const std::string_view arg : args) {
+        if (arg == kHealthcheckFlag) {
+            startup.healthcheck = true;
+        } else if (const Result<void> done = apply(startup.config, arg); !done) {
+            return done;
+        }
+    }
+    return {};
+}
+
+/// The IPC token and the publish token, each read from its file with the permission checks of
+/// read_token_file. The publish token goes straight into the embedded config, never through the key
+/// table, and has the length floor of set_publish_token().
+Result<void> read_secrets(Startup& startup, ISyscalls& sys) {
+    if (!startup.config.token_file().empty()) {
+        Result<std::string> token = read_token_file(sys, startup.config.token_file());
+        if (!token) {
+            return std::unexpected{token.error()};
+        }
+        startup.token = std::move(*token);
+    }
+    if (!startup.config.publish_token_file().empty()) {
+        Result<std::string> token = read_token_file(sys, startup.config.publish_token_file());
+        if (!token) {
+            return std::unexpected{token.error()};
+        }
+        return startup.config.set_publish_token(std::move(*token));
+    }
+    return {};
+}
+
 }  // namespace
 
 Result<Startup> prepare(std::span<const std::string_view> args, ISyscalls& sys) {
@@ -122,21 +159,15 @@ Result<Startup> prepare(std::span<const std::string_view> args,
                         ISyscalls& sys,
                         std::string* detail) {
     Startup startup;
-    if (std::ranges::any_of(args, [](std::string_view arg) { return arg == "--help" || arg == "-h"; })) {
+    if (std::ranges::any_of(args, is_help)) {
         startup.help = true;  // help wins over a bad variable or flag: it is how one finds out
         return startup;
     }
     if (const Result<void> done = apply_environment(startup.config, environment, detail); !done) {
         return std::unexpected{done.error()};
     }
-    for (const std::string_view arg : args) {
-        if (arg == kHealthcheckFlag) {
-            startup.healthcheck = true;
-            continue;
-        }
-        if (const Result<void> done = apply(startup.config, arg); !done) {
-            return std::unexpected{done.error()};
-        }
+    if (const Result<void> done = apply_arguments(startup, args); !done) {
+        return std::unexpected{done.error()};
     }
     if (const Result<void> done = startup.config.finish(); !done) {
         return std::unexpected{done.error()};
@@ -144,24 +175,8 @@ Result<Startup> prepare(std::span<const std::string_view> args,
     if (startup.healthcheck) {
         return startup;  // it only looks at the sockets: no secret needs reading
     }
-    if (!startup.config.token_file().empty()) {
-        Result<std::string> token = read_token_file(sys, startup.config.token_file());
-        if (!token) {
-            return std::unexpected{token.error()};
-        }
-        startup.token = std::move(*token);
-    }
-    if (!startup.config.publish_token_file().empty()) {
-        // The same checks as the IPC token (a regular file, ours, mode 0600), plus the length floor
-        // of set_publish_token(). The secret goes straight into the embedded config, never through
-        // the key table.
-        Result<std::string> token = read_token_file(sys, startup.config.publish_token_file());
-        if (!token) {
-            return std::unexpected{token.error()};
-        }
-        if (const Result<void> done = startup.config.set_publish_token(std::move(*token)); !done) {
-            return std::unexpected{done.error()};
-        }
+    if (const Result<void> done = read_secrets(startup, sys); !done) {
+        return std::unexpected{done.error()};
     }
     return startup;
 }
