@@ -89,4 +89,5 @@ Right after the flip (not available while the repository is private):
 - [ ] Settings, Code security: enable private vulnerability reporting, secret scanning, push protection, Dependabot alerts.
 - [ ] Confirm the Security tab shows "Report a vulnerability" (SECURITY.md and the issue template link depend on it).
 - [ ] Push an `-rc` tag to run `release.yml` for the first time (the arm runner and the attestation need a public repository), then submit the repository URL on packagist.org.
+- [ ] After the first tag that builds the container image: make the GHCR package `wsrvd` public (package page, settings, danger zone; a new package is private, so `docker pull` fails for everyone else) and link it to the repository.
 - [ ] Optionally create the first "good first issue" labels and issues from CONTRIBUTING.md's list.

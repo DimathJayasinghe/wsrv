@@ -1,12 +1,13 @@
 # wsrv quickstart: the daemon and a PHP worker, no compiler, no C++.
-#   docker compose up --build
+#   docker compose up --build      # builds the daemon image from this repository (works from a clone, today)
+#   WSRV_VERSION=0.1.0-rc.2 docker compose up      # or pull the published image once that tag exists (no build)
 #   then connect any WebSocket client to ws://localhost:8080/ and send a message: the worker echoes it.
 #
 # The two services share /run/wsrv (the daemon's private IPC socket directory). The socket is mode 0600
 # and the daemon checks the peer uid (ADR-0017), so both containers run as the same uid, 10001.
 services:
   wsrvd:
-    image: ghcr.io/dimathjayasinghe/wsrvd:${WSRV_VERSION:-latest}
+    image: ghcr.io/dimathjayasinghe/wsrvd:${WSRV_VERSION:-0.1.0-rc.2}
     build:
       context: ../..
       dockerfile: docker/wsrvd.Dockerfile
@@ -17,7 +18,7 @@ services:
       - --allow-origin=http://localhost:8000      # the page below; browsers must come from here
       - --allow-missing-origin=true               # command-line clients (wscat, websocat); remove in production
     ports:
-      - "8080:8080"
+      - "${WSRV_PORT:-8080}:8080"        # change the host port with WSRV_PORT=...
     volumes:
       - ipc:/run/wsrv
     restart: unless-stopped

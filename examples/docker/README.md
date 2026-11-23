@@ -4,7 +4,7 @@ No compiler, no C++. Two containers: the `wsrvd` daemon (owns every WebSocket) a
 
 ```sh
 cd examples/docker
-docker compose up --build      # builds the daemon image from source until a release image is pulled
+docker compose up --build      # builds the daemon image from this clone (no published image exists before the next tag)
 ```
 
 Connect any WebSocket client to `ws://localhost:8080/` and send a message; the worker echoes it:
@@ -16,7 +16,7 @@ npx wscat -c ws://localhost:8080/
 ```
 
 ## What you are looking at
-- `compose.yaml`: both services share the volume `/run/wsrv`, the daemon's private IPC socket directory.
+- `compose.yaml`: if port 8080 is busy, run `WSRV_PORT=18080 docker compose up --build`. Both services share the volume `/run/wsrv`, the daemon's private IPC socket directory.
 - `worker/worker.php`: the whole PHP side, five lines (`Worker::on('message', ...)`).
 - **Both containers run as uid 10001.** The IPC socket is mode `0600` and the daemon refuses a peer with a different uid (ADR-0017). If you swap in your own PHP image, keep `user: "10001:10001"` on it.
 - `--allow-missing-origin=true` lets `wscat` connect (it sends no `Origin` header). Remove it for a browser-facing deployment and list your site with `--allow-origin=https://your.site`.
