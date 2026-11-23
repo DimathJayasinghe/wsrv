@@ -90,6 +90,7 @@ wsrv_add_test(NAME wsrvd_config_test SOURCES wsrvd/config_test.cpp LINK wsrv::ws
 wsrv_add_test(NAME wsrvd_token_file_test SOURCES wsrvd/token_file_test.cpp LINK wsrv::wsrvd)
 wsrv_add_test(NAME wsrvd_ipc_server_test SOURCES wsrvd/ipc_server_test.cpp LINK wsrv::wsrvd)
 wsrv_add_test(NAME wsrvd_startup_test SOURCES wsrvd/startup_test.cpp LINK wsrv::wsrvd)
+wsrv_add_test(NAME wsrvd_healthcheck_test SOURCES wsrvd/healthcheck_test.cpp LINK wsrv::wsrvd)
 wsrv_add_test(NAME wsrvd_event_convert_test SOURCES wsrvd/event_convert_test.cpp LINK wsrv::wsrvd)
 wsrv_add_test(NAME wsrvd_relay_test SOURCES wsrvd/relay_test.cpp LINK wsrv::wsrvd)
 wsrv_add_test(NAME wsrvd_reload_test SOURCES wsrvd/reload_test.cpp LINK wsrv::wsrvd)

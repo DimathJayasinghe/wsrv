@@ -15,6 +15,7 @@ Reading order for newcomers: **PROJECT_PLAN → REQUIREMENTS → ARCHITECTURE �
 | [PROTOCOL_EDGE_CASES.md](PROTOCOL_EDGE_CASES.md) | Test index of edge cases |
 | [TESTING_STRATEGY.md](TESTING_STRATEGY.md) | Test pyramid, fuzzing, Autobahn, sanitizers, perf |
 | [BUILD_AND_TOOLING.md](BUILD_AND_TOOLING.md) | CMake, presets, CI, dependency policy |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | Docker, Compose, systemd, Kubernetes, reverse proxies, tuning, go-live checklist 
 | [LARAVEL.md](LARAVEL.md) | Rooms and publishing from a Laravel app (ticket auth, Artisan worker, queued publish) |
 | [OPERATIONS.md](OPERATIONS.md) | Config, logging, metrics, lifecycle, hardening |
 | [adr/](adr/) | Architecture decision records |

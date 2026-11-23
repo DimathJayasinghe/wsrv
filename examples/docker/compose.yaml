@@ -27,16 +27,14 @@ services:
     build:
       context: ../..
       dockerfile: docker/wsrvd.Dockerfile
-    command:
-      - --ipc-socket=/run/wsrv/ipc.sock
-      - --listen-host=0.0.0.0
-      - --listen-port=8080
-      - --allow-origin=http://localhost:8000      # the page below; browsers must come from here
-      - --allow-missing-origin=true               # command-line clients (wscat, websocat); remove in production
-      - --broker=true                             # rooms
-      - --publish-host=0.0.0.0                    # reachable inside the compose network only (see expose below)
-      - --publish-port=9200
-      - --publish-token-file=/run/wsrv/publish.token
+    # Every setting is WSRVD_<KEY> (ADR-0030); the image already sets the socket, the listen address and port 8080.
+    environment:
+      WSRVD_ALLOW_ORIGIN: http://localhost:8000      # the page below; browsers must come from here
+      WSRVD_ALLOW_MISSING_ORIGIN: "true"             # command-line clients (wscat, websocat); remove in production
+      WSRVD_BROKER: "true"                           # rooms
+      WSRVD_PUBLISH_HOST: 0.0.0.0                    # reachable inside the compose network only (see expose below)
+      WSRVD_PUBLISH_PORT: "9200"
+      WSRVD_PUBLISH_TOKEN_FILE: /run/wsrv/publish.token
     depends_on:
       token-init:
         condition: service_completed_successfully
@@ -49,7 +47,10 @@ services:
     restart: unless-stopped
 
   worker:
-    build: ./worker
+    build:
+      context: ./worker
+      args:
+        WSRV_CLIENT: ${WSRV_CLIENT:-^0.1.0}   # pin another version of the PHP package here
     user: "10001:10001"
     depends_on:
       - wsrvd

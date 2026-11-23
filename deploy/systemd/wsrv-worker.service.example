@@ -1,0 +1,27 @@
+# Example: the PHP worker next to wsrvd. It must run as the SAME user as wsrvd (the IPC socket is 0600).
+# Copy to /etc/systemd/system/wsrv-worker.service, point ExecStart at your worker script, then
+#   systemctl enable --now wsrv-worker
+[Unit]
+Description=wsrv PHP worker
+After=wsrvd.service
+# Restart this unit whenever wsrvd restarts: the IPC link dies with the daemon and the worker reconnects fresh.
+BindsTo=wsrvd.service
+
+[Service]
+Type=simple
+User=wsrv
+Group=wsrv
+WorkingDirectory=/srv/app
+ExecStart=/usr/bin/php /srv/app/worker.php
+Restart=always
+RestartSec=1
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# One daemon serves ONE application connection (IPC_PROTOCOL.md), so one worker per daemon. To use more
+# cores, run several wsrvd + worker pairs on different ports/sockets and balance across them
+# (docs/DEPLOYMENT.md, "Using more than one core").
+
+[Install]
+WantedBy=multi-user.target

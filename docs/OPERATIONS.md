@@ -230,6 +230,8 @@ What to watch: `wsrv_broker_deliveries_total{result="refused"}` rising means a l
 
 ## 7. Running `wsrvd` (the sidecar)
 
+Every setting below is also an environment variable, `WSRVD_` plus the key in upper case (`WSRVD_LISTEN_PORT`); the environment is the base layer and `--config` and flags override it. `wsrvd --healthcheck` probes a running daemon (exit 0 = healthy). An unknown `WSRVD_*` variable stops the start. Tokens are files, never variables (ADR-0030).
+
 What the daemon does today (ADR-0017, IPC protocol in `docs/IPC_PROTOCOL.md`). Metrics and an admin listener arrive with M10.
 
 ### Start-up
@@ -286,6 +288,7 @@ The application receives each upgrade as a Handshake event (`docs/IPC_PROTOCOL.m
 | Daemon restarts | Browsers see the close or a dropped connection and must reconnect; messages in flight are lost (at-most-once). |
 
 ### systemd example
+The complete, hardened unit (with the worker's unit and an environment file) is in [`deploy/systemd/`](../deploy/systemd/); [DEPLOYMENT.md](DEPLOYMENT.md) covers Docker, Kubernetes and reverse proxies. The essentials:
 ```ini
 [Service]
 User=wsrv
