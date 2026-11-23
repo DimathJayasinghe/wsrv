@@ -1,6 +1,6 @@
 {
-  "label": "2026-11-23",
-  "date": "2026-11-23T21:47:56",
+  "label": "2026-11-23-4cpu",
+  "date": "2026-11-23T23:11:01",
   "docker": "20 CPUs, 3895296000 bytes, Docker Desktop, kernel 6.12.76-linuxkit",
   "settings": {
     "echo": [
@@ -34,7 +34,7 @@
   },
   "servers": {
     "wsrv": {
-      "versions": "wsrvd and the PHP worker built from commit e30b77a, PHP 8.3.37",
+      "versions": "wsrvd image wsrvd:local built from commit 992abcd, PHP 8.3.37 in the worker",
       "echo": [
         {
           "connections": 64,
@@ -46,14 +46,14 @@
               "threads": 4,
               "size": 64,
               "seconds": 15.0,
-              "messages": 2559630,
-              "msgs_per_sec": 170631,
+              "messages": 3265983,
+              "msgs_per_sec": 217718,
               "failures": 0,
-              "p50_us": 292,
-              "p90_us": 567,
-              "p99_us": 702,
-              "p999_us": 1116,
-              "max_us": 4920
+              "p50_us": 278,
+              "p90_us": 324,
+              "p99_us": 638,
+              "p999_us": 805,
+              "max_us": 4444
             },
             {
               "mode": "echo",
@@ -61,29 +61,29 @@
               "threads": 4,
               "size": 64,
               "seconds": 15.0,
-              "messages": 2889852,
-              "msgs_per_sec": 192644,
-              "failures": 0,
-              "p50_us": 298,
-              "p90_us": 530,
-              "p99_us": 660,
-              "p999_us": 919,
-              "max_us": 5118
-            },
-            {
-              "mode": "echo",
-              "connections": 64,
-              "threads": 4,
-              "size": 64,
-              "seconds": 15.0,
-              "messages": 3273960,
-              "msgs_per_sec": 218249,
+              "messages": 2665971,
+              "msgs_per_sec": 177720,
               "failures": 0,
               "p50_us": 282,
-              "p90_us": 331,
-              "p99_us": 547,
-              "p999_us": 813,
-              "max_us": 5433
+              "p90_us": 554,
+              "p99_us": 727,
+              "p999_us": 885,
+              "max_us": 4330
+            },
+            {
+              "mode": "echo",
+              "connections": 64,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 2670378,
+              "msgs_per_sec": 178014,
+              "failures": 0,
+              "p50_us": 297,
+              "p90_us": 566,
+              "p99_us": 671,
+              "p999_us": 795,
+              "max_us": 4920
             }
           ]
         },
@@ -97,14 +97,14 @@
               "threads": 4,
               "size": 64,
               "seconds": 15.0,
-              "messages": 3204132,
-              "msgs_per_sec": 213595,
+              "messages": 3197437,
+              "msgs_per_sec": 213148,
               "failures": 0,
-              "p50_us": 2326,
-              "p90_us": 2530,
-              "p99_us": 4941,
-              "p999_us": 5900,
-              "max_us": 9691
+              "p50_us": 2297,
+              "p90_us": 2529,
+              "p99_us": 4987,
+              "p999_us": 6096,
+              "max_us": 10960
             },
             {
               "mode": "echo",
@@ -112,14 +112,14 @@
               "threads": 4,
               "size": 64,
               "seconds": 15.0,
-              "messages": 3293964,
-              "msgs_per_sec": 219583,
+              "messages": 3178727,
+              "msgs_per_sec": 211901,
               "failures": 0,
-              "p50_us": 2270,
-              "p90_us": 2424,
-              "p99_us": 4586,
-              "p999_us": 5595,
-              "max_us": 7447
+              "p50_us": 2290,
+              "p90_us": 2594,
+              "p99_us": 5143,
+              "p999_us": 5962,
+              "max_us": 8601
             },
             {
               "mode": "echo",
@@ -127,14 +127,14 @@
               "threads": 4,
               "size": 64,
               "seconds": 15.0,
-              "messages": 3145264,
-              "msgs_per_sec": 209669,
+              "messages": 3300107,
+              "msgs_per_sec": 219993,
               "failures": 0,
-              "p50_us": 2329,
-              "p90_us": 2504,
-              "p99_us": 5102,
-              "p999_us": 5818,
-              "max_us": 7734
+              "p50_us": 2282,
+              "p90_us": 2430,
+              "p99_us": 3642,
+              "p999_us": 5386,
+              "max_us": 6590
             }
           ]
         }
@@ -148,12 +148,12 @@
             "established": 1000,
             "failed": 0,
             "dropped_while_holding": 0,
-            "connect_p50_us": 635,
-            "connect_p99_us": 1808
+            "connect_p50_us": 543,
+            "connect_p99_us": 1313
           },
-          "baseline_bytes": 11235491,
-          "peak_bytes": 17371758,
-          "bytes_per_connection": 6136.267
+          "baseline_bytes": 42090888,
+          "peak_bytes": 48538582,
+          "bytes_per_connection": 6447.694
         },
         {
           "connections": 10000,
@@ -163,12 +163,12 @@
             "established": 10000,
             "failed": 0,
             "dropped_while_holding": 0,
-            "connect_p50_us": 374,
-            "connect_p99_us": 3442
+            "connect_p50_us": 385,
+            "connect_p99_us": 3620
           },
-          "baseline_bytes": 13558087,
-          "peak_bytes": 98042903,
-          "bytes_per_connection": 8448.4816
+          "baseline_bytes": 44544556,
+          "peak_bytes": 128796589,
+          "bytes_per_connection": 8425.2033
         }
       ],
       "fanout": [
@@ -185,12 +185,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 664,
-              "last_p50_us": 4990,
-              "last_p90_us": 8991,
-              "last_p99_us": 10027,
-              "last_max_us": 10027,
-              "deliveries_per_sec_p50": 200401
+              "first_p50_us": 657,
+              "last_p50_us": 5032,
+              "last_p90_us": 7400,
+              "last_p99_us": 9930,
+              "last_max_us": 9930,
+              "deliveries_per_sec_p50": 198728
             },
             {
               "mode": "fanout",
@@ -201,12 +201,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 677,
-              "last_p50_us": 4954,
-              "last_p90_us": 8765,
-              "last_p99_us": 9051,
-              "last_max_us": 9051,
-              "deliveries_per_sec_p50": 201857
+              "first_p50_us": 536,
+              "last_p50_us": 5488,
+              "last_p90_us": 8404,
+              "last_p99_us": 9326,
+              "last_max_us": 9326,
+              "deliveries_per_sec_p50": 182216
             },
             {
               "mode": "fanout",
@@ -217,12 +217,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 650,
-              "last_p50_us": 5761,
-              "last_p90_us": 8711,
-              "last_p99_us": 9035,
-              "last_max_us": 9035,
-              "deliveries_per_sec_p50": 173581
+              "first_p50_us": 393,
+              "last_p50_us": 5051,
+              "last_p90_us": 8066,
+              "last_p99_us": 9400,
+              "last_max_us": 9400,
+              "deliveries_per_sec_p50": 197981
             }
           ]
         },
@@ -239,12 +239,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 888,
-              "last_p50_us": 21107,
-              "last_p90_us": 26745,
-              "last_p99_us": 29674,
-              "last_max_us": 29674,
-              "deliveries_per_sec_p50": 236888
+              "first_p50_us": 627,
+              "last_p50_us": 21428,
+              "last_p90_us": 24555,
+              "last_p99_us": 31962,
+              "last_max_us": 31962,
+              "deliveries_per_sec_p50": 233340
             },
             {
               "mode": "fanout",
@@ -255,12 +255,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 991,
-              "last_p50_us": 21179,
-              "last_p90_us": 28700,
-              "last_p99_us": 33361,
-              "last_max_us": 33361,
-              "deliveries_per_sec_p50": 236083
+              "first_p50_us": 735,
+              "last_p50_us": 22223,
+              "last_p90_us": 28134,
+              "last_p99_us": 43722,
+              "last_max_us": 43722,
+              "deliveries_per_sec_p50": 224992
             },
             {
               "mode": "fanout",
@@ -271,12 +271,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 874,
-              "last_p50_us": 21626,
-              "last_p90_us": 24180,
-              "last_p99_us": 32027,
-              "last_max_us": 32027,
-              "deliveries_per_sec_p50": 231203
+              "first_p50_us": 781,
+              "last_p50_us": 22194,
+              "last_p90_us": 29078,
+              "last_p99_us": 33921,
+              "last_max_us": 33921,
+              "deliveries_per_sec_p50": 225286
             }
           ]
         }
@@ -295,14 +295,14 @@
               "threads": 4,
               "size": 64,
               "seconds": 15.0,
-              "messages": 1800863,
-              "msgs_per_sec": 120049,
+              "messages": 1943432,
+              "msgs_per_sec": 129554,
               "failures": 0,
-              "p50_us": 516,
-              "p90_us": 570,
-              "p99_us": 1042,
-              "p999_us": 1149,
-              "max_us": 3092
+              "p50_us": 479,
+              "p90_us": 534,
+              "p99_us": 933,
+              "p999_us": 1290,
+              "max_us": 2654
             },
             {
               "mode": "echo",
@@ -310,14 +310,14 @@
               "threads": 4,
               "size": 64,
               "seconds": 15.0,
-              "messages": 1806789,
-              "msgs_per_sec": 120446,
+              "messages": 1907786,
+              "msgs_per_sec": 127177,
               "failures": 0,
-              "p50_us": 518,
-              "p90_us": 561,
-              "p99_us": 1007,
-              "p999_us": 1141,
-              "max_us": 2595
+              "p50_us": 489,
+              "p90_us": 529,
+              "p99_us": 966,
+              "p999_us": 1132,
+              "max_us": 3547
             },
             {
               "mode": "echo",
@@ -325,14 +325,14 @@
               "threads": 4,
               "size": 64,
               "seconds": 15.0,
-              "messages": 1810310,
-              "msgs_per_sec": 120679,
+              "messages": 1847782,
+              "msgs_per_sec": 123178,
               "failures": 0,
-              "p50_us": 521,
-              "p90_us": 559,
-              "p99_us": 1000,
-              "p999_us": 1225,
-              "max_us": 2466
+              "p50_us": 508,
+              "p90_us": 550,
+              "p99_us": 999,
+              "p999_us": 1090,
+              "max_us": 2703
             }
           ]
         },
@@ -346,14 +346,14 @@
               "threads": 4,
               "size": 64,
               "seconds": 15.0,
-              "messages": 1699499,
-              "msgs_per_sec": 113292,
+              "messages": 1738919,
+              "msgs_per_sec": 115920,
               "failures": 0,
-              "p50_us": 4497,
-              "p90_us": 4704,
-              "p99_us": 5217,
-              "p999_us": 6705,
-              "max_us": 11576
+              "p50_us": 4345,
+              "p90_us": 4650,
+              "p99_us": 6432,
+              "p999_us": 8708,
+              "max_us": 12681
             },
             {
               "mode": "echo",
@@ -361,14 +361,14 @@
               "threads": 4,
               "size": 64,
               "seconds": 15.0,
-              "messages": 1717339,
-              "msgs_per_sec": 114480,
+              "messages": 1847964,
+              "msgs_per_sec": 123189,
               "failures": 0,
-              "p50_us": 4446,
-              "p90_us": 4752,
-              "p99_us": 5434,
-              "p999_us": 9164,
-              "max_us": 15480
+              "p50_us": 4125,
+              "p90_us": 4334,
+              "p99_us": 5471,
+              "p999_us": 9550,
+              "max_us": 17685
             },
             {
               "mode": "echo",
@@ -376,14 +376,14 @@
               "threads": 4,
               "size": 64,
               "seconds": 15.0,
-              "messages": 1738325,
-              "msgs_per_sec": 115881,
+              "messages": 1672818,
+              "msgs_per_sec": 111514,
               "failures": 0,
-              "p50_us": 4406,
-              "p90_us": 4596,
-              "p99_us": 5322,
-              "p999_us": 8927,
-              "max_us": 16242
+              "p50_us": 4566,
+              "p90_us": 4779,
+              "p99_us": 5708,
+              "p999_us": 8938,
+              "max_us": 11268
             }
           ]
         }
@@ -397,11 +397,11 @@
             "established": 1000,
             "failed": 0,
             "dropped_while_holding": 0,
-            "connect_p50_us": 627,
-            "connect_p99_us": 1079
+            "connect_p50_us": 554,
+            "connect_p99_us": 1137
           },
-          "baseline_bytes": 11607736,
-          "peak_bytes": 17888706,
+          "baseline_bytes": 20510146,
+          "peak_bytes": 26791116,
           "bytes_per_connection": 6280.97
         },
         {
@@ -412,12 +412,12 @@
             "established": 10000,
             "failed": 0,
             "dropped_while_holding": 0,
-            "connect_p50_us": 360,
-            "connect_p99_us": 2964
+            "connect_p50_us": 361,
+            "connect_p99_us": 1061
           },
-          "baseline_bytes": 14155776,
-          "peak_bytes": 103767080,
-          "bytes_per_connection": 8961.1304
+          "baseline_bytes": 23058186,
+          "peak_bytes": 112721920,
+          "bytes_per_connection": 8966.3734
         }
       ],
       "fanout": [
@@ -435,11 +435,11 @@
               "trigger_failures": 0,
               "dropped": 0,
               "first_p50_us": 245,
-              "last_p50_us": 9462,
-              "last_p90_us": 12110,
-              "last_p99_us": 17744,
-              "last_max_us": 17744,
-              "deliveries_per_sec_p50": 105686
+              "last_p50_us": 9665,
+              "last_p90_us": 15954,
+              "last_p99_us": 18150,
+              "last_max_us": 18150,
+              "deliveries_per_sec_p50": 103466
             },
             {
               "mode": "fanout",
@@ -450,12 +450,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 250,
-              "last_p50_us": 9220,
-              "last_p90_us": 11805,
-              "last_p99_us": 17681,
-              "last_max_us": 17681,
-              "deliveries_per_sec_p50": 108460
+              "first_p50_us": 216,
+              "last_p50_us": 9603,
+              "last_p90_us": 10559,
+              "last_p99_us": 20444,
+              "last_max_us": 20444,
+              "deliveries_per_sec_p50": 104134
             },
             {
               "mode": "fanout",
@@ -466,12 +466,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 279,
-              "last_p50_us": 9468,
-              "last_p90_us": 12699,
-              "last_p99_us": 16552,
-              "last_max_us": 16552,
-              "deliveries_per_sec_p50": 105619
+              "first_p50_us": 198,
+              "last_p50_us": 9435,
+              "last_p90_us": 11593,
+              "last_p99_us": 14054,
+              "last_max_us": 14054,
+              "deliveries_per_sec_p50": 105988
             }
           ]
         },
@@ -488,12 +488,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 309,
-              "last_p50_us": 43444,
-              "last_p90_us": 45734,
-              "last_p99_us": 46099,
-              "last_max_us": 46099,
-              "deliveries_per_sec_p50": 115091
+              "first_p50_us": 250,
+              "last_p50_us": 45138,
+              "last_p90_us": 48201,
+              "last_p99_us": 50526,
+              "last_max_us": 50526,
+              "deliveries_per_sec_p50": 110771
             },
             {
               "mode": "fanout",
@@ -504,12 +504,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 262,
-              "last_p50_us": 44264,
-              "last_p90_us": 46282,
-              "last_p99_us": 51427,
-              "last_max_us": 51427,
-              "deliveries_per_sec_p50": 112959
+              "first_p50_us": 242,
+              "last_p50_us": 44989,
+              "last_p90_us": 49614,
+              "last_p99_us": 60942,
+              "last_max_us": 60942,
+              "deliveries_per_sec_p50": 111138
             },
             {
               "mode": "fanout",
@@ -520,12 +520,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 271,
-              "last_p50_us": 47041,
-              "last_p90_us": 52109,
-              "last_p99_us": 56537,
-              "last_max_us": 56537,
-              "deliveries_per_sec_p50": 106290
+              "first_p50_us": 267,
+              "last_p50_us": 45061,
+              "last_p90_us": 48981,
+              "last_p99_us": 59277,
+              "last_max_us": 59277,
+              "deliveries_per_sec_p50": 110961
             }
           ]
         }
@@ -544,14 +544,29 @@
               "threads": 4,
               "size": 64,
               "seconds": 15.0,
-              "messages": 2120271,
-              "msgs_per_sec": 141342,
+              "messages": 2047246,
+              "msgs_per_sec": 136474,
               "failures": 0,
-              "p50_us": 440,
-              "p90_us": 478,
+              "p50_us": 463,
+              "p90_us": 492,
+              "p99_us": 889,
+              "p999_us": 1118,
+              "max_us": 2956
+            },
+            {
+              "mode": "echo",
+              "connections": 64,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 2096669,
+              "msgs_per_sec": 139769,
+              "failures": 0,
+              "p50_us": 450,
+              "p90_us": 482,
               "p99_us": 870,
-              "p999_us": 1038,
-              "max_us": 3252
+              "p999_us": 953,
+              "max_us": 2711
             },
             {
               "mode": "echo",
@@ -559,29 +574,14 @@
               "threads": 4,
               "size": 64,
               "seconds": 15.0,
-              "messages": 2175879,
-              "msgs_per_sec": 145049,
+              "messages": 2097944,
+              "msgs_per_sec": 139854,
               "failures": 0,
-              "p50_us": 432,
-              "p90_us": 475,
-              "p99_us": 847,
-              "p999_us": 951,
-              "max_us": 3795
-            },
-            {
-              "mode": "echo",
-              "connections": 64,
-              "threads": 4,
-              "size": 64,
-              "seconds": 15.0,
-              "messages": 2094177,
-              "msgs_per_sec": 139604,
-              "failures": 0,
-              "p50_us": 448,
-              "p90_us": 484,
-              "p99_us": 873,
-              "p999_us": 968,
-              "max_us": 2965
+              "p50_us": 447,
+              "p90_us": 490,
+              "p99_us": 869,
+              "p999_us": 975,
+              "max_us": 3448
             }
           ]
         },
@@ -595,14 +595,14 @@
               "threads": 4,
               "size": 64,
               "seconds": 15.0,
-              "messages": 1746841,
-              "msgs_per_sec": 116448,
+              "messages": 1920432,
+              "msgs_per_sec": 128020,
               "failures": 0,
-              "p50_us": 4345,
-              "p90_us": 4698,
-              "p99_us": 6565,
-              "p999_us": 9154,
-              "max_us": 13062
+              "p50_us": 3949,
+              "p90_us": 4212,
+              "p99_us": 5536,
+              "p999_us": 8334,
+              "max_us": 12955
             },
             {
               "mode": "echo",
@@ -610,14 +610,14 @@
               "threads": 4,
               "size": 64,
               "seconds": 15.0,
-              "messages": 1732428,
-              "msgs_per_sec": 115488,
+              "messages": 1755381,
+              "msgs_per_sec": 117017,
               "failures": 0,
-              "p50_us": 4180,
-              "p90_us": 5245,
-              "p99_us": 7503,
-              "p999_us": 11783,
-              "max_us": 19843
+              "p50_us": 4385,
+              "p90_us": 4598,
+              "p99_us": 5684,
+              "p999_us": 8686,
+              "max_us": 12115
             },
             {
               "mode": "echo",
@@ -625,14 +625,14 @@
               "threads": 4,
               "size": 64,
               "seconds": 15.0,
-              "messages": 1762281,
-              "msgs_per_sec": 117477,
+              "messages": 1987713,
+              "msgs_per_sec": 132505,
               "failures": 0,
-              "p50_us": 4198,
-              "p90_us": 5209,
-              "p99_us": 6535,
-              "p999_us": 8596,
-              "max_us": 14175
+              "p50_us": 3804,
+              "p90_us": 4130,
+              "p99_us": 5017,
+              "p999_us": 7649,
+              "max_us": 12762
             }
           ]
         }
@@ -646,12 +646,12 @@
             "established": 1000,
             "failed": 0,
             "dropped_while_holding": 0,
-            "connect_p50_us": 571,
-            "connect_p99_us": 1174
+            "connect_p50_us": 701,
+            "connect_p99_us": 1186
           },
-          "baseline_bytes": 10611589,
-          "peak_bytes": 19021168,
-          "bytes_per_connection": 8409.579
+          "baseline_bytes": 26854031,
+          "peak_bytes": 35253125,
+          "bytes_per_connection": 8399.094
         },
         {
           "connections": 10000,
@@ -661,12 +661,12 @@
             "established": 10000,
             "failed": 0,
             "dropped_while_holding": 0,
-            "connect_p50_us": 427,
-            "connect_p99_us": 1148
+            "connect_p50_us": 376,
+            "connect_p99_us": 988
           },
-          "baseline_bytes": 10978590,
-          "peak_bytes": 100013178,
-          "bytes_per_connection": 8903.4588
+          "baseline_bytes": 27179089,
+          "peak_bytes": 116182220,
+          "bytes_per_connection": 8900.3131
         }
       ],
       "fanout": [
@@ -683,12 +683,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 262,
-              "last_p50_us": 9291,
-              "last_p90_us": 10789,
-              "last_p99_us": 17529,
-              "last_max_us": 17529,
-              "deliveries_per_sec_p50": 107631
+              "first_p50_us": 217,
+              "last_p50_us": 8984,
+              "last_p90_us": 11449,
+              "last_p99_us": 18596,
+              "last_max_us": 18596,
+              "deliveries_per_sec_p50": 111309
             },
             {
               "mode": "fanout",
@@ -699,12 +699,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 280,
-              "last_p50_us": 9476,
-              "last_p90_us": 10198,
-              "last_p99_us": 13926,
-              "last_max_us": 13926,
-              "deliveries_per_sec_p50": 105530
+              "first_p50_us": 192,
+              "last_p50_us": 8828,
+              "last_p90_us": 10793,
+              "last_p99_us": 12682,
+              "last_max_us": 12682,
+              "deliveries_per_sec_p50": 113276
             },
             {
               "mode": "fanout",
@@ -715,12 +715,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 248,
-              "last_p50_us": 9649,
-              "last_p90_us": 14405,
-              "last_p99_us": 17517,
-              "last_max_us": 17517,
-              "deliveries_per_sec_p50": 103638
+              "first_p50_us": 227,
+              "last_p50_us": 9069,
+              "last_p90_us": 12252,
+              "last_p99_us": 17864,
+              "last_max_us": 17864,
+              "deliveries_per_sec_p50": 110266
             }
           ]
         },
@@ -737,12 +737,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 296,
-              "last_p50_us": 46807,
-              "last_p90_us": 51047,
-              "last_p99_us": 63444,
-              "last_max_us": 63444,
-              "deliveries_per_sec_p50": 106822
+              "first_p50_us": 218,
+              "last_p50_us": 42046,
+              "last_p90_us": 50113,
+              "last_p99_us": 73400,
+              "last_max_us": 73400,
+              "deliveries_per_sec_p50": 118917
             },
             {
               "mode": "fanout",
@@ -753,12 +753,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 267,
-              "last_p50_us": 42314,
-              "last_p90_us": 44218,
-              "last_p99_us": 47751,
-              "last_max_us": 47751,
-              "deliveries_per_sec_p50": 118164
+              "first_p50_us": 248,
+              "last_p50_us": 43110,
+              "last_p90_us": 44168,
+              "last_p99_us": 61027,
+              "last_max_us": 61027,
+              "deliveries_per_sec_p50": 115982
             },
             {
               "mode": "fanout",
@@ -769,12 +769,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 253,
-              "last_p50_us": 41105,
-              "last_p90_us": 43668,
-              "last_p99_us": 45124,
-              "last_max_us": 45124,
-              "deliveries_per_sec_p50": 121640
+              "first_p50_us": 226,
+              "last_p50_us": 41671,
+              "last_p90_us": 46146,
+              "last_p99_us": 49085,
+              "last_max_us": 49085,
+              "deliveries_per_sec_p50": 119988
             }
           ]
         }
@@ -791,11 +791,11 @@
             "established": 1000,
             "failed": 0,
             "dropped_while_holding": 0,
-            "connect_p50_us": 2717,
-            "connect_p99_us": 5652
+            "connect_p50_us": 2672,
+            "connect_p99_us": 5255
           },
-          "baseline_bytes": 36846960,
-          "peak_bytes": 59192115,
+          "baseline_bytes": 45675970,
+          "peak_bytes": 68021125,
           "bytes_per_connection": 22345.155
         },
         {
@@ -807,11 +807,11 @@
             "failed": 0,
             "dropped_while_holding": 0,
             "connect_p50_us": 1913,
-            "connect_p99_us": 8101
+            "connect_p99_us": 4505
           },
-          "baseline_bytes": 55459184,
-          "peak_bytes": 266652876,
-          "bytes_per_connection": 21119.3692
+          "baseline_bytes": 64560824,
+          "peak_bytes": 274831769,
+          "bytes_per_connection": 21027.0945
         }
       ],
       "fanout": [
@@ -828,12 +828,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 5160,
-              "last_p50_us": 14489,
-              "last_p90_us": 15555,
-              "last_p99_us": 41074,
-              "last_max_us": 41074,
-              "deliveries_per_sec_p50": 69018
+              "first_p50_us": 5757,
+              "last_p50_us": 15419,
+              "last_p90_us": 18295,
+              "last_p99_us": 40782,
+              "last_max_us": 40782,
+              "deliveries_per_sec_p50": 64855
             },
             {
               "mode": "fanout",
@@ -844,12 +844,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 6024,
-              "last_p50_us": 15614,
-              "last_p90_us": 18701,
-              "last_p99_us": 41278,
-              "last_max_us": 41278,
-              "deliveries_per_sec_p50": 64045
+              "first_p50_us": 6055,
+              "last_p50_us": 15978,
+              "last_p90_us": 17180,
+              "last_p99_us": 40749,
+              "last_max_us": 40749,
+              "deliveries_per_sec_p50": 62586
             },
             {
               "mode": "fanout",
@@ -860,12 +860,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 6202,
-              "last_p50_us": 15842,
-              "last_p90_us": 16382,
-              "last_p99_us": 40453,
-              "last_max_us": 40453,
-              "deliveries_per_sec_p50": 63123
+              "first_p50_us": 6161,
+              "last_p50_us": 15871,
+              "last_p90_us": 16625,
+              "last_p99_us": 41077,
+              "last_max_us": 41077,
+              "deliveries_per_sec_p50": 63008
             }
           ]
         },
@@ -882,12 +882,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 22141,
-              "last_p50_us": 69774,
-              "last_p90_us": 71875,
-              "last_p99_us": 77267,
-              "last_max_us": 77267,
-              "deliveries_per_sec_p50": 71660
+              "first_p50_us": 22648,
+              "last_p50_us": 72718,
+              "last_p90_us": 76073,
+              "last_p99_us": 83346,
+              "last_max_us": 83346,
+              "deliveries_per_sec_p50": 68759
             },
             {
               "mode": "fanout",
@@ -898,12 +898,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 21615,
-              "last_p50_us": 70116,
-              "last_p90_us": 72004,
-              "last_p99_us": 75667,
-              "last_max_us": 75667,
-              "deliveries_per_sec_p50": 71310
+              "first_p50_us": 21386,
+              "last_p50_us": 70020,
+              "last_p90_us": 76167,
+              "last_p99_us": 90987,
+              "last_max_us": 90987,
+              "deliveries_per_sec_p50": 71408
             },
             {
               "mode": "fanout",
@@ -914,12 +914,12 @@
               "delivered_ratio": 1.0,
               "trigger_failures": 0,
               "dropped": 0,
-              "first_p50_us": 24286,
-              "last_p50_us": 72698,
-              "last_p90_us": 75560,
-              "last_p99_us": 78671,
-              "last_max_us": 78671,
-              "deliveries_per_sec_p50": 68778
+              "first_p50_us": 27148,
+              "last_p50_us": 85768,
+              "last_p90_us": 96861,
+              "last_p99_us": 107732,
+              "last_max_us": 107732,
+              "deliveries_per_sec_p50": 58297
             }
           ]
         }

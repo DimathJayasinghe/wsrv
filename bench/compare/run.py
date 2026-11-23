@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import pathlib
 import re
 import statistics
@@ -115,10 +116,14 @@ def versions(profile: str, name: str) -> str:
 
     try:
         if name == "wsrv":
-            sha = run(["git", "-C", str(HERE), "rev-parse", "--short", "HEAD"]).stdout.strip() or "unknown"
-            dirty = " (working tree modified)" if run(["git", "-C", str(HERE), "status", "--porcelain", "--untracked-files=no"]).stdout.strip() else ""
+            # What is measured is the wsrvd image, so its own label says which commit it was built
+            # from (docker build --build-arg REVISION=<sha>); the checkout this script sits in may
+            # be a different commit (a branch that only adds the benchmark).
+            image = os.environ.get("WSRVD_IMAGE", "wsrvd:local")
+            revision = run(["docker", "image", "inspect", image, "--format",
+                            '{{index .Config.Labels "org.opencontainers.image.revision"}}']).stdout.strip() or "unknown"
             php = exec_("worker", "php -r 'echo PHP_VERSION;'")
-            return f"wsrvd and the PHP worker built from commit {sha}{dirty}, PHP {php}"
+            return f"wsrvd image {image} built from commit {revision}, PHP {php} in the worker"
         if name == "workerman":
             return exec_("workerman", "php -r 'require \"vendor/autoload.php\"; echo \"Workerman \".Workerman\\Worker::VERSION.\", PHP \".PHP_VERSION;'")
         if name == "swoole":

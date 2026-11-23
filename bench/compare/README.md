@@ -3,7 +3,15 @@
 This directory is the benchmark behind the table in [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md). It exists so you can **run it yourself**: numbers from the author's laptop are a hint, numbers from your hardware are evidence.
 
 ```sh
-python3 bench/compare/run.py --servers wsrv,workerman,swoole,reverb --repeats 3 --label my-run
+# once: build the daemon image, recording the commit it comes from (the report prints it)
+docker build -f docker/wsrvd.Dockerfile --build-arg REVISION=$(git rev-parse --short HEAD) -t wsrvd:local .
+
+# four CPUs
+BENCH_MEMORY=2g python3 bench/compare/run.py --servers wsrv,workerman,swoole,reverb --repeats 3 --label my-run
+
+# one CPU per server, wsrvd on one loop thread: the per-core comparison
+BENCH_MEMORY=2g BENCH_SERVER_CPUS=2 WSRV_THREADS=1 python3 bench/compare/run.py \
+  --servers wsrv,workerman,swoole,reverb --scenarios echo,fanout --repeats 3 --label my-run-1cpu
 ```
 
 It needs Docker with Compose and builds everything it runs (a few minutes the first time; Reverb installs a fresh Laravel app). Results land in `bench/compare/results/my-run.json`.
