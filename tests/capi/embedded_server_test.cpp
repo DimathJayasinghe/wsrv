@@ -219,9 +219,10 @@ TEST(EmbeddedServer, ClientsThatIgnoreTheShutdownStillGiveTheHostOneCloseEachOnE
 }
 
 // ADR-0027: the broker is a config key; a host drives rooms by connection id.
-TEST(EmbeddedServer, TheBrokerKeyGivesTheHostRoomsByConnectionId) {
+TEST(EmbeddedServer, TheBrokerKeyGivesTheHostRoomsByConnectionIdAndItsCountersReachTheMetrics) {
     EmbeddedConfig config = base_config();
     ASSERT_TRUE(config.set("broker", "true").has_value());
+    ASSERT_TRUE(config.set("admin_port", "0").has_value());
     const auto server = started(config);
     TcpClient a{server->port()};
     TcpClient b{server->port()};
@@ -241,6 +242,15 @@ TEST(EmbeddedServer, TheBrokerKeyGivesTheHostRoomsByConnectionId) {
     ASSERT_TRUE(frame.has_value());
     EXPECT_EQ(frame->payload, "hello all");
     EXPECT_TRUE(a.silent_for(200ms));
+
+    // The broker's counters reach the server's metrics (ADR-0024 section 6): one publish, one
+    // accepted delivery (the publisher was left out).
+    TcpClient admin{server->admin_port()};
+    ASSERT_TRUE(admin.send("GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n"));
+    const std::string page = admin.read_http_head() + admin.read_all();
+    EXPECT_NE(page.find("wsrv_broker_publishes_total 1"), std::string::npos) << page;
+    EXPECT_NE(page.find("wsrv_broker_deliveries_total{result=\"accepted\"} 1"), std::string::npos)
+        << page;
 }
 
 TEST(EmbeddedServer, WithoutTheBrokerKeyBrokerCommandsAreInvalidArgument) {
