@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include "capi/host_event.hpp"
+#include "base/publish_report.hpp"
 
 namespace wsrv::wsrvd {
 
@@ -49,6 +50,14 @@ public:
     accept_handshake(ConnectionId conn, std::optional<std::string_view> subprotocol) = 0;
     [[nodiscard]] virtual Result<void> reject_handshake(ConnectionId conn, int status) = 0;
 
+    /// The broker (ADR-0028). Errors as EmbeddedServer: InvalidArgument for a bad name or the broker
+    /// being off, Closing for an unknown connection, BufferFull for a broker bound, InvalidUtf8.
+    [[nodiscard]] virtual Result<void> subscribe(ConnectionId conn, std::string_view topic) = 0;
+    [[nodiscard]] virtual Result<void> unsubscribe(ConnectionId conn, std::string_view topic) = 0;
+    [[nodiscard]] virtual Result<PublishReport>
+    publish(std::string_view topic, ByteView payload, bool text, ConnectionId except) = 0;
+    /// Remove every subscription of `conn` now (the application that owned it is gone).
+    virtual void drop_subscriptions(ConnectionId conn) noexcept = 0;
     /// Whether questions may be asked at all. The daemon closes it while no application can
     /// answer, so upgrades get 503 at once instead of waiting for a timeout (ADR-0018 amendment 3).
     /// Closing it also refuses the questions already waiting.

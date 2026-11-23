@@ -117,6 +117,13 @@ public:
     publish_text(std::string_view topic, std::string_view text, ConnectionId except = 0);
     [[nodiscard]] Result<PublishReport>
     publish_binary(std::string_view topic, ByteView data, ConnectionId except = 0);
+    /// Remove every subscription of `id` (idempotent; a no-op without a broker). For a host that
+    /// stopped serving the connection but cannot close it yet (wsrvd, ADR-0028 A1).
+    void drop_subscriptions(ConnectionId id) noexcept {
+        if (broker_) {
+            broker_->unsubscribe_all(id);
+        }
+    }
     /// Report the broker's counters to `metrics` (the server's shared metrics); no-op without a
     /// broker.
     void use_broker_metrics(std::shared_ptr<IMetrics> metrics) noexcept {

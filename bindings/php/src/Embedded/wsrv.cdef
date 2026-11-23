@@ -11,7 +11,8 @@ typedef enum wsrv_status {
     WSRV_ERR_WRONG_PROCESS = 8,
     WSRV_ERR_RESOURCE = 9,
     WSRV_ERR_IO = 10,
-    WSRV_ERR_INTERNAL = 11
+    WSRV_ERR_INTERNAL = 11,
+    WSRV_ERR_LIMIT = 12
 } wsrv_status;
 const char *wsrv_status_name(int status);
 typedef struct wsrv_error {

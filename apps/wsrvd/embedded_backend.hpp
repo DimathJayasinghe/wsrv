@@ -41,6 +41,20 @@ public:
     [[nodiscard]] Result<void> reject_handshake(ConnectionId conn, int status) override {
         return server_.reject_handshake(conn, status);
     }
+    [[nodiscard]] Result<void> subscribe(ConnectionId conn, std::string_view topic) override {
+        return server_.subscribe(conn, topic);
+    }
+    [[nodiscard]] Result<void> unsubscribe(ConnectionId conn, std::string_view topic) override {
+        return server_.unsubscribe(conn, topic);
+    }
+    [[nodiscard]] Result<PublishReport>
+    publish(std::string_view topic, ByteView payload, bool text, ConnectionId except) override {
+        return text ? server_.publish_text(topic, as_chars(payload), except)
+                    : server_.publish_binary(topic, payload, except);
+    }
+    void drop_subscriptions(ConnectionId conn) noexcept override {
+        server_.drop_subscriptions(conn);
+    }
     void set_handshake_intake(bool open) noexcept override {
         server_.set_handshake_intake(open);
     }

@@ -227,6 +227,7 @@ private:
                 return;
             }
             state_ = State::Ready;
+            peer_minor_ = outcome.peer_minor;
             if (hello_timer_) {
                 server_.loop_.cancel(*hello_timer_);
                 hello_timer_.reset();
@@ -242,6 +243,11 @@ private:
             pump();
             return;
         }
+        dispatch(message);
+    }
+
+    /// A command from an application that is past HELLO.
+    void dispatch(const ipc::Message& message) noexcept {
         if (const auto* data = std::get_if<ipc::SendData>(&message)) {
             send(server_.relay_.execute(*data));
         } else if (const auto* close_command = std::get_if<ipc::CloseCommand>(&message)) {
@@ -253,8 +259,21 @@ private:
         } else if (std::holds_alternative<ipc::Ping>(message)) {
             send(ipc::Pong{});
         } else {
-            close();  // HELLO twice, or a frame only the daemon may send: a protocol error
+            dispatch_broker(message);
         }
+    }
+
+    /// The broker frames (IPC 0.3, ADR-0028), or a frame this side may not receive. An application
+    /// that said minor < 3 cannot know the broker frames exist: a protocol error, like HELLO twice
+    /// or a frame only the daemon may send.
+    void dispatch_broker(const ipc::Message& message) noexcept {
+        const auto* topic = std::get_if<ipc::TopicCommand>(&message);
+        const auto* publish = std::get_if<ipc::Publish>(&message);
+        if ((topic == nullptr && publish == nullptr) || peer_minor_ < ipc::kBrokerMinor) {
+            close();
+            return;
+        }
+        send(topic != nullptr ? server_.relay_.execute(*topic) : server_.relay_.execute(*publish));
     }
 
     /// Queue one message for the application. Does not write: callers flush once per batch.
@@ -401,6 +420,7 @@ private:
     std::optional<TimerHandle> hello_timer_;
     std::optional<TimerHandle> stall_timer_;
     State state_ = State::AwaitHello;
+    std::uint16_t peer_minor_ = 0;  // the minor the application said in HELLO
     bool closing_after_flush_ = false;
     bool blocked_ = false;  // the socket refused a write and `out_` still holds data
     bool pumping_ = false;
