@@ -106,14 +106,6 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
         KeyEntry{"tls_cert", &EmbeddedConfig::set_tls_cert},
         KeyEntry{"tls_key", &EmbeddedConfig::set_tls_key},
         KeyEntry{"tls_sni", &EmbeddedConfig::add_tls_sni},
-        KeyEntry{"broker", &EmbeddedConfig::set_broker},
-        KeyEntry{"broker_max_topics", &EmbeddedConfig::set_broker_max_topics},
-        KeyEntry{"broker_max_subscribers_per_topic",
-                 &EmbeddedConfig::set_broker_max_subscribers_per_topic},
-        KeyEntry{"broker_max_topics_per_connection",
-                 &EmbeddedConfig::set_broker_max_topics_per_connection},
-        KeyEntry{"broker_max_subscriptions", &EmbeddedConfig::set_broker_max_subscriptions},
-        KeyEntry{"broker_max_payload_bytes", &EmbeddedConfig::set_broker_max_payload_bytes},
         KeyEntry{"permessage_deflate", &EmbeddedConfig::set_permessage_deflate},
         KeyEntry{"deflate_server_max_window_bits",
                  &EmbeddedConfig::set_deflate_server_max_window_bits},
@@ -128,7 +120,33 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
             return (this->*entry.setter)(value);
         }
     }
+    if (const std::optional<Result<void>> broker = set_broker_key(key, value)) {
+        return *broker;
+    }
     return fail(ErrorCode::InvalidConfig, "config: unknown key");
+}
+
+/// The pub/sub keys (ADR-0027), in their own table so `set` stays within the size the linter
+/// allows.
+/// @return nothing when `key` is not a broker key.
+std::optional<Result<void>> EmbeddedConfig::set_broker_key(std::string_view key,
+                                                           std::string_view value) {
+    static constexpr std::array kBrokerKeys{
+        KeyEntry{"broker", &EmbeddedConfig::set_broker},
+        KeyEntry{"broker_max_topics", &EmbeddedConfig::set_broker_max_topics},
+        KeyEntry{"broker_max_subscribers_per_topic",
+                 &EmbeddedConfig::set_broker_max_subscribers_per_topic},
+        KeyEntry{"broker_max_topics_per_connection",
+                 &EmbeddedConfig::set_broker_max_topics_per_connection},
+        KeyEntry{"broker_max_subscriptions", &EmbeddedConfig::set_broker_max_subscriptions},
+        KeyEntry{"broker_max_payload_bytes", &EmbeddedConfig::set_broker_max_payload_bytes},
+    };
+    for (const KeyEntry& entry : kBrokerKeys) {
+        if (entry.name == key) {
+            return (this->*entry.setter)(value);
+        }
+    }
+    return std::nullopt;
 }
 
 void EmbeddedConfig::apply_to(ServerBuilder& builder) const {

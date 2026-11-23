@@ -137,6 +137,8 @@ public:
     void apply_to(ServerBuilder& builder) const;
 
 private:
+    [[nodiscard]] std::optional<Result<void>> set_broker_key(std::string_view key,
+                                                             std::string_view value);
     [[nodiscard]] Result<void> set_listen_host(std::string_view value);
     [[nodiscard]] Result<void> set_listen_port(std::string_view value);
     [[nodiscard]] Result<void> set_threads(std::string_view value);
