@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -90,6 +91,8 @@ public:
     }
 
 private:
+    [[nodiscard]] std::optional<Result<void>> set_publish_key(std::string_view key,
+                                                             std::string_view value);
     EmbeddedConfig embedded_;
     std::string socket_path_;
     std::string token_file_;
