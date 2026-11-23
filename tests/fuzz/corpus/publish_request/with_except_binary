@@ -1,0 +1,4 @@
+POST /publish?topic=a&except=42&binary=1 HTTP/1.1
+Authorization: Bearer x
+Content-Length: 0
+

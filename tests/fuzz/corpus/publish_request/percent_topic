@@ -1,0 +1,4 @@
+POST /publish?topic=a%2Fb HTTP/1.1
+Authorization: Bearer x
+Content-Length: 1
+
