@@ -57,11 +57,17 @@ jobs:
           php-version: '8.2'
           extensions: ffi
           coverage: none
+      - name: Node 22 (the JavaScript client needs the global WebSocket)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
       - name: Test on the floor
         run: |
           php --version | head -1
+          node --version
           cmake --preset release -DWSRV_PHP="$(command -v php)" > /dev/null
-          ctest --preset release -R '^php_' --output-on-failure
+          ctest --preset release -N -R '^js_' | grep -q 'Total Tests: 2' || { echo 'the js_ tests are not registered'; exit 1; }
+          ctest --preset release -R '^(php|js)_' --output-on-failure
       - name: PHP latest
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
@@ -72,7 +78,7 @@ jobs:
         run: |
           php --version | head -1
           cmake --preset release -DWSRV_PHP="$(command -v php)" > /dev/null
-          ctest --preset release -R '^php_' --output-on-failure
+          ctest --preset release -R '^(php|js)_' --output-on-failure
       - name: ccache statistics
         if: always()
         run: ccache --show-stats --verbose | head -12

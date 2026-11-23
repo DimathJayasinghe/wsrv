@@ -42,6 +42,8 @@ Protocol: [`docs/IPC_PROTOCOL.md`](../../docs/IPC_PROTOCOL.md). Lesson: [`docs/l
 | `Connection::send/sendBinary/close` | handle given to callbacks |
 | `Connection::subscribe($topic)` / `unsubscribe($topic)`, `Worker::publish($topic, $payload, $binary = false, $except = 0)` | rooms over IPC (daemon with `--broker=true`) |
 | `new Publisher($url, $token)` then `->publish($topic, $payload, $binary = false, $except = 0)` | publish from any process over HTTP; returns `PublishResult`, throws `PublishFailed` |
+| `new ClusterPublisher([$url1, $url2], $token)` then the same `->publish(...)` | publish to every daemon of a multi-node deployment; returns `ClusterPublishResult` (summed counts, `->failures` per node), throws `PublishFailed` only when no node took it |
+| `Supervisor::forSocket($socket, $token)->run(fn (Worker $w) => ...)` | the production loop: reconnects to the daemon with backoff and jitter, retries `BACKPRESSURE`, fails fast on a wrong token, reports throwing handlers without dropping the link, stops on `SIGTERM` (`installSignalHandlers()`) |
 | `Upgrade::accept($subprotocol = null)` / `reject($status = 403)` | answer a waiting upgrade (`authenticate`) |
 | `HandshakeRequest::cookie($name)` / `header($name)` / `headers($name)` | read the request in `authenticate` |
 

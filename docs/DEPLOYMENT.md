@@ -55,8 +55,9 @@ The settings most deployments need:
 ## 4. Starting and stopping
 
 - **SIGTERM** is graceful: the daemon stops accepting, sends Close 1001 to every client, waits up to `shutdown_grace_ms` (10 s default), then exits 0. systemd uses `KillSignal=SIGTERM` and `TimeoutStopSec=20`; Kubernetes sends it and waits `terminationGracePeriodSeconds`.
-- **Clients must reconnect.** A restart, a deploy or a node drain closes every socket with 1001. Browsers do not retry on their own: use the reconnecting client (`clients/js`, with backoff) or write the loop yourself.
-- **The worker follows the daemon.** The IPC link dies with the daemon; `Worker::run` returns and the supervisor (systemd `BindsTo=`, Compose `restart:`, a Kubernetes sidecar's restart policy) starts it again, and it connects to the new daemon.
+- **Clients must reconnect.** A restart, a deploy or a node drain closes every socket with 1001. Browsers do not retry on their own: use the reconnecting client in `clients/js` (`WsrvClient`: exponential backoff with jitter, a fresh ticket for every attempt, rooms re-joined after every reconnect; ADR-0031) or write the same loop yourself. Without it, the first deploy leaves every open page dead.
+- **The worker follows the daemon.** The IPC link dies with the daemon and `Worker::run` throws `ConnectionClosed`. Run the worker under `Wsrv\Supervisor` (`Supervisor::forSocket($socket, $token)->run(fn (Worker $w) => ...)`): it reconnects with backoff, tells apart "another application is still connected" (retried) from a wrong token (fatal), reports a throwing handler without dropping the link, and stops on `SIGTERM`. Keep your process supervisor too (systemd `Restart=`, Compose `restart:`, a Kubernetes restart policy) for the crash the Supervisor cannot survive.
+- **The worker leaving closes the browsers.** When the application disconnects (a deploy of the worker, a crash), the daemon closes the browser connections it knew about with **1012** (service restart) after `shutdown_grace_ms`, so a worker restart looks to the client like a daemon restart: it reconnects, re-joins its rooms and the new worker answers. Those sockets are closed after the grace period even if a new worker has already connected (it never sees their old traffic: IPC_PROTOCOL.md section 6), so plan for clients to reconnect on every worker deploy.
 - **`SIGHUP`** re-reads the TLS certificate and key without dropping anyone (OPERATIONS section 7).
 - A **rolling update** (Kubernetes `maxUnavailable: 0`, or one VM at a time) turns over the pairs one after another; each pair's clients reconnect, to the others while it restarts.
 
@@ -106,12 +107,12 @@ Rooms are per daemon (see below): a message for a room must be published to ever
 
 ## 7. Using more than one node
 
-Rooms and subscriptions live inside each `wsrvd`. To reach every subscriber, **publish to every daemon**: the PHP `Publisher` takes several endpoints and POSTs to all of them (`new Publisher(['http://a:9200', 'http://b:9200'], $token)`); a missing node is reported, not silent. There is no Redis (or other) backplane yet: it is a planned 1.x feature, not part of 1.0. Browsers need no stickiness (a WebSocket stays on the node it connected to; a reconnect may land elsewhere and re-subscribes).
+Rooms and subscriptions live inside each `wsrvd`. To reach every subscriber, **publish to every daemon**: the PHP `ClusterPublisher` takes several endpoints and POSTs to each of them (`new ClusterPublisher(['http://a:9200', 'http://b:9200'], $token)`), one after another, with one shared publish token. A node that fails does not stop the others; `$result->failures` names it, and if no node answers it throws `PublishFailed`. Keep its timeout short: per-node timeouts add up. There is no Redis (or other) backplane yet: it is a planned 1.x feature, not part of 1.0. Browsers need no stickiness (a WebSocket stays on the node it connected to; a reconnect may land elsewhere and re-subscribes).
 
 ## 8. Sizing and operating-system limits
 
 - **Descriptors:** one per connection plus a few. `wsrvd` checks `RLIMIT_NOFILE` at start and refuses a `max_connections` it cannot honour (ADR-0022). systemd: `LimitNOFILE=1048576` (set in the unit). Docker: `--ulimit nofile=1048576:1048576`. Kubernetes: check `ulimit -n` inside the pod (it comes from the container runtime) and raise it there if it is below `max_connections`.
-- **Memory:** an idle connection costs a few KiB of buffers plus its kernel socket memory; permessage-deflate adds a compressor and an inflater per connection once used (OPERATIONS 1.1 gives zlib's formula). Do not guess: start a test instance, open your expected number of connections and read `docker stats` / RSS, then set `max_connections` and the container limit from that (docs/BENCHMARKS.md reports a measured idle-connection figure).
+- **Memory:** an idle connection costs a few KiB of buffers plus its kernel socket memory; permessage-deflate adds a compressor and an inflater per connection once used (OPERATIONS 1.1 gives zlib's formula). Do not guess: start a test instance, open your expected number of connections and read `docker stats` / RSS, then set `max_connections` and the container limit from that.
 - **Kernel:** `net.core.somaxconn` (accept queue, `4096`), `net.ipv4.tcp_max_syn_backlog`, `net.ipv4.ip_local_port_range` on the **proxy** (it opens one port per client), `fs.file-max`. These are the operator's to set; `wsrvd` never changes them.
 - **Threads:** `threads` event loops; start at the number of cores you give it (not more).
 
@@ -123,5 +124,5 @@ Rooms and subscriptions live inside each `wsrvd`. To reach every subscriber, **p
 - [ ] The IPC socket directory is mode 0700 and the worker runs as the daemon's user.
 - [ ] The publish port and the admin port are not reachable from outside.
 - [ ] The healthcheck/readiness probe is wired; `SIGTERM` reaches the daemon (not a shell wrapper).
-- [ ] Clients reconnect with backoff; the worker is restarted by your supervisor.
+- [ ] Clients reconnect with backoff (`clients/js`, or your own loop); the worker runs under `Supervisor` and your process supervisor restarts it.
 - [ ] `max_connections` is below the descriptor limit and the memory you have.

@@ -144,6 +144,31 @@ else()
     message(STATUS "php not found: the PHP binding tests are not registered")
 endif()
 
+# JavaScript client (ADR-0031, clients/js): unit tests with a fake WebSocket, and an interop test that
+# starts the REAL wsrvd and a supervised PHP worker and restarts both under a connected client. Needs
+# Node 22+ (the global WebSocket); the interop test also needs PHP. Optional, like the PHP tests; the
+# php CI job counts them (ctest -N) so they cannot go missing there unnoticed.
+find_program(WSRV_NODE node)
+if(WSRV_NODE)
+    execute_process(COMMAND ${WSRV_NODE} --version OUTPUT_VARIABLE WSRV_NODE_VERSION OUTPUT_STRIP_TRAILING_WHITESPACE)
+    string(REGEX REPLACE "^v([0-9]+).*" "\\1" WSRV_NODE_MAJOR "${WSRV_NODE_VERSION}")
+    if(WSRV_NODE_MAJOR GREATER_EQUAL 22)
+        add_test(NAME js_unit
+            COMMAND ${WSRV_NODE} --test ${PROJECT_SOURCE_DIR}/clients/js/test/client.test.js)
+        set_tests_properties(js_unit PROPERTIES LABELS js TIMEOUT 120)
+        if(WSRV_PHP)
+            add_test(NAME js_interop
+                COMMAND ${WSRV_NODE} --test --test-timeout=100000 ${PROJECT_SOURCE_DIR}/clients/js/test/interop.test.js)
+            set_tests_properties(js_interop PROPERTIES LABELS js TIMEOUT 150
+                ENVIRONMENT "WSRVD=$<TARGET_FILE:wsrvd>;WSRV_PHP=${WSRV_PHP}")
+        endif()
+    else()
+        message(STATUS "node ${WSRV_NODE_VERSION} is older than 22: the JavaScript client tests are not registered")
+    endif()
+else()
+    message(STATUS "node not found: the JavaScript client tests are not registered")
+endif()
+
 # The embedded PHP binding (ADR-0025) loads libwsrv.so into the php process through FFI. PHP loads its
 # own extensions with RTLD_DEEPBIND, which the sanitizer runtimes refuse, so this test is registered
 # only for builds without a sanitizer (the release preset in CI); the cdef drift test runs everywhere
