@@ -330,6 +330,140 @@ while (proc_get_status($hookProcess)['running'] && microtime(true) < $deadline) 
 @unlink($hookSocket);
 @rmdir($hookDir);
 
+// ---- rooms and the HTTP publish endpoint against the real daemon (ADR-0028) -------------------
+
+use Wsrv\PublishFailed;
+use Wsrv\Publisher;
+
+$roomDir = sys_get_temp_dir() . '/wsrv-php-room-' . bin2hex(random_bytes(4));
+mkdir($roomDir, 0700) || fail('mkdir');
+$roomSocket = $roomDir . '/ipc.sock';
+$publishToken = bin2hex(random_bytes(24));  // 48 characters
+$tokenFile = $roomDir . '/publish.token';
+file_put_contents($tokenFile, $publishToken . "\n");
+chmod($tokenFile, 0600);
+$roomProcess = proc_open(
+    [$daemonPath, "--ipc-socket=$roomSocket", '--listen-port=0', '--allow-origin=https://app.example.com',
+        '--shutdown-grace-ms=1500', '--broker=true', '--publish-port=0', "--publish-token-file=$tokenFile"],
+    [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['pipe', 'w']],
+    $roomPipes
+) ?: fail('cannot start the third wsrvd');
+$roomPort = 0;
+$publishPort = 0;
+$roomLog = '';
+$deadline = microtime(true) + 10;
+while (($roomPort === 0 || $publishPort === 0) && microtime(true) < $deadline) {
+    $r = [$roomPipes[2]];
+    $w = $e = null;
+    if (stream_select($r, $w, $e, 0, 200000) > 0) {
+        $line = fgets($roomPipes[2]);
+        $roomLog .= (string) $line;
+        if ($line !== false && preg_match('/websocket server listening on port (\d+)/', $line, $m)) {
+            $roomPort = (int) $m[1];
+        }
+        if ($line !== false && preg_match('/publish endpoint listening on port (\d+)/', $line, $m)) {
+            $publishPort = (int) $m[1];
+        }
+    }
+}
+($roomPort > 0 && $publishPort > 0) || fail("the room wsrvd did not start:\n$roomLog");
+
+$roomClient = Client::connect($roomSocket, '', 5.0);
+$roomWorker = new Worker($roomClient);
+$rm = new stdClass();
+$rm->open = [];      // ids, in the order the browsers connected
+$rm->statuses = [];  // request => status
+$roomWorker->on('open', function (Connection $c) use ($rm) {
+    $rm->open[] = $c;
+})->on('status', function (int $request, int $status) use ($rm) {
+    $rm->statuses[$request] = $status;
+});
+$roomUntil = function (callable $done, string $what) use ($roomWorker): void {
+    $deadline = microtime(true) + 10;
+    while (!$done()) {
+        microtime(true) < $deadline || fail("timed out waiting for $what");
+        $roomWorker->step(0.2);
+    }
+};
+$statusOf = function (int $request) use ($rm, $roomUntil): int {
+    $roomUntil(fn () => isset($rm->statuses[$request]), "the status of request $request");
+    return $rm->statuses[$request];
+};
+
+$wsA = ws_connect($roomPort);
+$wsB = ws_connect($roomPort);
+$roomUntil(fn () => count($rm->open) === 2, 'two open events');
+[$connA, $connB] = $rm->open;
+$publisher = new Publisher("http://127.0.0.1:$publishPort", $publishToken);
+
+$check('rooms: subscribe is answered OK, and a topic nobody joined reaches nobody', function () use ($connA, $connB, $statusOf, $publisher) {
+    assertSame(StatusCode::OK, $statusOf($connA->subscribe('room.1')));
+    assertSame(StatusCode::OK, $statusOf($connB->subscribe('room.1')));
+    $result = $publisher->publish('empty.room', 'x');
+    assertSame([0, 0, 0], [$result->subscribers, $result->accepted, $result->refused]);
+});
+
+$check('rooms: an HTTP publish reaches every subscriber, text and binary', function () use ($publisher, $wsA, $wsB) {
+    $result = $publisher->publish('room.1', "h\u{e9}llo room");
+    assertSame([2, 2, 0], [$result->subscribers, $result->accepted, $result->refused]);
+    assertSame([1, "h\u{e9}llo room"], ws_read($wsA));
+    assertSame([1, "h\u{e9}llo room"], ws_read($wsB));
+    $publisher->publish('room.1', "\xff\x00\xfe", true);
+    assertSame([2, "\xff\x00\xfe"], ws_read($wsA));
+    assertSame([2, "\xff\x00\xfe"], ws_read($wsB));
+});
+
+$check('rooms: except leaves the sender out', function () use ($publisher, $connA, $wsA, $wsB) {
+    $result = $publisher->publish('room.1', 'not for a', false, $connA->id);
+    assertSame([1, 1, 0], [$result->subscribers, $result->accepted, $result->refused]);
+    assertSame([1, 'not for a'], ws_read($wsB));
+    stream_set_timeout($wsA, 0, 300000);
+    assertSame('', (string) fread($wsA, 1), 'A heard nothing');
+    stream_set_timeout($wsA, 5);
+});
+
+$check('rooms: the application can publish over IPC too, and unsubscribe', function () use ($roomWorker, $connA, $connB, $statusOf, $wsA, $wsB) {
+    assertSame(StatusCode::OK, $statusOf($roomWorker->publish('room.1', 'from the worker', false, $connB->id)));
+    assertSame([1, 'from the worker'], ws_read($wsA));
+    assertSame(StatusCode::OK, $statusOf($connA->unsubscribe('room.1')));
+    assertSame(StatusCode::OK, $statusOf($roomWorker->publish('room.1', 'only b', false, 0)));
+    assertSame([1, 'only b'], ws_read($wsB));
+});
+
+$check('rooms: bad requests are refused with their status, never delivered', function () use ($publisher, $connA, $statusOf, $roomClient, $publishPort) {
+    assertSame(StatusCode::NO_SUCH_CONN, $statusOf($roomClient->subscribe(999999, 'room.1')));
+    assertSame(StatusCode::INVALID_UTF8, $statusOf($roomClient->publish('room.1', "\xff\xfe")));
+    $e = assertThrows(PublishFailed::class, fn () => $publisher->publish('room.1', "\xff\xfe"));
+    assertSame(415, $e->status);
+    $wrong = new Publisher("http://127.0.0.1:$publishPort", str_repeat('x', 48));
+    $e = assertThrows(PublishFailed::class, fn () => $wrong->publish('room.1', 'x'));
+    assertSame(401, $e->status);
+    assertSame(false, $e->isRetryable());
+});
+
+$check('rooms: a closed browser leaves its rooms (no orphans)', function () use ($publisher, $wsB) {
+    fclose($wsB);
+    $deadline = microtime(true) + 5;
+    do {
+        $result = $publisher->publish('room.1', 'anyone?');
+        if ($result->subscribers === 0) {
+            break;
+        }
+        usleep(50000);
+    } while (microtime(true) < $deadline);
+    assertSame(0, $result->subscribers);
+});
+
+fclose($wsA);
+proc_terminate($roomProcess, SIGTERM);
+$deadline = microtime(true) + 10;
+while (proc_get_status($roomProcess)['running'] && microtime(true) < $deadline) {
+    usleep(50000);
+}
+@unlink($tokenFile);
+@unlink($roomSocket);
+@rmdir($roomDir);
+
 @unlink($socket);
 @rmdir($dir);
 echo count($failures) === 0 ? "all interop checks passed\n" : count($failures) . " interop check(s) failed\n";

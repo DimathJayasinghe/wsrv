@@ -9,9 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
-#include <cstdint>
 #include <cstring>
-#include <exception>
 #include <new>
 #include <optional>
 #include <string>
@@ -78,10 +76,8 @@ public:
         }
         try {
             pump();
-        } catch (const std::exception&) {
-            // Out of memory, or an action that threw: the request ends without an answer. Nothing
-            // here can be retried, and the exception must not cross into the event loop.
-            finish_and_retire();
+        } catch (const std::bad_alloc&) {
+            finish_and_retire();  // out of memory: no answer, the request still ends
         }
     }
 
@@ -93,42 +89,35 @@ private:
         finish_and_retire();
     }
 
-    enum class Step : std::uint8_t { More, Wait, Over };
-
     /// Edge-triggered: read until the kernel has nothing more, the request is answered, or the
     /// peer is gone.
     void pump() {
-        while (!done_ && read_once() == Step::More) {
+        while (!done_) {
+            const bool head = phase_ == Phase::Head;
+            char* into = head ? head_.data() + used_ : body_.data() + body_used_;
+            const std::size_t room = head ? head_.size() - used_ : body_.size() - body_used_;
+            if (room == 0) {
+                reply(400, "request head too large\n");
+                return;
+            }
+            const SysResult got = owner_.sys_.read(fd_.get(), into, room);
+            if (got.err == EINTR) {
+                continue;
+            }
+            if (got.err == EAGAIN || got.err == EWOULDBLOCK) {
+                return;  // wait for more bytes (or the deadline)
+            }
+            if (got.err != 0 || got.value == 0) {
+                finish_and_retire();  // reset or end of stream before a full request
+                return;
+            }
+            const auto count = static_cast<std::size_t>(got.value);
+            if (head) {
+                on_head_bytes(count);
+            } else {
+                on_body_bytes(count);
+            }
         }
-    }
-
-    /// One read into the head or the body, and what it means.
-    Step read_once() {
-        const bool head = phase_ == Phase::Head;
-        char* into = head ? head_.data() + used_ : body_.data() + body_used_;
-        const std::size_t room = head ? head_.size() - used_ : body_.size() - body_used_;
-        if (room == 0) {
-            reply(400, "request head too large\n");
-            return Step::Over;
-        }
-        const SysResult got = owner_.sys_.read(fd_.get(), into, room);
-        if (got.err == EINTR) {
-            return Step::More;
-        }
-        if (got.err == EAGAIN || got.err == EWOULDBLOCK) {
-            return Step::Wait;  // wait for more bytes (or the deadline)
-        }
-        if (got.err != 0 || got.value == 0) {
-            finish_and_retire();  // reset or end of stream before a full request
-            return Step::Over;
-        }
-        const auto count = static_cast<std::size_t>(got.value);
-        if (head) {
-            on_head_bytes(count);
-        } else {
-            on_body_bytes(count);
-        }
-        return Step::More;
     }
 
     void on_head_bytes(std::size_t count) {
@@ -193,7 +182,7 @@ private:
 
     void publish_now() {
         const PublishMessage message{
-            request_.topic, as_bytes(std::string_view{body_}), request_.binary, request_.except};
+            request_->topic, as_bytes(std::string_view{body_}), request_->binary, request_->except};
         const PublishAnswer answer = publish_answer(owner_.sources_.publish(message));
         reply(answer.status, answer.body);
     }
@@ -224,20 +213,24 @@ private:
     std::size_t used_ = 0;
     std::string body_;  // sized only after the credential and the length were accepted
     std::size_t body_used_ = 0;
-    PublishRequest request_;  // valid once the body phase has begun
+    std::optional<PublishRequest> request_;
     Phase phase_ = Phase::Head;
     bool done_ = false;
 };
 
-Result<std::unique_ptr<PublishEndpoint>> PublishEndpoint::create(PublishDeps deps,
-                                                                 const PublishConfig& config) {
-    if (deps.sources.token.size() < kMinPublishTokenBytes || !deps.sources.publish ||
-        !deps.accepting) {
+Result<std::unique_ptr<PublishEndpoint>> PublishEndpoint::create(EventLoop& loop,
+                                                                 ISyscalls& sys,
+                                                                 const PublishConfig& config,
+                                                                 const PublishSources& sources,
+                                                                 IMetrics& metrics,
+                                                                 std::function<bool()> accepting) {
+    if (sources.token.size() < kMinPublishTokenBytes || !sources.publish || !accepting) {
         return fail(ErrorCode::InvalidConfig, "publish: needs a token of at least 32 bytes");
     }
     std::unique_ptr<PublishEndpoint> endpoint;
     try {
-        endpoint = std::make_unique<PublishEndpoint>(Key{}, std::move(deps), config);
+        endpoint = std::make_unique<PublishEndpoint>(
+            Key{}, loop, sys, config, sources, metrics, std::move(accepting));
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::ResourceExhausted, "publish: out of memory");
     }
@@ -268,9 +261,15 @@ Result<void> PublishEndpoint::open() {
     return acceptor_->start();
 }
 
-PublishEndpoint::PublishEndpoint(Key /*unused*/, PublishDeps deps, const PublishConfig& config)
-    : loop_{deps.loop}, sys_{deps.sys}, config_{config}, sources_{deps.sources},
-      metrics_{deps.metrics}, accepting_{std::move(deps.accepting)} {}
+PublishEndpoint::PublishEndpoint(Key /*unused*/,
+                                 EventLoop& loop,
+                                 ISyscalls& sys,
+                                 const PublishConfig& config,
+                                 const PublishSources& sources,
+                                 IMetrics& metrics,
+                                 std::function<bool()> accepting)
+    : loop_{loop}, sys_{sys}, config_{config}, sources_{sources}, metrics_{metrics},
+      accepting_{std::move(accepting)} {}
 
 PublishEndpoint::~PublishEndpoint() {
     if (acceptor_) {

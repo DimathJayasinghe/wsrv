@@ -69,6 +69,9 @@ int run_daemon(wsrv::EventLoop& loop,
         return 1;
     }
     std::cerr << "wsrvd: websocket server listening on port " << (*embedded)->port() << '\n';
+    if ((*embedded)->publish_port() != 0) {
+        std::cerr << "wsrvd: publish endpoint listening on port " << (*embedded)->publish_port() << '\n';
+    }
 
     const wsrv::Result<void> ran = loop.run();
     reloadable = nullptr;  // the signal handler must not touch a server that is being closed

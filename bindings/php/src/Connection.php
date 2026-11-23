@@ -31,6 +31,18 @@ final class Connection
         return $this->client->sendBinary($this->id, $data);
     }
 
+    /** Put this connection in a room; see Client::subscribe(). @return int the request id */
+    public function subscribe(string $topic): int
+    {
+        return $this->client->subscribe($this->id, $topic);
+    }
+
+    /** @return int the request id */
+    public function unsubscribe(string $topic): int
+    {
+        return $this->client->unsubscribe($this->id, $topic);
+    }
+
     /** Begin the closing handshake. @return int the request id */
     public function close(int $code = 1000, string $reason = ''): int
     {

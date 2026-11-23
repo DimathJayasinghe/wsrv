@@ -51,5 +51,6 @@ We teach as we build. Each lesson answers three questions: **What** are we build
 | 44 | [Broker commands over the IPC link](44-broker-commands-over-the-ipc-link.md) | M14 | written |
 | 45 | [Reading a request that has a body](45-reading-a-request-that-has-a-body.md) | M14 | written |
 | 46 | [An endpoint an attacker can reach](46-an-endpoint-an-attacker-can-reach.md) | M14 | written |
+| 47 | [Publishing from PHP](47-publishing-from-php.md) | M14 | written |
 
 Lesson template: *Goal → Background (the problem) → Design (why this way) → Walkthrough (code, small steps) → Tests (what proves it works) → Pitfalls → Exercises.*

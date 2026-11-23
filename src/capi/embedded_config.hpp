@@ -202,25 +202,23 @@ private:
     [[nodiscard]] Result<void> set_deflate_min_size(std::string_view value);
     [[nodiscard]] Result<void> set_deflate_max_ratio(std::string_view value);
 
-    // Ordered by size, largest first, so the padding analyzer is satisfied (ServerConfig and the
-    // strings first, the small integers and flags last).
+    std::string admin_host_ = "127.0.0.1";       // loopback: the admin page has no authentication
+    std::optional<std::uint16_t> admin_port_;    // set = the admin listener is on
+    std::string publish_host_ = "127.0.0.1";     // loopback unless the operator opts into exposure
+    std::optional<std::uint16_t> publish_port_;  // set = the publish listener is on
+    std::string publish_token_;                  // a secret: never logged, never a config key
+    std::string host_ = "127.0.0.1";             // loopback unless the operator opts into exposure
+    std::uint16_t port_ = 0;
     ServerConfig server_;
-    BrokerConfig broker_;
     EventQueueConfig queue_;
-    std::vector<TlsSniSetting> tls_sni_;
-    DeflateOptions deflate_;                  ///< tuning; used only when deflate_enabled_
-    std::string admin_host_ = "127.0.0.1";    // loopback: the admin page has no authentication
-    std::string publish_host_ = "127.0.0.1";  // loopback unless the operator opts into exposure
-    std::string publish_token_;               // a secret: never logged, never a config key
-    std::string host_ = "127.0.0.1";          // loopback unless the operator opts into exposure
+    bool handshake_hook_ = false;
     std::string tls_cert_;
     std::string tls_key_;
-    std::optional<std::uint16_t> admin_port_;    // set = the admin listener is on
-    std::optional<std::uint16_t> publish_port_;  // set = the publish listener is on
-    std::uint16_t port_ = 0;
-    bool handshake_hook_ = false;
+    std::vector<TlsSniSetting> tls_sni_;
     bool broker_enabled_ = false;
+    BrokerConfig broker_;
     bool deflate_enabled_ = false;
+    DeflateOptions deflate_;  ///< tuning; used only when deflate_enabled_
 };
 
 }  // namespace wsrv

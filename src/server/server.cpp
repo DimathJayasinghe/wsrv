@@ -189,12 +189,10 @@ Result<void> Server::start_publish() {
     publish.max_connections = config_.publish_max_connections;
     publish.request_timeout = config_.publish_request_timeout;
     publish.max_body_bytes = config_.publish_max_body_bytes;
-    auto endpoint = PublishEndpoint::create(PublishDeps{main_->loop(),
-                                                        sys_,
-                                                        *publish_sources_,
-                                                        main_->metrics(),
-                                                        [this] { return !shutting_down_; }},
-                                            publish);
+    auto endpoint = PublishEndpoint::create(
+        main_->loop(), sys_, publish, *publish_sources_, main_->metrics(), [this] {
+            return !shutting_down_;
+        });
     if (!endpoint) {
         return std::unexpected{endpoint.error()};
     }
