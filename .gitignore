@@ -52,3 +52,6 @@ graphify-out/
 
 # Executing-plans scratch (ledger, briefs)
 /.superpowers/
+
+# Python bytecode (bench/ and tests/soak/ scripts)
+__pycache__/

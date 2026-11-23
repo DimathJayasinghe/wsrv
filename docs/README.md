@@ -18,6 +18,7 @@ Reading order for newcomers: **PROJECT_PLAN → REQUIREMENTS → ARCHITECTURE �
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Docker, Compose, systemd, Kubernetes, reverse proxies, tuning, go-live checklist 
 | [LARAVEL.md](LARAVEL.md) | Rooms and publishing from a Laravel app (ticket auth, Artisan worker, queued publish) |
 | [OPERATIONS.md](OPERATIONS.md) | Config, logging, metrics, lifecycle, hardening |
+| [BENCHMARKS.md](BENCHMARKS.md) | wsrv against Workerman, Swoole and Reverb: numbers, noise, limits, how to rerun |
 | [adr/](adr/) | Architecture decision records |
 | [learning/](learning/) | Lessons written as we build: what, why, how |
 
