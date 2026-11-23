@@ -70,6 +70,15 @@ final class Worker
         return $this;
     }
 
+    /**
+     * Send to every subscriber of $topic except connection $except (0 = nobody); see
+     * Client::publish(). From another process, use Publisher over HTTP instead. @return int the request id
+     */
+    public function publish(string $topic, string $payload, bool $binary = false, int $except = 0): int
+    {
+        return $this->client->publish($topic, $payload, $binary, $except);
+    }
+
     /** Connections currently open (as far as this worker has been told). */
     public function connectionCount(): int
     {

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "wsrvd/handshake.hpp"
 
+#include "base/constant_time.hpp"
 #include "wsrv/wsrv.h"
 
 #include <utility>
 #include <variant>
 
-#include "wsrvd/token.hpp"
 
 namespace wsrv::wsrvd {
 
@@ -43,7 +43,8 @@ Handshake::Outcome Handshake::on_first_message(const ipc::Message& first) const 
     return Outcome{.accepted = true,
                    .reply = ipc::HelloOk{.major = ipc::kVersionMajor,
                                          .minor = ipc::kVersionMinor,
-                                         .max_frame = max_frame_}};
+                                         .max_frame = max_frame_},
+                   .peer_minor = hello->minor};
 }
 
 }  // namespace wsrv::wsrvd

@@ -46,5 +46,11 @@ We teach as we build. Each lesson answers three questions: **What** are we build
 | 39 | [A chat where the bounds are yours (PHP chat)](39-a-chat-where-the-bounds-are-yours.md) | M12 | written (slice 4) |
 | 40 | [Declining an offer, remembering a window (deflate edge cases)](40-declining-and-remembering-in-deflate.md) | M12 | written |
 | 41 | [Shipping a native library with a PHP package](41-shipping-a-native-library-with-a-php-package.md) | M12 | written |
+| 42 | [A daemon in a container](42-a-daemon-in-a-container.md) | M14 | written |
+| 43 | [Rooms for a host that only has ids](43-rooms-for-a-host-that-only-has-ids.md) | M14 | written |
+| 44 | [Broker commands over the IPC link](44-broker-commands-over-the-ipc-link.md) | M14 | written |
+| 45 | [Reading a request that has a body](45-reading-a-request-that-has-a-body.md) | M14 | written |
+| 46 | [An endpoint an attacker can reach](46-an-endpoint-an-attacker-can-reach.md) | M14 | written |
+| 47 | [Publishing from PHP](47-publishing-from-php.md) | M14 | written |
 
 Lesson template: *Goal → Background (the problem) → Design (why this way) → Walkthrough (code, small steps) → Tests (what proves it works) → Pitfalls → Exercises.*

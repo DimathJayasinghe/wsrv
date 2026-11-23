@@ -20,6 +20,7 @@
 #include "server/ip_limits.hpp"
 #include "server/loop_shard.hpp"
 #include "server/pending_gate.hpp"
+#include "server/publish_endpoint.hpp"
 #include "server/worker_thread.hpp"
 
 #include <atomic>
@@ -46,6 +47,10 @@ struct ServerDeps {
     /// Wraps each accepted transport (TLS, ADR-0019). Null = connections are plain TCP. Borrowed;
     /// must be thread-safe (it is called from every loop thread).
     ITransportWrapper* transport_wrapper = nullptr;
+    /// The credential and the action of the publish endpoint (ADR-0028); required when
+    /// ServerConfig::publish is set, ignored otherwise. Borrowed; must outlive the Server. The
+    /// action is called on loop 0.
+    const PublishSources* publish = nullptr;
 };
 
 /// A WebSocket server (Facade): accepts connections, runs them on one or more loops, shuts them
@@ -94,6 +99,10 @@ public:
     /// The address actually bound (the real port when 0 was configured).
     [[nodiscard]] Endpoint local_endpoint() const;
     /// The admin listener's bound address (ADR-0023); empty when the admin listener is off.
+    /// The publish listener's bound address (ADR-0028); empty when it is off.
+    [[nodiscard]] std::optional<Endpoint> publish_endpoint() const {
+        return publish_ ? std::optional<Endpoint>{publish_->local_endpoint()} : std::nullopt;
+    }
     [[nodiscard]] std::optional<Endpoint> admin_endpoint() const {
         return admin_ ? std::optional<Endpoint>{admin_->local_endpoint()} : std::nullopt;
     }
@@ -147,14 +156,16 @@ private:
     void begin_shutdown();
     void force_shutdown();
     [[nodiscard]] Result<void> start_admin();
+    [[nodiscard]] Result<void> start_publish();
     [[nodiscard]] Result<void> make_shared_state();
     void on_shard_drained();
     void on_signal(int signo);
 
     ServerConfig config_;
     IHandlerFactory& factory_;
-    IHandshakeDecider* decider_;  // null = the hook is off
-    ITransportWrapper* wrapper_;  // null = plain TCP
+    IHandshakeDecider* decider_;             // null = the hook is off
+    const PublishSources* publish_sources_;  // null = no publish endpoint; borrowed
+    ITransportWrapper* wrapper_;             // null = plain TCP
     LinuxSyscalls own_sys_;
     SteadyClock own_clock_;
     NullLogger own_logger_;
@@ -176,7 +187,8 @@ private:
     std::vector<std::unique_ptr<WorkerThread>> workers_;  // shards 1..threads-1, started by run()
     std::unique_ptr<TcpListener> listener_;
     std::unique_ptr<Acceptor> acceptor_;
-    std::unique_ptr<AdminEndpoint> admin_;  // on loop 0; null = off; destroyed before loop 0
+    std::unique_ptr<AdminEndpoint> admin_;      // on loop 0; null = off; destroyed before loop 0
+    std::unique_ptr<PublishEndpoint> publish_;  // same: loop 0, null = off, destroyed before it
     std::unique_ptr<SignalWatcher> signals_;
 
     // Loop-0-thread state.

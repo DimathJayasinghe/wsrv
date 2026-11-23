@@ -163,6 +163,31 @@ final class Client
         return $this->command(fn (int $r): string => Codec::handshakeReject($r, $conn, $status));
     }
 
+    /**
+     * Put one of your connections in a room (ADR-0028). The StatusReply says OK, NO_SUCH_CONN (not
+     * one of yours, or closed), LIMIT (a broker bound; waiting will not help until someone leaves) or
+     * INVALID_ARGUMENT (the daemon runs without `broker = true`). @return int the request id
+     */
+    public function subscribe(int $conn, string $topic): int
+    {
+        return $this->command(fn (int $r): string => Codec::subscribe($r, $conn, $topic));
+    }
+
+    /** @return int the request id */
+    public function unsubscribe(int $conn, string $topic): int
+    {
+        return $this->command(fn (int $r): string => Codec::unsubscribe($r, $conn, $topic));
+    }
+
+    /**
+     * Send to every subscriber of $topic except connection $except. OK means the broker took it, not
+     * how many received it (the HTTP publish endpoint reports counts). @return int the request id
+     */
+    public function publish(string $topic, string $payload, bool $binary = false, int $except = 0): int
+    {
+        return $this->command(fn (int $r): string => Codec::publish($r, $topic, $payload, $binary, $except));
+    }
+
     /** The daemon answers with a Pong message. */
     public function ping(): void
     {

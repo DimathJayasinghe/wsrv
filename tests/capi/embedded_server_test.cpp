@@ -218,6 +218,138 @@ TEST(EmbeddedServer, ClientsThatIgnoreTheShutdownStillGiveTheHostOneCloseEachOnE
     EXPECT_EQ(closes, 4);
 }
 
+// ADR-0027: the broker is a config key; a host drives rooms by connection id.
+TEST(EmbeddedServer, TheBrokerKeyGivesTheHostRoomsByConnectionIdAndItsCountersReachTheMetrics) {
+    EmbeddedConfig config = base_config();
+    ASSERT_TRUE(config.set("broker", "true").has_value());
+    ASSERT_TRUE(config.set("admin_port", "0").has_value());
+    const auto server = started(config);
+    TcpClient a{server->port()};
+    TcpClient b{server->port()};
+    ASSERT_TRUE(a.upgrade());
+    const auto open_a = server->poll(3000ms);
+    ASSERT_TRUE(b.upgrade());
+    const auto open_b = server->poll(3000ms);
+    ASSERT_TRUE(open_a && open_b);
+    ASSERT_TRUE(server->subscribe(open_a->conn, "room.1").has_value());
+    ASSERT_TRUE(server->subscribe(open_b->conn, "room.1").has_value());
+    EXPECT_EQ(server->topic_subscribers("room.1").value_or(0), 2U);
+
+    const auto report = server->publish_text("room.1", "hello all", open_a->conn);
+    ASSERT_TRUE(report.has_value());
+    EXPECT_EQ(report->accepted, 1U);
+    const auto frame = b.read_frame();
+    ASSERT_TRUE(frame.has_value());
+    EXPECT_EQ(frame->payload, "hello all");
+    EXPECT_TRUE(a.silent_for(200ms));
+
+    // The broker's counters reach the server's metrics (ADR-0024 section 6): one publish, one
+    // accepted delivery (the publisher was left out).
+    TcpClient admin{server->admin_port()};
+    ASSERT_TRUE(admin.send("GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n"));
+    const std::string page = admin.read_http_head() + admin.read_all();
+    EXPECT_NE(page.find("wsrv_broker_publishes_total 1"), std::string::npos) << page;
+    EXPECT_NE(page.find("wsrv_broker_deliveries_total{result=\"accepted\"} 1"), std::string::npos)
+        << page;
+}
+
+TEST(EmbeddedServer, WithoutTheBrokerKeyBrokerCommandsAreInvalidArgument) {
+    const auto server = started();
+    const auto result = server->publish_text("room", "x");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ErrorCode::InvalidArgument);
+}
+
+// ADR-0028: the publish endpoint. The token is not a config key, so it cannot leak from a config
+// file or the C ABI's string settings; the endpoint needs the broker and a token to start at all.
+const std::string kPublishToken(48, 'p');
+
+EmbeddedConfig publish_config() {
+    EmbeddedConfig config = base_config();
+    EXPECT_TRUE(config.set("broker", "true").has_value());
+    EXPECT_TRUE(config.set("publish_port", "0").has_value());
+    EXPECT_TRUE(config.set_publish_token(kPublishToken).has_value());
+    return config;
+}
+
+std::string http_publish(std::uint16_t port, const std::string& query, const std::string& body) {
+    TcpClient http{port};
+    EXPECT_TRUE(http.valid());
+    EXPECT_TRUE(http.send(
+        "POST /publish" + query + " HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer " + kPublishToken +
+        "\r\nContent-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body));
+    return http.read_http_head() + http.read_all();
+}
+
+TEST(EmbeddedServer, AnHttpPublishReachesTheSubscribersOfARoomThroughTheBroker) {
+    const auto server = started(publish_config());
+    ASSERT_NE(server->publish_port(), 0);
+    TcpClient a{server->port()};
+    TcpClient b{server->port()};
+    ASSERT_TRUE(a.upgrade());
+    const auto open_a = server->poll(3000ms);
+    ASSERT_TRUE(b.upgrade());
+    const auto open_b = server->poll(3000ms);
+    ASSERT_TRUE(open_a && open_b);
+    ASSERT_TRUE(server->subscribe(open_a->conn, "room.7").has_value());
+    ASSERT_TRUE(server->subscribe(open_b->conn, "room.7").has_value());
+
+    const std::string answer = http_publish(
+        server->publish_port(), "?topic=room.7&except=" + std::to_string(open_a->conn), "hi room");
+    EXPECT_EQ(answer.rfind("HTTP/1.1 200 OK\r\n", 0), 0U) << answer;
+    EXPECT_NE(answer.find("subscribers=1 accepted=1 refused=0"), std::string::npos) << answer;
+    const auto frame = b.read_frame();
+    ASSERT_TRUE(frame.has_value());
+    EXPECT_EQ(frame->payload, "hi room");
+    EXPECT_TRUE(a.silent_for(200ms)) << "the excepted connection gets nothing";
+
+    // Not UTF-8 as text is 415; the same bytes as binary go through. A topic nobody joined is a
+    // success with zero subscribers.
+    EXPECT_EQ(
+        http_publish(server->publish_port(), "?topic=room.7", "\xff\xfe").rfind("HTTP/1.1 415 ", 0),
+        0U);
+    EXPECT_EQ(http_publish(server->publish_port(), "?topic=room.7&binary=1", "\xff\xfe")
+                  .rfind("HTTP/1.1 200 ", 0),
+              0U);
+    EXPECT_NE(http_publish(server->publish_port(), "?topic=empty", "x")
+                  .find("subscribers=0 accepted=0 refused=0"),
+              std::string::npos);
+    EXPECT_EQ(
+        http_publish(server->publish_port(), "?topic=bad%20name", "x").rfind("HTTP/1.1 400 ", 0),
+        0U);
+    EXPECT_EQ(
+        http_publish(server->publish_port(), "?topic=bad!name", "x").rfind("HTTP/1.1 400 ", 0), 0U);
+}
+
+TEST(EmbeddedServer, PublishNeedsTheBrokerAndATokenOrStartFails) {
+    {
+        EmbeddedConfig config = base_config();
+        ASSERT_TRUE(config.set("publish_port", "0").has_value());
+        ASSERT_TRUE(config.set_publish_token(kPublishToken).has_value());  // no broker
+        auto server = EmbeddedServer::create(config);
+        ASSERT_TRUE(server.has_value());
+        const auto result = (*server)->start();
+        ASSERT_FALSE(result.has_value());
+        EXPECT_EQ(result.error().code, ErrorCode::InvalidConfig);
+        EXPECT_FALSE((*server)->running());
+    }
+    {
+        EmbeddedConfig config = base_config();
+        ASSERT_TRUE(config.set("broker", "true").has_value());
+        ASSERT_TRUE(config.set("publish_port", "0").has_value());  // no token
+        auto server = EmbeddedServer::create(config);
+        ASSERT_TRUE(server.has_value());
+        EXPECT_FALSE((*server)->start().has_value());
+    }
+}
+
+TEST(EmbeddedServer, ThePublishTokenIsNotAKeyAndMustBeLongEnough) {
+    EmbeddedConfig config = base_config();
+    EXPECT_FALSE(config.set("publish_token", kPublishToken).has_value());  // unknown key: refused
+    EXPECT_FALSE(config.set_publish_token(std::string(31, 'x')).has_value());
+    EXPECT_TRUE(config.set_publish_token(std::string(32, 'x')).has_value());
+}
+
 // ADR-0023: the admin listener is a text key like every other.
 TEST(EmbeddedServer, TheAdminKeysServeMetricsOnTheirOwnPort) {
     EmbeddedConfig config = base_config();

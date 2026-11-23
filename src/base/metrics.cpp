@@ -37,6 +37,15 @@ constexpr MetricInfo close_series(std::string_view close_class) {
             "",
             ""};
 }
+constexpr MetricInfo publish_http_series(std::string_view status) {
+    return {"wsrv_publish_http_total",
+            "Answers of the HTTP publish endpoint, by status.",
+            false,
+            "status",
+            status,
+            "",
+            ""};
+}
 constexpr MetricInfo broker_deliveries_series(std::string_view result) {
     return {"wsrv_broker_deliveries_total",
             "Broker deliveries to subscribers, by whether the subscriber's loop accepted them.",
@@ -96,6 +105,18 @@ constexpr std::array<MetricInfo, kMetricCount> kInfo{{
                ""},
     broker_deliveries_series("accepted"),
     broker_deliveries_series("refused"),
+    publish_http_series("200"),
+    publish_http_series("400"),
+    publish_http_series("401"),
+    publish_http_series("404"),
+    publish_http_series("405"),
+    publish_http_series("411"),
+    publish_http_series("413"),
+    publish_http_series("415"),
+    publish_http_series("417"),
+    publish_http_series("429"),
+    publish_http_series("501"),
+    publish_http_series("503"),
 }};
 
 void append_number(std::string& out, std::uint64_t value) {

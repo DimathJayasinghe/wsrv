@@ -3,6 +3,7 @@
 
 #include "base/checked.hpp"
 
+#include <limits>
 #include <new>
 #include <type_traits>
 #include <utility>
@@ -12,14 +13,16 @@ namespace wsrv::ipc {
 
 namespace {
 
-constexpr std::size_t kHelloFixed = 6;    // major, minor, token length
-constexpr std::size_t kHelloOkSize = 8;   // major, minor, max frame
-constexpr std::size_t kSendFixed = 12;    // request, connection
-constexpr std::size_t kCloseFixed = 14;   // request, connection, code
-constexpr std::size_t kEventFixed = 12;   // kind, connection, close code, clean
-constexpr std::size_t kStatusSize = 5;    // request, status
-constexpr std::size_t kAcceptFixed = 12;  // request, connection
-constexpr std::size_t kRejectSize = 14;   // request, connection, status
+constexpr std::size_t kHelloFixed = 6;     // major, minor, token length
+constexpr std::size_t kHelloOkSize = 8;    // major, minor, max frame
+constexpr std::size_t kSendFixed = 12;     // request, connection
+constexpr std::size_t kCloseFixed = 14;    // request, connection, code
+constexpr std::size_t kEventFixed = 12;    // kind, connection, close code, clean
+constexpr std::size_t kStatusSize = 5;     // request, status
+constexpr std::size_t kAcceptFixed = 12;   // request, connection
+constexpr std::size_t kRejectSize = 14;    // request, connection, status
+constexpr std::size_t kTopicFixed = 12;    // request, connection
+constexpr std::size_t kPublishFixed = 15;  // request, kind, except, topic length
 
 [[nodiscard]] bool known_kind(EventKind kind) noexcept {
     const auto raw = static_cast<std::uint8_t>(kind);
@@ -123,62 +126,91 @@ struct Describer {
         }
         return Encoded{FrameType::HandshakeReject, kRejectSize};
     }
+    Result<Encoded> operator()(const TopicCommand& m) const {
+        if (m.conn == 0) {
+            return fail(ErrorCode::InvalidArgument, "ipc: connection id 0");
+        }
+        return Encoded{m.subscribe ? FrameType::Subscribe : FrameType::Unsubscribe,
+                       kTopicFixed + m.topic.size()};
+    }
+    Result<Encoded> operator()(const Publish& m) const {
+        if (m.topic.size() > std::numeric_limits<std::uint16_t>::max()) {
+            return fail(ErrorCode::InvalidArgument, "ipc: topic too long");
+        }
+        return Encoded{FrameType::Publish, kPublishFixed + m.topic.size() + m.payload.size()};
+    }
 };
 
 [[nodiscard]] Result<Encoded> describe(const Message& message) {
     return std::visit(Describer{}, message);
 }
 
+/// Writes the body of each message type; a namespace-level type (not local to write_body) so the
+/// function-size check judges each overload on its own.
+struct BodyWriter {
+    Writer& w;
+    void operator()(const Hello& m) const {
+        w.u16(m.major);
+        w.u16(m.minor);
+        w.u16(static_cast<std::uint16_t>(m.token.size()));
+        w.bytes(m.token);
+    }
+    void operator()(const HelloOk& m) const {
+        w.u16(m.major);
+        w.u16(m.minor);
+        w.u32(m.max_frame);
+    }
+    void operator()(const SendData& m) const {
+        w.u32(m.request);
+        w.u64(m.conn);
+        w.bytes(m.data);
+    }
+    void operator()(const CloseCommand& m) const {
+        w.u32(m.request);
+        w.u64(m.conn);
+        w.u16(m.code);
+        w.bytes(m.reason);
+    }
+    void operator()(const Ping& /*m*/) const {}
+    void operator()(const Pong& /*m*/) const {}
+    void operator()(const Event& m) const {
+        w.u8(static_cast<std::uint8_t>(m.kind));
+        w.u64(m.conn);
+        w.u16(m.close_code);
+        w.u8(m.clean ? 1 : 0);
+        w.bytes(m.data);
+    }
+    void operator()(const Status& m) const {
+        w.u32(m.request);
+        w.u8(m.status);
+    }
+    void operator()(const HandshakeAccept& m) const {
+        w.u32(m.request);
+        w.u64(m.conn);
+        w.bytes(m.subprotocol);
+    }
+    void operator()(const HandshakeReject& m) const {
+        w.u32(m.request);
+        w.u64(m.conn);
+        w.u16(m.status);
+    }
+    void operator()(const TopicCommand& m) const {
+        w.u32(m.request);
+        w.u64(m.conn);
+        w.bytes(m.topic);
+    }
+    void operator()(const Publish& m) const {
+        w.u32(m.request);
+        w.u8(m.text ? 1 : 2);
+        w.u64(m.except);
+        w.u16(static_cast<std::uint16_t>(m.topic.size()));
+        w.bytes(m.topic);
+        w.bytes(m.payload);
+    }
+};
+
 void write_body(Writer& w, const Message& message) {
-    struct Visitor {
-        Writer& w;
-        void operator()(const Hello& m) const {
-            w.u16(m.major);
-            w.u16(m.minor);
-            w.u16(static_cast<std::uint16_t>(m.token.size()));
-            w.bytes(m.token);
-        }
-        void operator()(const HelloOk& m) const {
-            w.u16(m.major);
-            w.u16(m.minor);
-            w.u32(m.max_frame);
-        }
-        void operator()(const SendData& m) const {
-            w.u32(m.request);
-            w.u64(m.conn);
-            w.bytes(m.data);
-        }
-        void operator()(const CloseCommand& m) const {
-            w.u32(m.request);
-            w.u64(m.conn);
-            w.u16(m.code);
-            w.bytes(m.reason);
-        }
-        void operator()(const Ping& /*m*/) const {}
-        void operator()(const Pong& /*m*/) const {}
-        void operator()(const Event& m) const {
-            w.u8(static_cast<std::uint8_t>(m.kind));
-            w.u64(m.conn);
-            w.u16(m.close_code);
-            w.u8(m.clean ? 1 : 0);
-            w.bytes(m.data);
-        }
-        void operator()(const Status& m) const {
-            w.u32(m.request);
-            w.u8(m.status);
-        }
-        void operator()(const HandshakeAccept& m) const {
-            w.u32(m.request);
-            w.u64(m.conn);
-            w.bytes(m.subprotocol);
-        }
-        void operator()(const HandshakeReject& m) const {
-            w.u32(m.request);
-            w.u64(m.conn);
-            w.u16(m.status);
-        }
-    };
-    std::visit(Visitor{w}, message);
+    std::visit(BodyWriter{w}, message);
 }
 
 // ---- reading -----------------------------------------------------------------------------------
@@ -251,6 +283,9 @@ std::optional<FrameType> frame_type_from(std::uint8_t raw) noexcept {
     case FrameType::Status:
     case FrameType::HandshakeAccept:
     case FrameType::HandshakeReject:
+    case FrameType::Subscribe:
+    case FrameType::Unsubscribe:
+    case FrameType::Publish:
         return static_cast<FrameType>(raw);
     }
     return std::nullopt;
@@ -396,6 +431,42 @@ Result<Message> parse_handshake_reject(Reader& r) {
     return m;
 }
 
+Result<Message> parse_topic_command(Reader& r, bool subscribe) {
+    if (r.remaining() < kTopicFixed) {
+        return invalid("ipc: topic command too short");
+    }
+    TopicCommand m;
+    m.subscribe = subscribe;
+    m.request = r.u32();
+    m.conn = r.u64();
+    if (m.conn == 0) {
+        return invalid("ipc: connection id 0");
+    }
+    m.topic = r.take_rest();
+    return m;
+}
+
+Result<Message> parse_publish(Reader& r) {
+    if (r.remaining() < kPublishFixed) {
+        return invalid("ipc: publish too short");
+    }
+    Publish m;
+    m.request = r.u32();
+    const std::uint8_t kind = r.u8();
+    if (kind != 1 && kind != 2) {
+        return invalid("ipc: publish kind");
+    }
+    m.text = kind == 1;
+    m.except = r.u64();
+    const std::size_t topic_size = r.u16();
+    if (topic_size > r.remaining()) {  // the declared length is checked against what is there
+        return invalid("ipc: publish topic length");
+    }
+    m.topic = r.take(topic_size);
+    m.payload = r.take_rest();
+    return m;
+}
+
 }  // namespace
 
 Result<Message> parse_message(FrameType type, ByteView body) {
@@ -425,6 +496,12 @@ Result<Message> parse_message(FrameType type, ByteView body) {
         return parse_handshake_accept(r);
     case FrameType::HandshakeReject:
         return parse_handshake_reject(r);
+    case FrameType::Subscribe:
+        return parse_topic_command(r, true);
+    case FrameType::Unsubscribe:
+        return parse_topic_command(r, false);
+    case FrameType::Publish:
+        return parse_publish(r);
     }
     return invalid("ipc: unknown frame type");
 }

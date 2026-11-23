@@ -3,6 +3,7 @@
 
 #include "base/bytes.hpp"
 #include "base/error.hpp"
+#include "server/broker.hpp"
 #include "server/handler.hpp"
 #include "server/handshake_decider.hpp"
 #include "server/session_handle.hpp"
@@ -40,16 +41,20 @@ namespace wsrv {
 class HostBridge final : public IHandlerFactory, public IHandshakeDecider {
 public:
     /// @return Error from EventQueue::create.
-    [[nodiscard]] static Result<std::unique_ptr<HostBridge>> make(ISyscalls& sys,
-                                                                  EventQueueConfig queue);
+    /// `broker` (optional, ADR-0027) is the pub/sub broker the host drives by connection id;
+    /// without one every broker command is Error{InvalidArgument}.
+    [[nodiscard]] static Result<std::unique_ptr<HostBridge>>
+    make(ISyscalls& sys, EventQueueConfig queue, std::shared_ptr<Broker> broker = nullptr);
 
     /// Construction goes through make() (passkey, so make_unique can call it).
     class Key {
         friend class HostBridge;
         Key() = default;
     };
-    HostBridge(Key /*unused*/, std::unique_ptr<EventQueue> events) noexcept
-        : events_{std::move(events)} {}
+    HostBridge(Key /*unused*/,
+               std::unique_ptr<EventQueue> events,
+               std::shared_ptr<Broker> broker) noexcept
+        : events_{std::move(events)}, broker_{std::move(broker)} {}
 
     [[nodiscard]] std::unique_ptr<IWebSocketHandler> create(const ConnectionInfo& info) override;
 
@@ -97,6 +102,38 @@ public:
     /// Start the closing handshake of connection `id` (same errors as send_text).
     [[nodiscard]] Result<void> close(ConnectionId id, CloseCode code, std::string_view reason);
 
+    /// The broker by connection id (ADR-0027). The bridge removes a connection's subscriptions when
+    /// it closes, so the host cannot leak one. Lock order: this bridge's mutex, then the broker's;
+    /// the broker never calls back into the bridge. subscribe() holds the bridge mutex across the
+    /// broker call so that it cannot interleave with remove(): either the subscription is complete
+    /// before the close cleans up, or the connection is not found. Never held while sending.
+    /// @return Error{InvalidArgument} (no broker, or a bad topic name), Error{Closing} (unknown or
+    /// finished connection), Error{BufferFull} (a broker bound), Error{ResourceExhausted}.
+    [[nodiscard]] Result<void> subscribe(ConnectionId id, std::string_view topic);
+    [[nodiscard]] Result<void> unsubscribe(ConnectionId id, std::string_view topic);
+    /// Send to every subscriber of `topic` except `except` (0 = nobody). Errors as
+    /// Broker::publish_* plus Error{InvalidArgument} when there is no broker. Any thread.
+    [[nodiscard]] Result<PublishReport>
+    publish_text(std::string_view topic, std::string_view text, ConnectionId except = 0);
+    [[nodiscard]] Result<PublishReport>
+    publish_binary(std::string_view topic, ByteView data, ConnectionId except = 0);
+    /// Remove every subscription of `id` (idempotent; a no-op without a broker). For a host that
+    /// stopped serving the connection but cannot close it yet (wsrvd, ADR-0028 A1).
+    void drop_subscriptions(ConnectionId id) noexcept {
+        if (broker_) {
+            broker_->unsubscribe_all(id);
+        }
+    }
+    /// Report the broker's counters to `metrics` (the server's shared metrics); no-op without a
+    /// broker.
+    void use_broker_metrics(std::shared_ptr<IMetrics> metrics) noexcept {
+        if (broker_) {
+            broker_->use_metrics(std::move(metrics));
+        }
+    }
+    /// 0 when there is no broker or no such topic.
+    [[nodiscard]] std::size_t topic_subscribers(std::string_view topic) const;
+
 private:
     class Handler;
 
@@ -110,6 +147,7 @@ private:
     void forget_asked(ConnectionId id);
 
     const std::unique_ptr<EventQueue> events_;
+    const std::shared_ptr<Broker> broker_;  // null: no pub/sub; Broker has its own mutex
     std::mutex mutex_;  // guards handles_; held for one map operation, never across a call out
     std::unordered_map<ConnectionId, SessionHandle> handles_;
     std::unordered_set<ConnectionId> parked_;  // paused for a full queue; guarded by mutex_

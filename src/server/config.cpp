@@ -19,7 +19,31 @@ namespace {
     return value > std::chrono::milliseconds::zero() && value <= kMaxConfiguredDuration;
 }
 
+/// The two optional listeners (ADR-0023, ADR-0028): their limits only matter when they are on.
+[[nodiscard]] Result<void> validate_listeners(const ServerConfig& config) {
+    if (config.admin.has_value() &&
+        (config.admin_max_connections == 0 ||
+         config.admin_max_connections > kMaxConfiguredAdminConnections ||
+         config.admin_request_timeout <= std::chrono::milliseconds{0} ||
+         config.admin_request_timeout > kMaxAdminRequestTimeout)) {
+        return std::unexpected{bad_config("admin limits out of range (ADR-0023)")};
+    }
+    if (config.publish.has_value() &&
+        (config.publish_max_connections == 0 ||
+         config.publish_max_connections > kMaxConfiguredPublishConnections ||
+         config.publish_request_timeout <= std::chrono::milliseconds{0} ||
+         config.publish_request_timeout > kMaxPublishRequestTimeout ||
+         config.publish_max_body_bytes == 0 ||
+         config.publish_max_body_bytes > kMaxConfiguredPublishBody)) {
+        return std::unexpected{bad_config("publish limits out of range (ADR-0028)")};
+    }
+    return {};
+}
+
 [[nodiscard]] Result<void> validate_limits(const ServerConfig& config) {
+    if (const Result<void> listeners = validate_listeners(config); !listeners) {
+        return listeners;
+    }
     if (config.max_connections == 0 || config.max_connections > kMaxConfiguredConnections) {
         return std::unexpected{bad_config("max_connections out of range")};
     }
@@ -32,13 +56,6 @@ namespace {
     if (config.max_new_connections_per_ip_per_second > kMaxConfiguredNewConnectionsPerSecond) {
         return std::unexpected{
             bad_config("max_new_connections_per_ip_per_second out of range (ADR-0021)")};
-    }
-    if (config.admin.has_value() &&
-        (config.admin_max_connections == 0 ||
-         config.admin_max_connections > kMaxConfiguredAdminConnections ||
-         config.admin_request_timeout <= std::chrono::milliseconds{0} ||
-         config.admin_request_timeout > kMaxAdminRequestTimeout)) {
-        return std::unexpected{bad_config("admin limits out of range (ADR-0023)")};
     }
     if (config.http.max_request_line == 0 || config.http.max_total_bytes == 0 ||
         config.http.max_headers == 0) {

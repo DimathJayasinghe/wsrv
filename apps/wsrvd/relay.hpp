@@ -33,6 +33,11 @@ public:
 
     [[nodiscard]] ipc::Status execute(const ipc::SendData& command);
     [[nodiscard]] ipc::Status execute(const ipc::CloseCommand& command);
+    /// The broker commands (IPC 0.3, ADR-0028). A subscription needs a connection the application
+    /// was told about (NO_SUCH_CONN otherwise); a publish needs only a request id. A broker bound
+    /// is WSRV_ERR_LIMIT, not backpressure: waiting does not help until someone leaves.
+    [[nodiscard]] ipc::Status execute(const ipc::TopicCommand& command);
+    [[nodiscard]] ipc::Status execute(const ipc::Publish& command);
     /// Answers to a handshake question (ADR-0018). Not checked against the open set: the question
     /// is about a connection that does not exist yet. The backend knows which questions are open
     /// (it also learns when the server gives up on one), so a late or repeated answer comes back

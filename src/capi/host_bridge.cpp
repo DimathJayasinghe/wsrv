@@ -25,6 +25,7 @@ HostEvent make_event(HostEventType type, ConnectionId conn, std::string_view tex
 
 constexpr std::string_view kNoSuchConnection = "capi: unknown or finished connection";
 constexpr int kStatusUnavailable = 503;
+constexpr std::string_view kBrokerOff = "capi: the broker is not enabled";
 constexpr std::string_view kNoSuchHandshake = "capi: no upgrade is waiting for that id";
 
 }  // namespace
@@ -118,13 +119,14 @@ private:
     bool overloaded_ = false;  // the queue refused an event; the connection is being closed
 };
 
-Result<std::unique_ptr<HostBridge>> HostBridge::make(ISyscalls& sys, EventQueueConfig queue) {
+Result<std::unique_ptr<HostBridge>>
+HostBridge::make(ISyscalls& sys, EventQueueConfig queue, std::shared_ptr<Broker> broker) {
     auto events = EventQueue::create(sys, queue);
     if (!events) {
         return std::unexpected{events.error()};
     }
     try {
-        return std::make_unique<HostBridge>(Key{}, std::move(*events));
+        return std::make_unique<HostBridge>(Key{}, std::move(*events), std::move(broker));
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::ResourceExhausted, "capi: out of memory");
     }
@@ -147,6 +149,10 @@ void HostBridge::remove(ConnectionId id) {
     const std::lock_guard lock{mutex_};
     handles_.erase(id);
     parked_.erase(id);
+    if (broker_) {
+        broker_->unsubscribe_all(
+            id);  // under the bridge mutex: see subscribe() (ADR-0027 section 4)
+    }
 }
 
 void HostBridge::park(ConnectionId id) {
@@ -319,6 +325,49 @@ Result<void> HostBridge::send_binary(ConnectionId id, ByteView data) {
 Result<void> HostBridge::close(ConnectionId id, CloseCode code, std::string_view reason) {
     const std::optional<SessionHandle> handle = find(id);
     return handle ? handle->close(code, reason) : fail(ErrorCode::Closing, kNoSuchConnection);
+}
+
+Result<void> HostBridge::subscribe(ConnectionId id, std::string_view topic) {
+    if (!broker_) {
+        return fail(ErrorCode::InvalidArgument, kBrokerOff);
+    }
+    const std::lock_guard lock{mutex_};  // held across the broker call, on purpose (header)
+    const auto it = handles_.find(id);
+    if (it == handles_.end()) {
+        return fail(ErrorCode::Closing, kNoSuchConnection);
+    }
+    return broker_->subscribe(it->second, topic);
+}
+
+Result<void> HostBridge::unsubscribe(ConnectionId id, std::string_view topic) {
+    if (!broker_) {
+        return fail(ErrorCode::InvalidArgument, kBrokerOff);
+    }
+    if (!find(id)) {
+        return fail(ErrorCode::Closing, kNoSuchConnection);
+    }
+    broker_->unsubscribe(id, topic);
+    return {};
+}
+
+Result<PublishReport>
+HostBridge::publish_text(std::string_view topic, std::string_view text, ConnectionId except) {
+    if (!broker_) {
+        return fail(ErrorCode::InvalidArgument, kBrokerOff);
+    }
+    return broker_->publish_text(topic, text, except);
+}
+
+Result<PublishReport>
+HostBridge::publish_binary(std::string_view topic, ByteView data, ConnectionId except) {
+    if (!broker_) {
+        return fail(ErrorCode::InvalidArgument, kBrokerOff);
+    }
+    return broker_->publish_binary(topic, data, except);
+}
+
+std::size_t HostBridge::topic_subscribers(std::string_view topic) const {
+    return broker_ ? broker_->subscriber_count(topic) : 0;
 }
 
 }  // namespace wsrv

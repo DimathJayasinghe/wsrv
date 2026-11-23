@@ -4,6 +4,7 @@
 #include "base/bytes.hpp"
 #include "base/error.hpp"
 #include "base/metrics.hpp"
+#include "base/publish_report.hpp"
 #include "server/session_handle.hpp"
 
 #include <atomic>
@@ -27,15 +28,6 @@ struct BrokerConfig {
     std::size_t max_subscriptions = 100'000;  ///< in total: caps a handler that forgets to leave
     std::size_t max_topic_length = 128;
     std::size_t max_payload_bytes = std::size_t{64} * 1024;
-};
-
-/// What one publish did. `accepted + refused == subscribers`. Accepted means "the subscriber's
-/// loop took it for delivery", the same promise as SessionHandle::send; refused means its loop's
-/// task queue was full, it was out of memory, or the server is gone.
-struct PublishReport {
-    std::size_t subscribers = 0;
-    std::size_t accepted = 0;
-    std::size_t refused = 0;
 };
 
 /// Topic -> subscribers, for any thread (ADR-0024). A room is a topic.

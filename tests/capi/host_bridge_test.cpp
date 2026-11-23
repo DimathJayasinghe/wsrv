@@ -39,8 +39,9 @@ std::string as_string(const std::vector<std::byte>& bytes) {
 /// A bridge, a real server using it, and helpers that play the host's part.
 class HostBridgeTest : public ::testing::Test {
 protected:
-    void start(EventQueueConfig queue = {}) {
-        auto made = HostBridge::make(sys_, queue);
+    void start(EventQueueConfig queue = {}, std::optional<BrokerConfig> broker = std::nullopt) {
+        auto made = HostBridge::make(
+            sys_, queue, broker ? std::make_shared<Broker>(*broker) : std::shared_ptr<Broker>{});
         ASSERT_TRUE(made.has_value());
         bridge_ = std::move(*made);
         ServerBuilder builder;
@@ -566,6 +567,130 @@ TEST_F(HostBridgeHookTest, ClosingTheIntakeRefusesWhatIsWaitingWith503AndSaysSoT
     EXPECT_EQ(bridge_->waiting_handshakes(), 0U);
     EXPECT_EQ(bridge_->accept_handshake(event->conn, std::nullopt).error().code,
               ErrorCode::Closing);
+}
+
+// --- the broker through the bridge (ADR-0027 section 4) ---
+
+TEST_F(HostBridgeTest, ASubscribedConnectionReceivesWhatIsPublishedToItsTopic) {
+    start({}, BrokerConfig{});
+    TcpClient subscribed{server_->port()};
+    TcpClient bystander{server_->port()};
+    ASSERT_TRUE(subscribed.upgrade());
+    const auto open = next();
+    ASSERT_TRUE(open.has_value());
+    ASSERT_TRUE(bystander.upgrade());
+    ASSERT_TRUE(next().has_value());  // the bystander's Open
+
+    ASSERT_TRUE(bridge_->subscribe(open->conn, "room.1").has_value());
+    EXPECT_EQ(bridge_->topic_subscribers("room.1"), 1U);
+    const auto report = bridge_->publish_text("room.1", "hello room");
+    ASSERT_TRUE(report.has_value());
+    EXPECT_EQ(report->subscribers, 1U);
+    EXPECT_EQ(report->accepted, 1U);
+    const auto frame = subscribed.read_frame();
+    ASSERT_TRUE(frame.has_value());
+    EXPECT_EQ(frame->payload, "hello room");
+    EXPECT_TRUE(bystander.silent_for(200ms));  // not subscribed, nothing arrives
+}
+
+TEST_F(HostBridgeTest, ThePublisherCanBeLeftOutAndAConnectionCanLeaveATopic) {
+    start({}, BrokerConfig{});
+    TcpClient a{server_->port()};
+    TcpClient b{server_->port()};
+    ASSERT_TRUE(a.upgrade());
+    const auto open_a = next();
+    ASSERT_TRUE(b.upgrade());
+    const auto open_b = next();
+    ASSERT_TRUE(open_a && open_b);
+    ASSERT_TRUE(bridge_->subscribe(open_a->conn, "t").has_value());
+    ASSERT_TRUE(bridge_->subscribe(open_b->conn, "t").has_value());
+
+    const auto report = bridge_->publish_text("t", "not for a", open_a->conn);
+    ASSERT_TRUE(report.has_value());
+    EXPECT_EQ(report->subscribers, 1U);
+    ASSERT_TRUE(b.read_frame().has_value());
+    EXPECT_TRUE(a.silent_for(200ms));
+
+    ASSERT_TRUE(bridge_->unsubscribe(open_b->conn, "t").has_value());
+    EXPECT_EQ(bridge_->topic_subscribers("t"), 1U);
+}
+
+TEST_F(HostBridgeTest, ACommandForAnUnknownConnectionIsRefusedAndSubscribesNothing) {
+    start({}, BrokerConfig{});
+    const auto result = bridge_->subscribe(424242, "room");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ErrorCode::Closing);
+    EXPECT_EQ(bridge_->topic_subscribers("room"), 0U);
+}
+
+TEST_F(HostBridgeTest, ClosingAConnectionEndsItsSubscriptionsWithoutHelpFromTheHost) {
+    start({}, BrokerConfig{});
+    TcpClient client{server_->port()};
+    ASSERT_TRUE(client.upgrade());
+    const auto open = next();
+    ASSERT_TRUE(open.has_value());
+    ASSERT_TRUE(bridge_->subscribe(open->conn, "a").has_value());
+    ASSERT_TRUE(bridge_->subscribe(open->conn, "b").has_value());
+    client.close();
+    const auto close = next();
+    ASSERT_TRUE(close.has_value());
+    EXPECT_EQ(close->type, HostEventType::Close);
+    EXPECT_EQ(bridge_->topic_subscribers("a"), 0U);
+    EXPECT_EQ(bridge_->topic_subscribers("b"), 0U);
+}
+
+TEST_F(HostBridgeTest, AnOverBoundSubscriptionIsALimitAndChangesNothing) {
+    BrokerConfig tiny;
+    tiny.max_topics_per_connection = 1;
+    start({}, tiny);
+    TcpClient client{server_->port()};
+    ASSERT_TRUE(client.upgrade());
+    const auto open = next();
+    ASSERT_TRUE(open.has_value());
+    ASSERT_TRUE(bridge_->subscribe(open->conn, "one").has_value());
+    const auto second = bridge_->subscribe(open->conn, "two");
+    ASSERT_FALSE(second.has_value());
+    EXPECT_EQ(second.error().code, ErrorCode::BufferFull);
+    EXPECT_EQ(bridge_->topic_subscribers("two"), 0U);
+}
+
+TEST_F(HostBridgeTest, WithTheBrokerOffEveryBrokerCommandIsInvalidArgument) {
+    start();
+    TcpClient client{server_->port()};
+    ASSERT_TRUE(client.upgrade());
+    const auto open = next();
+    ASSERT_TRUE(open.has_value());
+    const auto sub = bridge_->subscribe(open->conn, "x");
+    ASSERT_FALSE(sub.has_value());
+    EXPECT_EQ(sub.error().code, ErrorCode::InvalidArgument);
+    const auto pub = bridge_->publish_text("x", "y");
+    ASSERT_FALSE(pub.has_value());
+    EXPECT_EQ(pub.error().code, ErrorCode::InvalidArgument);
+    EXPECT_EQ(bridge_->topic_subscribers("x"), 0U);
+}
+
+// The race of ADR-0027 section 4: a host thread subscribes while the connection closes. Either the
+// subscription is complete before the close cleans up, or the subscribe finds no connection; no
+// subscription may outlive its connection. Run under TSan in CI.
+TEST_F(HostBridgeTest, SubscribingWhileTheConnectionClosesNeverLeaksASubscription) {
+    start({}, BrokerConfig{});
+    for (int round = 0; round < 40; ++round) {
+        TcpClient client{server_->port()};
+        ASSERT_TRUE(client.upgrade());
+        const auto open = next();
+        ASSERT_TRUE(open.has_value());
+        std::thread host([&] {
+            for (int i = 0; i < 20; ++i) {
+                static_cast<void>(bridge_->subscribe(open->conn, "race").has_value());
+            }
+        });
+        client.close();
+        host.join();
+        const auto close = next();
+        ASSERT_TRUE(close.has_value());
+        EXPECT_EQ(close->type, HostEventType::Close);
+        EXPECT_EQ(bridge_->topic_subscribers("race"), 0U) << "round " << round;
+    }
 }
 
 }  // namespace

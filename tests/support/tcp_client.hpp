@@ -87,6 +87,15 @@ public:
         return head;
     }
 
+    /// Everything the peer sends until it closes or goes quiet, including bytes already buffered.
+    std::string read_all() {
+        while (fill()) {
+        }
+        std::string all;
+        all.swap(buffer_);
+        return all;
+    }
+
     /// True if nothing at all (data or EOF) arrives within `period`: used to show that a server
     /// is deliberately keeping quiet.
     [[nodiscard]] virtual bool silent_for(std::chrono::milliseconds period) const {

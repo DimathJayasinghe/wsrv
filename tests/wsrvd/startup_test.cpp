@@ -96,6 +96,44 @@ TEST_F(StartupTest, AnUnsafeTokenFileStopsTheStartup) {
     EXPECT_EQ(startup.error().code, ErrorCode::InvalidConfig);
 }
 
+// ADR-0028: the publish endpoint. Its token is a file like the IPC token, never a key or a flag.
+TEST_F(StartupTest, ThePublishTokenIsReadFromItsFileAndGivenToTheEmbeddedConfig) {
+    const std::string token = write("publish", std::string(40, 'p') + "\n");
+    const auto startup = run({"--ipc-socket=/run/x.sock",
+                              "--broker=true",
+                              "--publish-port=9200",
+                              "--publish-token-file=" + token});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_TRUE(startup->config.embedded().publish_requested());
+    EXPECT_EQ(startup->config.embedded().publish_token(), std::string(40, 'p'));
+    EXPECT_TRUE(startup->config.embedded().check_publish().has_value());
+}
+
+TEST_F(StartupTest, ThePublishTokenHasNoKeyAndNoFlag) {
+    EXPECT_FALSE(
+        run({"--ipc-socket=/run/x.sock", "--publish-token=" + std::string(40, 'p')}).has_value());
+}
+
+TEST_F(StartupTest, APublishPortAndItsTokenFileComeAsAPair) {
+    const std::string token = write("publish", std::string(40, 'p'));
+    EXPECT_FALSE(
+        run({"--ipc-socket=/run/x.sock", "--broker=true", "--publish-port=9200"}).has_value());
+    EXPECT_FALSE(run({"--ipc-socket=/run/x.sock", "--publish-token-file=" + token}).has_value());
+}
+
+TEST_F(StartupTest, AShortOrUnsafePublishTokenStopsTheStartup) {
+    const std::string shortened = write("short", std::string(31, 'p'));
+    const std::string open = write("open", std::string(40, 'p'), 0644);
+    for (const std::string& file : {shortened, open}) {
+        const auto startup = run({"--ipc-socket=/run/x.sock",
+                                  "--broker=true",
+                                  "--publish-port=9200",
+                                  "--publish-token-file=" + file});
+        ASSERT_FALSE(startup.has_value()) << file;
+        EXPECT_EQ(startup.error().code, ErrorCode::InvalidConfig);
+    }
+}
+
 TEST_F(StartupTest, BadInputIsRefusedBeforeAnythingStarts) {
     EXPECT_FALSE(run({}).has_value());                                          // no socket
     EXPECT_FALSE(run({"--ipc-socket=/run/x.sock", "--bogus=1"}).has_value());   // unknown key

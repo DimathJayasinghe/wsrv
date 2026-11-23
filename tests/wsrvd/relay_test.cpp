@@ -152,7 +152,8 @@ TEST_F(RelayTest, AfterDetachTheOldConnectionsAreStaleAndCommandsForThemAreRefus
     EXPECT_EQ(relay_.open_count(), 0U);
     EXPECT_EQ(relay_.stale_count(), 2U);
     EXPECT_EQ(relay_.execute(send(1, 1, "x")).status, status(WSRV_ERR_NO_SUCH_CONN));
-    EXPECT_TRUE(backend_.commands().empty());
+    EXPECT_TRUE(backend_.commands_of(RecordedCommand::Kind::Text).empty() &&
+                backend_.commands_of(RecordedCommand::Kind::Close).empty());
 }
 
 TEST_F(RelayTest, EventsOfStaleConnectionsAreDroppedAndTheirCloseForgetsThem) {
@@ -180,7 +181,7 @@ TEST_F(RelayTest, StaleConnectionsAreClosedWithTheGivenCodeAndNobodyElse) {
     relay_.detach();
     open(3);  // a connection the next application knows about
     relay_.close_stale(1012, "service restart");
-    const auto commands = backend_.commands();
+    const auto commands = backend_.commands_of(RecordedCommand::Kind::Close);
     ASSERT_EQ(commands.size(), 2U);
     for (const auto& command : commands) {
         EXPECT_EQ(command.kind, RecordedCommand::Kind::Close);
@@ -234,6 +235,109 @@ TEST_F(RelayTest, HandshakeAnswersFollowTheSameRulesAsOtherCommands) {
     EXPECT_EQ(relay_.execute(reject).status, status(WSRV_ERR_INVALID_ARGUMENT));
     backend_.fail_commands_with(ErrorCode::BufferFull);
     EXPECT_EQ(relay_.execute(accept).status, status(WSRV_ERR_BACKPRESSURE));
+}
+
+// ---- the broker commands (IPC 0.3, ADR-0028) ----
+
+wsrv::ipc::TopicCommand topic_command(std::uint32_t request,
+                                      ConnectionId conn,
+                                      std::string_view topic,
+                                      bool subscribe = true) {
+    wsrv::ipc::TopicCommand command;
+    command.request = request;
+    command.conn = conn;
+    command.subscribe = subscribe;
+    command.topic = bytes(topic);
+    return command;
+}
+
+wsrv::ipc::Publish publish_command(std::uint32_t request,
+                                   std::string_view topic,
+                                   std::string_view payload,
+                                   bool text = true,
+                                   ConnectionId except = 0) {
+    wsrv::ipc::Publish command;
+    command.request = request;
+    command.text = text;
+    command.except = except;
+    command.topic = bytes(topic);
+    command.payload = bytes(payload);
+    return command;
+}
+
+TEST_F(RelayTest, SubscribeAndUnsubscribeReachTheBackendForAKnownConnection) {
+    open(5);
+    EXPECT_EQ(relay_.execute(topic_command(1, 5, "room.1")).status, status(WSRV_OK));
+    EXPECT_EQ(relay_.execute(topic_command(2, 5, "room.1", false)).status, status(WSRV_OK));
+    const auto commands = backend_.commands();
+    ASSERT_EQ(commands.size(), 2U);
+    EXPECT_EQ(commands[0].kind, RecordedCommand::Kind::Subscribe);
+    EXPECT_EQ(commands[0].conn, 5U);
+    EXPECT_EQ(commands[0].topic, "room.1");
+    EXPECT_EQ(commands[1].kind, RecordedCommand::Kind::Unsubscribe);
+}
+
+TEST_F(RelayTest, ASubscribeForAConnectionTheApplicationWasNotToldAboutIsNoSuchConn) {
+    const auto answer = relay_.execute(topic_command(1, 99, "room"));
+    EXPECT_EQ(answer.request, 1U);
+    EXPECT_EQ(answer.status, status(WSRV_ERR_NO_SUCH_CONN));
+    EXPECT_TRUE(backend_.commands().empty());  // never reached the server
+}
+
+TEST_F(RelayTest, RequestIdZeroIsRefusedForBrokerCommandsToo) {
+    open(5);
+    EXPECT_EQ(relay_.execute(topic_command(0, 5, "room")).status,
+              status(WSRV_ERR_INVALID_ARGUMENT));
+    EXPECT_EQ(relay_.execute(publish_command(0, "room", "x")).status,
+              status(WSRV_ERR_INVALID_ARGUMENT));
+    EXPECT_TRUE(backend_.commands().empty());
+}
+
+TEST_F(RelayTest, ABrokerBoundIsLimitNotBackpressure) {
+    open(5);
+    backend_.fail_commands_with(ErrorCode::BufferFull);  // what Broker::subscribe says for a bound
+    EXPECT_EQ(relay_.execute(topic_command(1, 5, "room")).status, status(WSRV_ERR_LIMIT));
+}
+
+TEST_F(RelayTest, ABadTopicOrABrokerThatIsOffIsInvalidArgument) {
+    open(5);
+    backend_.fail_commands_with(ErrorCode::InvalidArgument);
+    EXPECT_EQ(relay_.execute(topic_command(1, 5, "bad topic")).status,
+              status(WSRV_ERR_INVALID_ARGUMENT));
+}
+
+TEST_F(RelayTest, PublishGoesToTheBackendWithItsKindAndTheLeftOutConnection) {
+    EXPECT_EQ(relay_.execute(publish_command(1, "room", "hello", true, 7)).status, status(WSRV_OK));
+    EXPECT_EQ(relay_.execute(publish_command(2, "room", "\x01\x02", false)).status,
+              status(WSRV_OK));
+    const auto commands = backend_.commands();
+    ASSERT_EQ(commands.size(), 2U);
+    EXPECT_EQ(commands[0].kind, RecordedCommand::Kind::PublishText);
+    EXPECT_EQ(commands[0].topic, "room");
+    EXPECT_EQ(commands[0].data, "hello");
+    EXPECT_EQ(commands[0].except, 7U);
+    EXPECT_EQ(commands[1].kind, RecordedCommand::Kind::PublishBinary);
+}
+
+TEST_F(RelayTest, PublishedTextThatIsNotUtf8IsTheBackendsInvalidUtf8) {
+    backend_.fail_commands_with(ErrorCode::InvalidUtf8);
+    EXPECT_EQ(relay_.execute(publish_command(1, "room", "\xff")).status,
+              status(WSRV_ERR_INVALID_UTF8));
+}
+
+TEST_F(RelayTest, WhenTheApplicationLeavesTheSubscriptionsOfItsConnectionsAreDroppedAtOnce) {
+    open(5);
+    open(6);
+    relay_.detach();  // ADR-0028 A1 section 2: no orphans for an HTTP publish to reach
+    const auto commands = backend_.commands();
+    std::size_t drops = 0;
+    for (const auto& command : commands) {
+        if (command.kind == RecordedCommand::Kind::DropSubscriptions) {
+            ++drops;
+            EXPECT_TRUE(command.conn == 5U || command.conn == 6U);
+        }
+    }
+    EXPECT_EQ(drops, 2U);
 }
 
 }  // namespace

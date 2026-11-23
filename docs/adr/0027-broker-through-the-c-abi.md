@@ -60,7 +60,7 @@ The PHP embedded binding gets `Server::subscribe($conn, $topic)`, `unsubscribe`,
 - Wildcards, history, acknowledgements, cross-process brokers: as in ADR-0024.
 
 ## Slices
-1. **C++ core, no C yet.** Config keys and validation; `EmbeddedServer` owns the broker; `HostBridge` subscribe/unsubscribe/publish by id, unsubscribe on remove, the lock order; unit tests for the bounds and the race (TSan stress test); metrics wired.
+1. **C++ core, no C yet.** *(done 2026-11-23: `HostBridge` subscribe/unsubscribe/publish by id with the lock order and the close-race test, the six `broker*` config keys with ceilings, `EmbeddedServer` forwarding, counters on the shared metrics.)* Config keys and validation; `EmbeddedServer` owns the broker; `HostBridge` subscribe/unsubscribe/publish by id, unsubscribe on remove, the lock order; unit tests for the bounds and the race (TSan stress test); metrics wired.
 2. **The C ABI 0.5.** `wsrv.h`, the shim, the status, ABI version, symbol-list and header checks, a C consumer test, `echo_c` option `--rooms` kept small, `BINDINGS.md`; an `ABI_MINOR` of 5 in the PHP binding's check is slice 3.
 3. **PHP.** cdef, `Server` methods, `LimitReached`, interop test on the real library, the chat example on the broker, README, lesson.
 

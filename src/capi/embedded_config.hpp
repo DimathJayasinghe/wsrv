@@ -2,6 +2,7 @@
 #pragma once
 
 #include "base/error.hpp"
+#include "server/broker.hpp"
 #include "server/config.hpp"
 #include "server/server_builder.hpp"
 
@@ -62,6 +63,13 @@ struct TlsSniSetting {
 /// it switches the listener on, 0 lets the kernel choose) and admin_host (an IP literal, default
 /// 127.0.0.1). It serves /metrics, /healthz and /readyz over plain HTTP with no authentication:
 /// keep it on loopback or behind a network policy.
+/// and for the pub/sub broker (ADR-0027 section 1, off by default): broker (bool) and its bounds
+/// broker_max_topics (default 1024, ceiling 1000000), broker_max_subscribers_per_topic (10000,
+/// 1000000), broker_max_topics_per_connection (64, 1024), broker_max_subscriptions (100000,
+/// 10000000) and broker_max_payload_bytes (65536, 1048576). Never 0: a bound is not switched off.
+/// The publish endpoint (ADR-0028, off by default): publish_host (127.0.0.1) and publish_port; it
+/// needs broker=true and a token given through set_publish_token(), and its largest body is
+/// broker_max_payload_bytes.
 /// Thread-affinity: not thread-safe; configure on one thread before starting.
 class EmbeddedConfig {
 public:
@@ -120,10 +128,41 @@ public:
         return deflate_;
     }
 
+    /// The pub/sub broker (ADR-0027): on only with broker=true; the bounds apply when it is.
+    [[nodiscard]] bool broker_enabled() const noexcept {
+        return broker_enabled_;
+    }
+    [[nodiscard]] const BrokerConfig& broker_config() const noexcept {
+        return broker_;
+    }
+
+    /// The publish endpoint (ADR-0028): on only once publish_port was given, and then it needs the
+    /// broker and a token. The token is deliberately NOT a key: it cannot come from a config file,
+    /// a command line or the C ABI's string settings, only from set_publish_token().
+    [[nodiscard]] bool publish_requested() const noexcept {
+        return publish_port_.has_value();
+    }
+    [[nodiscard]] const std::string& publish_host() const noexcept {
+        return publish_host_;
+    }
+    [[nodiscard]] std::uint16_t publish_port() const noexcept {
+        return publish_port_.value_or(0);
+    }
+    [[nodiscard]] const std::string& publish_token() const noexcept {
+        return publish_token_;
+    }
+    /// @return Error{InvalidConfig} when the token is shorter than kMinPublishTokenBytes.
+    [[nodiscard]] Result<void> set_publish_token(std::string token);
+    /// Whether the publish settings make sense together: with publish_port the broker must be on
+    /// and a token must have been given. @return Error{InvalidConfig} otherwise.
+    [[nodiscard]] Result<void> check_publish() const;
+
     /// Copy the listen address and the server settings into `builder`.
     void apply_to(ServerBuilder& builder) const;
 
 private:
+    [[nodiscard]] std::optional<Result<void>> set_broker_key(std::string_view key,
+                                                             std::string_view value);
     [[nodiscard]] Result<void> set_listen_host(std::string_view value);
     [[nodiscard]] Result<void> set_listen_port(std::string_view value);
     [[nodiscard]] Result<void> set_threads(std::string_view value);
@@ -148,6 +187,14 @@ private:
     [[nodiscard]] Result<void> set_tls_cert(std::string_view value);
     [[nodiscard]] Result<void> set_tls_key(std::string_view value);
     [[nodiscard]] Result<void> add_tls_sni(std::string_view value);
+    [[nodiscard]] Result<void> set_publish_host(std::string_view value);
+    [[nodiscard]] Result<void> set_publish_port(std::string_view value);
+    [[nodiscard]] Result<void> set_broker(std::string_view value);
+    [[nodiscard]] Result<void> set_broker_max_topics(std::string_view value);
+    [[nodiscard]] Result<void> set_broker_max_subscribers_per_topic(std::string_view value);
+    [[nodiscard]] Result<void> set_broker_max_topics_per_connection(std::string_view value);
+    [[nodiscard]] Result<void> set_broker_max_subscriptions(std::string_view value);
+    [[nodiscard]] Result<void> set_broker_max_payload_bytes(std::string_view value);
     [[nodiscard]] Result<void> set_permessage_deflate(std::string_view value);
     [[nodiscard]] Result<void> set_deflate_server_max_window_bits(std::string_view value);
     [[nodiscard]] Result<void> set_deflate_server_no_context_takeover(std::string_view value);
@@ -155,18 +202,25 @@ private:
     [[nodiscard]] Result<void> set_deflate_min_size(std::string_view value);
     [[nodiscard]] Result<void> set_deflate_max_ratio(std::string_view value);
 
-    std::string admin_host_ = "127.0.0.1";     // loopback: the admin page has no authentication
-    std::optional<std::uint16_t> admin_port_;  // set = the admin listener is on
-    std::string host_ = "127.0.0.1";           // loopback unless the operator opts into exposure
-    std::uint16_t port_ = 0;
+    // Ordered by size, largest first, so the padding analyzer is satisfied (ServerConfig and the
+    // strings first, the small integers and flags last).
     ServerConfig server_;
+    BrokerConfig broker_;
     EventQueueConfig queue_;
-    bool handshake_hook_ = false;
+    std::vector<TlsSniSetting> tls_sni_;
+    DeflateOptions deflate_;                  ///< tuning; used only when deflate_enabled_
+    std::string admin_host_ = "127.0.0.1";    // loopback: the admin page has no authentication
+    std::string publish_host_ = "127.0.0.1";  // loopback unless the operator opts into exposure
+    std::string publish_token_;               // a secret: never logged, never a config key
+    std::string host_ = "127.0.0.1";          // loopback unless the operator opts into exposure
     std::string tls_cert_;
     std::string tls_key_;
-    std::vector<TlsSniSetting> tls_sni_;
+    std::optional<std::uint16_t> admin_port_;    // set = the admin listener is on
+    std::optional<std::uint16_t> publish_port_;  // set = the publish listener is on
+    std::uint16_t port_ = 0;
+    bool handshake_hook_ = false;
+    bool broker_enabled_ = false;
     bool deflate_enabled_ = false;
-    DeflateOptions deflate_;  ///< tuning; used only when deflate_enabled_
 };
 
 }  // namespace wsrv

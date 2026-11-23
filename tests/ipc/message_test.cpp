@@ -114,6 +114,15 @@ TEST(IpcMessage, EveryMessageSurvivesARoundTripByteForByte) {
         HandshakeAccept{12, 5, text("chat")},
         HandshakeAccept{13, 5, ByteView{}},
         HandshakeReject{14, 5, 401},
+        TopicCommand{15, 5, true, text("room.1")},  // 0.3: broker frames (ADR-0028)
+        TopicCommand{16, 5, false, text("room.1")},
+        Publish{17, true, 0, text("room.1"), text("héllo")},
+        Publish{18, false, 5, text("t"), ByteView{token}},
+        Publish{19,
+                true,
+                0,
+                ByteView{},
+                ByteView{}},  // names are the daemon's to judge, not the codec's
         Status{1, 0},
         Status{0xFFFFFFFFU, 255},
     };
@@ -167,7 +176,9 @@ TEST(IpcMessage, EncodeRefusesMessagesNoPeerCouldParse) {
         Event{EventKind::Handshake, 1, 1000, false, ByteView{}},  // close code on a Handshake
         HandshakeAccept{1, 0, ByteView{}},                        // connection 0
         HandshakeAccept{1, 1, ByteView{long_subprotocol}},
-        HandshakeReject{1, 0, 403},  // connection 0
+        HandshakeReject{1, 0, 403},            // connection 0
+        TopicCommand{1, 0, true, text("t")},   // connection 0
+        TopicCommand{1, 0, false, text("t")},  // connection 0
     };
     for (const Message& message : bad) {
         const Result<void> r = encode(message, kLimit, out);
@@ -256,11 +267,52 @@ TEST(IpcMessage, ParseRefusesATokenOrReasonOverTheCap) {
     EXPECT_TRUE(parse_message(FrameType::HandshakeAccept, ByteView{accept}).has_value());
 }
 
+TEST(IpcMessage, BrokerFramesLayout) {  // ADR-0028 section 2: frames 12, 13, 14; minor 3
+    EXPECT_EQ(kVersionMinor, 3U);
+    // length 2+12+6, type 12, request 7, conn 42, topic "room.1"
+    EXPECT_EQ(encoded(TopicCommand{7, 42, true, text("room.1")}),
+              bytes_of({0, 0, 0, 20, 12, 0,  0,   0,   0,   7,   0,   0,
+                        0, 0, 0, 0,  0,  42, 'r', 'o', 'o', 'm', '.', '1'}));
+    EXPECT_EQ(encoded(TopicCommand{7, 42, false, text("room.1")}).at(4), std::byte{13});
+    // length 2+15+1+2, type 14, request 9, kind 1 (text), except 5, topic length 1, "t", "hi"
+    EXPECT_EQ(
+        encoded(Publish{9, true, 5, text("t"), text("hi")}),
+        bytes_of({0, 0, 0, 20, 14, 0, 0, 0, 0, 9, 1, 0, 0, 0, 0, 0, 0, 0, 5, 0, 1, 't', 'h', 'i'}));
+    EXPECT_EQ(encoded(Publish{9, false, 5, text("t"), text("hi")}).at(10), std::byte{2});
+}
+
+TEST(IpcMessage, ParseRefusesWrongBrokerFrames) {
+    const std::vector<BadBody> cases = {
+        {FrameType::Subscribe, bytes_of({0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0}), "subscribe too short"},
+        {FrameType::Subscribe,
+         bytes_of({0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 't'}),
+         "subscribe conn 0"},
+        {FrameType::Unsubscribe, bytes_of({0, 0, 0, 1}), "unsubscribe far too short"},
+        {FrameType::Publish,
+         bytes_of({0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0}),
+         "publish without a topic length"},
+        {FrameType::Publish,
+         bytes_of({0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}),
+         "publish kind 0"},
+        {FrameType::Publish,
+         bytes_of({0, 0, 0, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}),
+         "publish kind 3"},
+        {FrameType::Publish,
+         bytes_of({0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 'a'}),
+         "topic longer than the frame"},
+    };
+    for (const BadBody& c : cases) {
+        const Result<Message> r = parse_message(c.type, ByteView{c.body});
+        ASSERT_FALSE(r.has_value()) << c.why;
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidFrame) << c.why;
+    }
+}
+
 TEST(IpcMessage, UnknownFrameTypesAreRejectedByTheLookup) {
     EXPECT_FALSE(frame_type_from(0).has_value());
-    EXPECT_FALSE(frame_type_from(12).has_value());
+    EXPECT_FALSE(frame_type_from(15).has_value());
     EXPECT_FALSE(frame_type_from(255).has_value());
-    for (std::uint8_t raw = 1; raw <= 11; ++raw) {
+    for (std::uint8_t raw = 1; raw <= 14; ++raw) {
         EXPECT_TRUE(frame_type_from(raw).has_value()) << int{raw};
     }
 }

@@ -120,7 +120,35 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
             return (this->*entry.setter)(value);
         }
     }
+    if (const std::optional<Result<void>> broker = set_broker_key(key, value)) {
+        return *broker;
+    }
     return fail(ErrorCode::InvalidConfig, "config: unknown key");
+}
+
+/// The pub/sub keys (ADR-0027), in their own table so `set` stays within the size the linter
+/// allows.
+/// @return nothing when `key` is not a broker key.
+std::optional<Result<void>> EmbeddedConfig::set_broker_key(std::string_view key,
+                                                           std::string_view value) {
+    static constexpr std::array kBrokerKeys{
+        KeyEntry{"publish_host", &EmbeddedConfig::set_publish_host},
+        KeyEntry{"publish_port", &EmbeddedConfig::set_publish_port},
+        KeyEntry{"broker", &EmbeddedConfig::set_broker},
+        KeyEntry{"broker_max_topics", &EmbeddedConfig::set_broker_max_topics},
+        KeyEntry{"broker_max_subscribers_per_topic",
+                 &EmbeddedConfig::set_broker_max_subscribers_per_topic},
+        KeyEntry{"broker_max_topics_per_connection",
+                 &EmbeddedConfig::set_broker_max_topics_per_connection},
+        KeyEntry{"broker_max_subscriptions", &EmbeddedConfig::set_broker_max_subscriptions},
+        KeyEntry{"broker_max_payload_bytes", &EmbeddedConfig::set_broker_max_payload_bytes},
+    };
+    for (const KeyEntry& entry : kBrokerKeys) {
+        if (entry.name == key) {
+            return (this->*entry.setter)(value);
+        }
+    }
+    return std::nullopt;
 }
 
 void EmbeddedConfig::apply_to(ServerBuilder& builder) const {
@@ -129,9 +157,49 @@ void EmbeddedConfig::apply_to(ServerBuilder& builder) const {
     if (admin_port_) {
         builder.admin(admin_host_, *admin_port_);  // build() checks the address and the bounds
     }
+    builder.config().publish_max_body_bytes =
+        broker_.max_payload_bytes;  // one bound for both doors
     if (deflate_enabled_) {
         builder.permessage_deflate(deflate_);  // build() checks the ranges and the zlib build
     }
+}
+
+Result<void> EmbeddedConfig::set_publish_host(std::string_view value) {
+    if (value.empty()) {
+        return fail(ErrorCode::InvalidConfig, "config: publish_host is empty");
+    }
+    publish_host_ = std::string{value};  // an address literal; ServerBuilder::build() checks it
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_publish_port(std::string_view value) {
+    const auto port = parse_number<std::uint16_t>(value);
+    if (!port) {
+        return fail(ErrorCode::InvalidConfig, "config: publish_port needs a number 0..65535");
+    }
+    publish_port_ = port;
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_publish_token(std::string token) {
+    if (token.size() < kMinPublishTokenBytes) {
+        return fail(ErrorCode::InvalidConfig, "config: the publish token needs at least 32 bytes");
+    }
+    publish_token_ = std::move(token);
+    return {};
+}
+
+Result<void> EmbeddedConfig::check_publish() const {
+    if (!publish_port_) {
+        return {};
+    }
+    if (!broker_enabled_) {
+        return fail(ErrorCode::InvalidConfig, "config: publish_port needs broker=true");
+    }
+    if (publish_token_.empty()) {
+        return fail(ErrorCode::InvalidConfig, "config: publish_port needs a token");
+    }
+    return {};
 }
 
 Result<void> EmbeddedConfig::set_listen_host(std::string_view value) {
@@ -274,6 +342,80 @@ Result<void> EmbeddedConfig::set_max_new_connections_per_ip_per_second(std::stri
                     "config: max_new_connections_per_ip_per_second needs a number");
     }
     server_.max_new_connections_per_ip_per_second = *number;
+    return {};
+}
+
+// ADR-0027 section 1: the ceilings below are the documented upper limits of the broker bounds.
+constexpr std::uint64_t kBrokerMaxTopicsCeiling = 1'000'000;
+constexpr std::uint64_t kBrokerMaxSubscribersPerTopicCeiling = 1'000'000;
+constexpr std::uint64_t kBrokerMaxTopicsPerConnectionCeiling = 1024;
+constexpr std::uint64_t kBrokerMaxSubscriptionsCeiling = 10'000'000;
+constexpr std::uint64_t kBrokerMaxPayloadCeiling = std::uint64_t{1} << 20;
+
+Result<void> EmbeddedConfig::set_broker(std::string_view value) {
+    const auto flag = parse_bool(value);
+    if (!flag) {
+        return fail(ErrorCode::InvalidConfig, "config: broker needs true, false, 1 or 0");
+    }
+    broker_enabled_ = *flag;
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_broker_max_topics(std::string_view value) {
+    const Result<std::uint64_t> number = parse_limit(
+        value, kBrokerMaxTopicsCeiling, "config: broker_max_topics needs a number 1..1000000");
+    if (!number) {
+        return std::unexpected{number.error()};
+    }
+    broker_.max_topics = static_cast<std::size_t>(*number);
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_broker_max_subscribers_per_topic(std::string_view value) {
+    const Result<std::uint64_t> number =
+        parse_limit(value,
+                    kBrokerMaxSubscribersPerTopicCeiling,
+                    "config: broker_max_subscribers_per_topic needs a number 1..1000000");
+    if (!number) {
+        return std::unexpected{number.error()};
+    }
+    broker_.max_subscribers_per_topic = static_cast<std::size_t>(*number);
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_broker_max_topics_per_connection(std::string_view value) {
+    const Result<std::uint64_t> number =
+        parse_limit(value,
+                    kBrokerMaxTopicsPerConnectionCeiling,
+                    "config: broker_max_topics_per_connection needs a number 1..1024");
+    if (!number) {
+        return std::unexpected{number.error()};
+    }
+    broker_.max_topics_per_connection = static_cast<std::size_t>(*number);
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_broker_max_subscriptions(std::string_view value) {
+    const Result<std::uint64_t> number =
+        parse_limit(value,
+                    kBrokerMaxSubscriptionsCeiling,
+                    "config: broker_max_subscriptions needs a number 1..10000000");
+    if (!number) {
+        return std::unexpected{number.error()};
+    }
+    broker_.max_subscriptions = static_cast<std::size_t>(*number);
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_broker_max_payload_bytes(std::string_view value) {
+    const Result<std::uint64_t> number =
+        parse_limit(value,
+                    kBrokerMaxPayloadCeiling,
+                    "config: broker_max_payload_bytes needs a number 1..1048576");
+    if (!number) {
+        return std::unexpected{number.error()};
+    }
+    broker_.max_payload_bytes = static_cast<std::size_t>(*number);
     return {};
 }
 

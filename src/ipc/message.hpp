@@ -22,9 +22,12 @@ namespace wsrv::ipc {
 /// The format is canonical: one message has exactly one encoding, so encode(parse(frame)) equals
 /// the frame. That is what lets the fuzz target check the parser against the encoder.
 inline constexpr std::uint16_t kVersionMajor = 0;
-inline constexpr std::uint16_t kVersionMinor = 2;  // 0.2 added the handshake hook (ADR-0018)
+inline constexpr std::uint16_t kVersionMinor =
+    3;  // 0.2: handshake hook (ADR-0018); 0.3: broker (ADR-0028)
 /// The first minor that can carry handshake questions and answers.
 inline constexpr std::uint16_t kHandshakeHookMinor = 2;
+/// The first minor that can subscribe, unsubscribe and publish (ADR-0028 section 2).
+inline constexpr std::uint16_t kBrokerMinor = 3;
 inline constexpr std::size_t kFrameHeaderSize = 6;
 /// No setting may raise the frame limit above this (ADR-0017: hard cap 64 MiB).
 inline constexpr std::size_t kMaxFrameCeiling = std::size_t{64} << 20U;
@@ -47,6 +50,9 @@ enum class FrameType : std::uint8_t {
     Status = 9,            ///< daemon -> client: the answer to one command
     HandshakeAccept = 10,  ///< client -> daemon: let an upgrade in (ADR-0018)
     HandshakeReject = 11,  ///< client -> daemon: refuse an upgrade with an HTTP status
+    Subscribe = 12,        ///< client -> daemon: put a connection in a topic (0.3, ADR-0028)
+    Unsubscribe = 13,      ///< client -> daemon: take it out again (0.3)
+    Publish = 14,          ///< client -> daemon: send to every subscriber of a topic (0.3)
 };
 
 /// Same kinds, same numbers, as wsrv_event_type in include/wsrv/wsrv.h.
@@ -94,6 +100,21 @@ struct HandshakeReject {  ///< u32 request id, u64 connection id, u16 HTTP statu
     std::uint64_t conn = 0;    ///< never 0
     std::uint16_t status = 0;  ///< the core decides which statuses are allowed
 };
+struct TopicCommand {  ///< u32 request id, u64 connection id, topic to the end (names are judged by
+                       ///< the broker, not here)
+    std::uint32_t request = 0;
+    std::uint64_t conn = 0;  ///< never 0
+    bool subscribe = true;   ///< Subscribe when true, Unsubscribe when false
+    ByteView topic;
+};
+struct Publish {  ///< u32 request id, u8 kind (1 text, 2 binary), u64 except (0 = nobody),
+                  ///< u16 topic length, topic, payload to the end
+    std::uint32_t request = 0;
+    bool text = true;
+    std::uint64_t except = 0;  ///< a connection to leave out; 0 = none
+    ByteView topic;            ///< at most 65535 bytes (the u16); the broker's bound is tighter
+    ByteView payload;
+};
 struct Ping {};  ///< empty body
 struct Pong {};  ///< empty body
 struct Event {   ///< u8 kind, u64 conn, u16 close code, u8 clean, data to the end
@@ -117,7 +138,9 @@ using Message = std::variant<Hello,
                              Event,
                              Status,
                              HandshakeAccept,
-                             HandshakeReject>;
+                             HandshakeReject,
+                             TopicCommand,
+                             Publish>;
 
 /// @return the FrameType for a wire byte, or nothing for an unknown value.
 [[nodiscard]] std::optional<FrameType> frame_type_from(std::uint8_t raw) noexcept;

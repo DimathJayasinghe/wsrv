@@ -45,6 +45,9 @@ std::optional<HostEvent> Relay::next_event() {
 }
 
 void Relay::detach() {
+    for (const ConnectionId conn : open_) {
+        backend_.drop_subscriptions(conn);  // an HTTP publish must not reach what nobody serves
+    }
     stale_.merge(open_);  // moves every id; open_ keeps only duplicates (there are none)
     open_.clear();
 }
@@ -82,6 +85,32 @@ ipc::Status Relay::execute(const ipc::CloseCommand& command) {
     const std::string_view reason = as_chars(command.reason);
     const Result<void> result = backend_.close(command.conn, command.code, reason);
     return ipc::Status{.request = command.request, .status = code_of(result)};
+}
+
+ipc::Status Relay::execute(const ipc::TopicCommand& command) {
+    if (const auto refused = refuse(command.request, command.conn)) {
+        return ipc::Status{.request = command.request, .status = *refused};
+    }
+    const std::string_view topic = as_chars(command.topic);
+    const Result<void> result = command.subscribe ? backend_.subscribe(command.conn, topic)
+                                                  : backend_.unsubscribe(command.conn, topic);
+    if (!result && result.error().code == ErrorCode::BufferFull) {
+        return ipc::Status{.request = command.request, .status = code_of(WSRV_ERR_LIMIT)};
+    }
+    return ipc::Status{.request = command.request, .status = code_of(result)};
+}
+
+ipc::Status Relay::execute(const ipc::Publish& command) {
+    if (command.request == 0) {
+        return ipc::Status{.request = 0, .status = code_of(WSRV_ERR_INVALID_ARGUMENT)};
+    }
+    // A publish never fails because subscribers are slow (ADR-0024 section 4): only the name, the
+    // payload, UTF-8 or "broker off" can refuse it. The report is for the HTTP answer, not here.
+    const Result<PublishReport> result = backend_.publish(
+        as_chars(command.topic), command.payload, command.text, command.except);
+    return ipc::Status{.request = command.request,
+                       .status = result ? code_of(WSRV_OK)
+                                        : code_of(to_c_status(result.error().code))};
 }
 
 ipc::Status Relay::execute(const ipc::HandshakeAccept& command) {
