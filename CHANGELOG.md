@@ -11,6 +11,7 @@ Known gaps are listed in [docs/RELEASE.md](docs/RELEASE.md). `0.1.0-rc.1` and `0
 The first release meant for developers to build with. Not 1.0: APIs can still change in a minor version.
 
 ### Added
+- The real client address behind a reverse proxy: `trusted_proxy` (addresses/CIDRs) and `client_ip_header` keys; the per-IP limits and the peer address in events then follow the client, not the proxy. Header ignored from untrusted peers, rightmost untrusted `X-Forwarded-For` entry, anything unusable falls back to the proxy address (ADR-0029). PROXY protocol is not implemented yet.
 - RFC 6455 WebSocket server: sans-I/O protocol core, handshake with Origin policy, frame codec, UTF-8 validation, fragmentation, close handshake, multi-loop epoll server, bounded queues with backpressure. Autobahn|Testsuite: 517 cases, 0 failed (plain and wss; C and PHP bindings too).
 - permessage-deflate (RFC 7692) over system zlib, with a decompression-bomb guard.
 - TLS (`wss://`) over OpenSSL, with certificate reload.

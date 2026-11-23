@@ -146,7 +146,7 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | EC-N18 | IPv6, dual-stack, `IPV6_V6ONLY`, IPv4-mapped peer addresses in per-IP limits | Correct normalisation |
 | EC-N19 | Listen backlog full / SYN flood | Kernel-level; document `somaxconn`, `tcp_syncookies` |
 | EC-N20 | Port already in use / permission denied at startup | Clear config error, non-zero exit |
-| EC-N21 | PROXY protocol / X-Forwarded-For (if enabled) | Only from trusted proxies list; otherwise ignored |
+| EC-N21 | X-Forwarded-For and single-address client headers (ADR-0029); PROXY protocol is not implemented | Read only when the TCP peer is in `trusted_proxy`, otherwise ignored; rightmost untrusted entry; anything unusable keeps the proxy address (stricter limits) |
 | EC-N22 | Forced shutdown or `stop()` with connections on worker loops | Every Open is followed by exactly one Close on every loop (each shard reports its own connections when it ends) |
 | EC-N23 | The loop refuses a command (task queue full) that lifts a read pause | Not forgotten: retried at the next poll; the connection is never left read-paused |
 | EC-N24 | A connection ends inside `on_open` (a pause whose registration change fails) | No timer is armed on the finished connection; `arm()` refuses on a released one |
@@ -233,6 +233,7 @@ Column "Expected" is the required server behaviour. Close codes per RFC 6455 §7
 | T4 `RLIMIT_NOFILE` check at start (OPERATIONS section 4; ADR-0022) | done (M10 slice 1b) | `FdBudget.*`, `ServerBuilder.ADescriptorLimitBelowTheCap*`, `ServerBuilder.ALowSoftLimitIsRaised*` |
 | EC-N05 accept-error metric, T4 refusal counters (global cap, per-IP by reason), EC-N09 slow-consumer counter, handshake refusal and close-class counters (ADR-0023) | done (M10 slice 2a) | `Metrics.*`, `MetricBanks.*`, `MetricsText.*`, `AcceptorTest.AcceptErrorsAreCounted*`, `ConnectionTest.*Counted*`, `ConnectionTest.MessagesAndBytes*`, `ServerMetrics.*` |
 | T21 admin listener: the three pages, bounds (clients, head size, deadline), off by default, readiness on shutdown (ADR-0023) | done (M10 slice 2b) | `AdminHttp.*`, `AdminServer.*`, `EmbeddedConfig.*Admin*`, `EmbeddedServer.*Admin*`, `DaemonConfig.TheAdmin*`, `Usage.NamesTheAdmin*` |
+| EC-N21 client address behind a trusted proxy (ADR-0029): rightmost untrusted entry, spoofed header ignored from untrusted peers, slot per client, fail safe to the proxy address | done (1.0 readiness) | `ClientIpNet.*`, `ClientIpList.*`, `ClientIpSingle.*`, `ClientIpServer.*`, `EmbeddedConfig.*TrustedProxies*` |
 | EC-N22..N25 (found by the second security review, M9/M10) | done | `MultiLoop.AForcedShutdownReports*`, `MultiLoop.StopReports*`, `EmbeddedServer.ClientsThatIgnoreTheShutdown*`, `HostBridgeResume.*`, `ConnectionTest.AConnectionThatEndedInsideOnOpen*`, `ConnectionTest.ATransportThatYielded*` |
 | EC-A07..A10 (topic names, broker bounds, per-subscriber isolation, no leaked subscriptions), FR-S7 (ADR-0024) | done (M10 slice 3) | `BrokerTest.*`, `SmallQueueBrokerTest.*`, `SharedMessage.*`, `SessionHandleTest.*SharedMessage*`, `BrokerServer.*` |
 | EC-H26 | M10 (MAY) | - |

@@ -40,6 +40,20 @@ IpLimits::IpLimits(const IpLimitsConfig& config, const IClock& clock)
           kMilliPerToken},
       clock_{clock}, table_{0, KeyHash{config.hash_seed}} {}
 
+/// Which counter a refusal belongs to (ADR-0023): the reason is a closed set, never peer data.
+Metric refusal_metric(Admission verdict) noexcept {
+    switch (verdict) {
+    case Admission::TooManyConnections:
+        return Metric::RejectedIpConnections;
+    case Admission::RateExceeded:
+        return Metric::RejectedIpRate;
+    case Admission::TableFull:
+    case Admission::Admitted:  // never refused; counted with the table, the strictest reading
+        return Metric::RejectedIpTable;
+    }
+    return Metric::RejectedIpTable;
+}
+
 IpLimits::Key IpLimits::key_of(const Endpoint& peer) noexcept {
     Key key;
     if (!peer.v6) {

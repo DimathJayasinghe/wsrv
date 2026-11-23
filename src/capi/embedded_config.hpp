@@ -40,6 +40,8 @@ struct TlsSniSetting {
 /// Keys: listen_host, listen_port, threads, allow_origin (repeatable), allow_missing_origin,
 /// max_message_size, max_connections, max_connections_per_ip (default 100) and
 /// max_new_connections_per_ip_per_second (default 50), both 0 = no limit (ADR-0021),
+/// trusted_proxy (repeatable address or CIDR, at most 64) and client_ip_header (default
+/// X-Forwarded-For): the client address behind a reverse proxy (ADR-0029),
 /// shutdown_grace_ms, event_queue_events, event_queue_bytes, and for the handshake hook (ADR-0018):
 /// handshake_hook (bool, off), handshake_forward_header (repeatable header name),
 /// handshake_decision_timeout_ms (> 0), max_pending_handshakes (> 0). and for TLS (ADR-0019):
@@ -182,6 +184,8 @@ private:
     [[nodiscard]] Result<void> set_event_queue_bytes(std::string_view value);
     [[nodiscard]] Result<void> set_handshake_hook(std::string_view value);
     [[nodiscard]] Result<void> add_handshake_forward_header(std::string_view value);
+    [[nodiscard]] Result<void> add_trusted_proxy(std::string_view value);
+    [[nodiscard]] Result<void> set_client_ip_header(std::string_view value);
     [[nodiscard]] Result<void> set_handshake_decision_timeout_ms(std::string_view value);
     [[nodiscard]] Result<void> set_max_pending_handshakes(std::string_view value);
     [[nodiscard]] Result<void> set_tls_cert(std::string_view value);

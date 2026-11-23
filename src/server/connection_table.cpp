@@ -25,7 +25,8 @@ void ConnectionTable::retire(ConnectionId id) {
         if (found == connections_.end()) {
             return;  // retired twice: nothing left to give back
         }
-        const Endpoint peer = found->second->peer();  // copied: the connection is destroyed next
+        const Endpoint peer =
+            found->second->tcp_peer();  // copied: the connection is destroyed next
         connections_.erase(found);
         if (on_removed_) {
             on_removed_(peer);

@@ -151,6 +151,40 @@ TEST(EmbeddedConfig, MalformedPerIpLimitsAreRefusedAndChangeNothing) {
     EXPECT_EQ(config.server().max_new_connections_per_ip_per_second, 50U);
 }
 
+TEST(EmbeddedConfig, TrustedProxiesAreOffByDefaultAndCollectRangesInOrder) {  // ADR-0029
+    EmbeddedConfig config;
+    EXPECT_TRUE(config.server().trusted_proxies.empty());
+    EXPECT_EQ(config.server().client_ip_header, "X-Forwarded-For");
+    EXPECT_TRUE(config.set("trusted_proxy", "10.0.0.0/8").has_value());
+    EXPECT_TRUE(config.set("trusted_proxy", "::1").has_value());
+    ASSERT_EQ(config.server().trusted_proxies.size(), 2U);
+    EXPECT_EQ(config.server().trusted_proxies[0].prefix, 96U + 8U);  // IPv4 kept as IPv4-mapped
+    EXPECT_TRUE(config.set("client_ip_header", "CF-Connecting-IP").has_value());
+    EXPECT_EQ(config.server().client_ip_header, "CF-Connecting-IP");
+}
+
+TEST(EmbeddedConfig, MalformedTrustedProxySettingsAreRefusedAndChangeNothing) {
+    EmbeddedConfig config;
+    for (const char* bad : {"", "10.0.0.0/33", "localhost", " 10.0.0.1", "10.0.0.0/8/8", "[::1]"}) {
+        EXPECT_FALSE(config.set("trusted_proxy", bad).has_value()) << "'" << bad << "'";
+    }
+    for (const char* bad : {"", "X Forwarded", "X-Forwarded-For:", "X\r\nFor"}) {
+        EXPECT_FALSE(config.set("client_ip_header", bad).has_value()) << "'" << bad << "'";
+    }
+    EXPECT_TRUE(config.server().trusted_proxies.empty());
+    EXPECT_EQ(config.server().client_ip_header, "X-Forwarded-For");
+}
+
+TEST(EmbeddedConfig, AtMostSixtyFourTrustedProxiesAreAccepted) {
+    EmbeddedConfig config;
+    for (int i = 0; i < 64; ++i) {
+        ASSERT_TRUE(config.set("trusted_proxy", "10.0." + std::to_string(i) + ".0/24").has_value())
+            << i;
+    }
+    EXPECT_FALSE(config.set("trusted_proxy", "10.1.0.0/24").has_value());
+    EXPECT_EQ(config.server().trusted_proxies.size(), 64U);
+}
+
 TEST(EmbeddedConfig, TheAdminListenerIsOffUntilAPortIsGiven) {  // ADR-0023 section 3
     EmbeddedConfig config;
     EXPECT_FALSE(config.admin_requested());
