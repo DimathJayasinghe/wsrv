@@ -65,5 +65,14 @@ These are outward-facing and need the owner, because they cannot be undone or ar
 - **The package version has three homes** (the tag, `CMakeLists.txt`, `bindings/php/src/Version.php`). A unit test compares the last two, and the release workflow compares all three before building.
 - **The helper's first test found a hole**: PCRE `$` accepts a trailing newline, so `"1.2.3\n"` passed as a version. All anchors are `\z` now, and the test lists the bad inputs.
 
+## Amendment 1 (2026-11-23): a `wsrvd` container image answers the open question
+The open question above is answered yes. PHP developers who will not install a native binary will run a container, and it also removes the glibc floor for them (the image carries its own libc).
+- **Artifact:** `ghcr.io/dimathjayasinghe/wsrvd:<version>` (and `:latest` for a final release, never for a `-rc`), `linux/amd64` and `linux/arm64`, built by `docker/wsrvd.Dockerfile` from the tagged source in `release.yml`. About 120 MB: Ubuntu 24.04 plus `libssl3`, `zlib1g`, `libstdc++6`, the daemon and `libwsrv.so`. No shell tools were added to it.
+- **Built from source, per architecture, natively.** No emulation (a C++23 compile under QEMU is hours), no copying of the release binary (the Dockerfile alone reproduces the image on any machine). Costs one more compile per tag; accepted.
+- **Fixed uid 10001.** The IPC socket is `0600` and the peer uid must equal the daemon's (ADR-0017), so the PHP container has to run as the same uid. The image creates `/run/wsrv` as `0700`, owned by 10001; a named volume copies that ownership on first use, so `examples/docker/compose.yaml` needs no init step. Sharing the socket between different uids stays a later, separate decision (ADR-0017 section 4a).
+- **Verified by hand on 2026-11-23:** image built, runs as 10001, socket directory `0700` and socket `0600`, a WebSocket handshake returns `101`, and a frame echoed through a PHP worker in a second container.
+- **Not decided here:** the GHCR package starts private; making it public is a setting on the package page (the owner's). No image signing beyond the registry's own digests yet; the release files keep their attestation.
+- **Not a security default to weaken:** the compose example sets `--allow-missing-origin=true` only so command-line clients work in the first minute; its comment says to remove it in production.
+
 ## Revisit trigger
 Users on musl or macOS asking for prebuilt libraries (then add targets to the release matrix), or a second language binding that needs the same artifacts (then the helper's logic moves to a shared script).

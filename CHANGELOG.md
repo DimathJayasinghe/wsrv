@@ -18,5 +18,7 @@ No release has been tagged yet. Everything below is on `main` and is what the fi
 - Composer package layout, `bin/wsrv-install-lib` (SHA-256 verified download of the native library) and a tag-triggered release workflow with checksums and build attestation (ADR-0026).
 - Documentation set: requirements, architecture, ADRs, edge-case catalogue, 41 lessons.
 
+- `wsrvd` container image (`docker/wsrvd.Dockerfile`, published to GHCR by `release.yml`, amd64 and arm64) and a Docker quickstart with a PHP worker (`examples/docker`), ADR-0026 amendment 1.
+
 ### Fixed
 - permessage-deflate: an offer that repeats a parameter is declined (RFC 7692 section 7) instead of failing the handshake; a message ended by a final block is accepted and keeps its window, with one restart per message.
