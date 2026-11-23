@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <string>
 
 #include "wsrvd/backend.hpp"
@@ -119,6 +120,8 @@ private:
     void admit(Fd client) noexcept;
     void reject_busy(Fd client) noexcept;
     void schedule_retry() noexcept;
+    /// Close every stale connection; those a loop refuses are tried again shortly (ADR-0034).
+    void close_stale_connections(std::uint16_t code, std::string_view reason);
     void release(const Peer* peer) noexcept;
 
     EventLoop& loop_;
@@ -133,6 +136,7 @@ private:
     std::optional<WatchHandle> events_watch_;
     std::optional<TimerHandle> retry_;
     std::optional<TimerHandle> grace_timer_;  ///< armed while stale connections await 1012
+    std::optional<TimerHandle> close_retry_;  ///< armed while a loop has refused a stale close
     std::unique_ptr<Peer> peer_;
     /// Lifetime token for tasks handed to the loop: they hold a weak_ptr, so a task that outlives
     /// the server does nothing.

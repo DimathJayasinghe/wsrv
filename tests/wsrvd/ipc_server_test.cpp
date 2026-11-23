@@ -717,6 +717,33 @@ TEST_F(IpcServerTest, ConnectionsOfADisconnectedApplicationAreClosedWith1012Afte
     EXPECT_EQ(commands[0].code, 1012U);
 }
 
+// ADR-0034: a close that a full loop queue refuses leaves the connection open. It used to be given
+// up on; now it is asked again every few milliseconds until a loop takes it, and then no more.
+TEST_F(IpcServerTest, A1012CloseTheLoopRefusesIsRetriedUntilItIsAccepted) {
+    IpcServerConfig c = config();
+    c.restart_grace = 100ms;
+    const RunningServer server{sys, backend, c};
+    backend.fail_commands_with(ErrorCode::BufferFull);
+    {
+        const auto app = connect_ready(path());
+        ASSERT_TRUE(backend.push(HostEventType::Open, 5, "a").has_value());
+        ASSERT_EQ(app->receive()->event, ipc::EventKind::Open);
+    }
+    ASSERT_TRUE(eventually(
+        [&] { return backend.commands_of(RecordedCommand::Kind::Close).size() >= 3; }, 10000ms))
+        << "while the loop keeps refusing, the daemon keeps asking";
+    backend.fail_commands_with(std::nullopt);  // the loop has room again
+    std::this_thread::sleep_for(300ms);
+    const std::size_t settled = backend.commands_of(RecordedCommand::Kind::Close).size();
+    std::this_thread::sleep_for(300ms);
+    EXPECT_EQ(backend.commands_of(RecordedCommand::Kind::Close).size(), settled)
+        << "once a loop has taken the close, it is not asked again";
+    for (const auto& command : backend.commands_of(RecordedCommand::Kind::Close)) {
+        EXPECT_EQ(command.conn, 5U);
+        EXPECT_EQ(command.code, 1012U);
+    }
+}
+
 TEST_F(IpcServerTest, WhenTheApplicationDisconnectsItsConnectionsLoseTheirSubscriptionsAtOnce) {
     IpcServerConfig c = config();
     c.restart_grace = 5000ms;  // the 1012 close is far away; the drop must not wait for it

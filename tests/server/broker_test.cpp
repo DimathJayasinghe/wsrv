@@ -317,12 +317,15 @@ TEST_F(SmallQueueBrokerTest, ARefusingLoopCostsOnlyThoseDeliveriesAndIsReportedN
     for (ConnectionId id = 1; id <= 8; ++id) {
         ASSERT_TRUE(broker.subscribe(add(id), "t").has_value());
     }
-    const auto report = broker.publish_text("t", "x");  // the loop holds 4 tasks, not pumped yet
+    ASSERT_TRUE(broker.subscribe(add(99), "other").has_value());
+    for (int i = 0; i < 3; ++i) {  // the loop holds 4 tasks, 3 for broadcasts: use them up
+        ASSERT_TRUE(broker.publish_text("other", "filler").has_value());
+    }
+    const auto report = broker.publish_text("t", "x");  // not pumped yet: no slot for the chunk
     ASSERT_TRUE(report.has_value());
     EXPECT_EQ(report->subscribers, 8U);
-    EXPECT_LT(report->accepted, 8U);
-    EXPECT_EQ(report->accepted + report->refused, 8U);
-    EXPECT_GE(report->refused, 1U);
+    EXPECT_EQ(report->accepted, 0U) << "a chunk is taken or refused whole (ADR-0034)";
+    EXPECT_EQ(report->refused, 8U) << "counted per recipient, and reported, not hidden";
     pump();
     std::size_t received = 0;
     for (ConnectionId id = 1; id <= 8; ++id) {
@@ -331,21 +334,28 @@ TEST_F(SmallQueueBrokerTest, ARefusingLoopCostsOnlyThoseDeliveriesAndIsReportedN
     EXPECT_EQ(received, report->accepted) << "exactly the accepted ones were delivered";
     const auto again = broker.publish_text("t", "y");  // the queue has room again
     ASSERT_TRUE(again.has_value());
-    EXPECT_EQ(again->accepted, 3U) << "a queue of 4 takes 3 broadcast tasks, one slot is reserved";
+    EXPECT_EQ(again->accepted, 8U) << "the whole room is one chunk: one slot";
 }
 
 TEST_F(SmallQueueBrokerTest, ARefusedTailIsNotAlwaysTheSameSubscribers) {  // fairness, ADR-0024 A1
+    // Four chunks of recipients, a lane of three: one chunk is refused each time. The start of the
+    // order moves by a chunk per publish, so every subscriber is the refused one now and then.
+    constexpr ConnectionId kSubscribers = wsrv::kBulkChunk * 4;
     Broker broker;
-    for (ConnectionId id = 1; id <= 8; ++id) {
+    for (ConnectionId id = 1; id <= kSubscribers; ++id) {
         ASSERT_TRUE(broker.subscribe(add(id), "t").has_value());
     }
-    for (int round = 0; round < 8; ++round) {
-        ASSERT_TRUE(broker.publish_text("t", "x").has_value());
-        pump();  // drain, so every publish meets an empty queue and can serve only three
+    for (int round = 0; round < 4; ++round) {
+        const auto report = broker.publish_text("t", "x");
+        ASSERT_TRUE(report.has_value());
+        EXPECT_EQ(report->accepted, wsrv::kBulkChunk * 3);
+        EXPECT_EQ(report->refused, wsrv::kBulkChunk);
+        pump();  // drain, so every publish meets an empty queue
     }
-    for (ConnectionId id = 1; id <= 8; ++id) {
-        EXPECT_GE(session(id).texts.size(), 1U)
-            << "subscriber " << id << " was refused every time: the start must rotate";
+    for (ConnectionId id = 1; id <= kSubscribers; ++id) {
+        EXPECT_EQ(session(id).texts.size(), 3U)
+            << "subscriber " << id
+            << " must be refused once in four publishes, not always or never";
     }
 }
 

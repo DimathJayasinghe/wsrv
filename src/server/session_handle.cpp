@@ -3,6 +3,7 @@
 
 #include "protocol/utf8.hpp"
 
+#include <algorithm>
 #include <new>
 #include <string>
 #include <utility>
@@ -63,6 +64,30 @@ LoopLink::submit_in(Lane lane, ConnectionId id, SessionCommand command, std::siz
         };
         return lane == Lane::Bulk ? loop_->post_bulk(std::move(task))
                                   : loop_->post(std::move(task));
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "session handle: out of memory");
+    }
+}
+
+Result<void> LoopLink::submit_bulk_many(std::span<const ConnectionId> ids, SessionCommand command) {
+    if (ids.size() > kBulkChunk) {
+        return fail(ErrorCode::InvalidArgument,
+                    "session handle: more ids than one bulk task holds");
+    }
+    try {
+        std::vector<ConnectionId> owned{ids.begin(), ids.end()};  // before the lock: it allocates
+        const std::lock_guard lock{mutex_};
+        if (loop_ == nullptr) {
+            return fail(ErrorCode::Closing, "session handle: the server is gone");
+        }
+        ISessionDirectory* const directory = directory_;
+        // One task for the whole chunk: the loop spends one queue slot, not one per connection.
+        return loop_->post_bulk(
+            [directory, owned = std::move(owned), command = std::move(command)] {
+                for (const ConnectionId id : owned) {
+                    directory->run(id, command);
+                }
+            });
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::ResourceExhausted, "session handle: out of memory");
     }
@@ -198,6 +223,73 @@ Result<void> SessionHandle::close(CloseCode code, std::string_view reason) const
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::ResourceExhausted, "session handle: out of memory");
     }
+}
+
+namespace {
+
+/// The recipients that live on one loop, in the order they were given.
+struct LoopBatch {
+    std::shared_ptr<LoopLink> link;
+    std::vector<ConnectionId> ids;
+};
+
+/// Sort the targets into one batch per loop. A handle with no loop is refused and gone.
+void group_by_loop(std::span<const SessionHandle> targets,
+                   std::vector<LoopBatch>& batches,
+                   BulkSendReport& report) {
+    for (const SessionHandle& handle : targets) {
+        if (handle.link() == nullptr) {
+            ++report.refused;
+            report.gone.push_back(handle.id());
+            continue;
+        }
+        auto found = std::ranges::find_if(
+            batches, [&](const LoopBatch& batch) { return batch.link == handle.link(); });
+        if (found == batches.end()) {
+            batches.push_back(LoopBatch{handle.link(), {}});
+            found = batches.end() - 1;
+        }
+        found->ids.push_back(handle.id());
+    }
+}
+
+/// Post one batch in chunks of kBulkChunk; each chunk is accepted or refused as a whole.
+void post_batch(const LoopBatch& batch, const SessionCommand& command, BulkSendReport& report) {
+    for (std::size_t offset = 0; offset < batch.ids.size(); offset += kBulkChunk) {
+        const std::size_t count = std::min(kBulkChunk, batch.ids.size() - offset);
+        const std::span<const ConnectionId> chunk{batch.ids.data() + offset, count};
+        const Result<void> posted = batch.link->submit_bulk_many(chunk, command);
+        if (posted) {
+            report.accepted += count;
+            continue;
+        }
+        report.refused += count;
+        if (posted.error().code == ErrorCode::Closing) {
+            report.gone.insert(report.gone.end(), chunk.begin(), chunk.end());
+        }
+    }
+}
+
+}  // namespace
+
+BulkSendReport send_to_many(std::span<const SessionHandle> targets, const SharedMessage& message) {
+    BulkSendReport report;
+    try {
+        std::vector<LoopBatch> batches;
+        group_by_loop(targets, batches, report);
+        const SessionCommand command = [message](Session& session) {
+            const ByteView bytes = message.data();
+            const Result<void> queued =
+                message.is_text() ? session.send_text(as_chars(bytes)) : session.send_binary(bytes);
+            static_cast<void>(queued.has_value());  // the slow-consumer policy applies inside
+        };
+        for (const LoopBatch& batch : batches) {
+            post_batch(batch, command, report);
+        }
+    } catch (const std::bad_alloc&) {
+        report.refused = targets.size() - report.accepted;  // what was not taken is refused
+    }
+    return report;
 }
 
 }  // namespace wsrv

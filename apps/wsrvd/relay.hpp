@@ -55,9 +55,13 @@ public:
     /// events are discarded, and only events of connections whose application no longer exists.
     void detach();
 
-    /// Close every stale connection with `code` and `reason`; failures mean it is already gone.
-    /// Stale entries are forgotten as their Close events go by in next_event().
-    void close_stale(std::uint16_t code, std::string_view reason);
+    /// Close every stale connection with `code` and `reason`. A close its loop accepts, or a
+    /// connection that is already gone, is done and not asked again; a close the loop REFUSES
+    /// because its task queue is full (BufferFull) or it is out of memory leaves the connection
+    /// open, so it stays to be retried: call again later (ADR-0034). Stale entries are forgotten as
+    /// their Close events go by in next_event().
+    /// @return how many closes were refused and are still to do (0 = nothing left to retry).
+    [[nodiscard]] std::size_t close_stale(std::uint16_t code, std::string_view reason);
 
     [[nodiscard]] std::size_t stale_count() const noexcept {
         return stale_.size();
@@ -71,6 +75,7 @@ private:
     IBackend& backend_;
     std::unordered_set<ConnectionId> open_;
     std::unordered_set<ConnectionId> stale_;  ///< known to a previous application, now unserved
+    std::unordered_set<ConnectionId> closing_;  ///< stale, and its close was accepted or is moot
 };
 
 }  // namespace wsrv::wsrvd
