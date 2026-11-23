@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -28,6 +29,20 @@ struct TlsSniSetting {
     std::string certificate;
     std::string key;
 };
+
+namespace detail {
+/// Sums that stop at the largest size_t instead of wrapping: a huge max_connections must give a
+/// huge (and then refused by create()) queue, never a small one.
+[[nodiscard]] constexpr std::size_t saturating_sum(std::size_t a, std::size_t b) noexcept {
+    return a > std::numeric_limits<std::size_t>::max() - b ? std::numeric_limits<std::size_t>::max()
+                                                           : a + b;
+}
+[[nodiscard]] constexpr std::size_t saturating_product(std::size_t a, std::size_t b) noexcept {
+    return b != 0 && a > std::numeric_limits<std::size_t>::max() / b
+               ? std::numeric_limits<std::size_t>::max()
+               : a * b;
+}
+}  // namespace detail
 
 /// The settings a host can give an embedded server, as text key/value pairs (ADR-0016 section 6).
 /// Text keys are the one configuration shape every binding can express without sharing any C++
@@ -99,8 +114,23 @@ public:
     [[nodiscard]] const ServerConfig& server() const noexcept {
         return server_;
     }
+    /// The event queue's limits. A live connection holds one slot (and kReservedCloseBytes) of the
+    /// queue for its Close event for as long as it lives, so a queue smaller than max_connections
+    /// would quietly cap the server below that number. A limit the operator did not set therefore
+    /// follows max_connections (never below the 4096 events / 8 MiB default, plus that much room
+    /// for events in flight); a limit the operator did set is returned exactly as set.
     [[nodiscard]] EventQueueConfig queue() const noexcept {
-        return queue_;
+        EventQueueConfig out = queue_;
+        const std::size_t connections = server_.max_connections;
+        if (!queue_events_set_) {
+            out.max_events = detail::saturating_sum(connections, EventQueueConfig{}.max_events);
+        }
+        if (!queue_bytes_set_) {
+            out.max_bytes = detail::saturating_sum(
+                detail::saturating_product(connections, EventQueue::kReservedCloseBytes),
+                EventQueueConfig{}.max_bytes);
+        }
+        return out;
     }
 
     /// True when the host wants to be asked before each upgrade (handshake_hook).
@@ -225,6 +255,8 @@ private:
     std::optional<std::uint16_t> admin_port_;    // set = the admin listener is on
     std::optional<std::uint16_t> publish_port_;  // set = the publish listener is on
     std::uint16_t port_ = 0;
+    bool queue_events_set_ = false;  ///< event_queue_events was given: queue() must not derive it
+    bool queue_bytes_set_ = false;   ///< event_queue_bytes was given: queue() must not derive it
     bool handshake_hook_ = false;
     bool broker_enabled_ = false;
     bool deflate_enabled_ = false;

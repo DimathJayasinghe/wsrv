@@ -97,3 +97,13 @@ Implementation notes for slice 3b (no decision above changed):
 **Rejected.** (a) Deriving the three from `max_message_size`: hides a coupling and cannot express "big frames, few fragments". (b) A C-side "autobahn profile" key: puts test policy in the product ABI. (c) Running a reduced case set from C: the exit criterion would then not mean what it says.
 
 **Consequences.** + The C consumer can run the same 517 cases as the C++ echo. + Embedders get the knobs the C++ API already has. - Three more keys to keep forever; each is a limit, so each is also a way to configure an unsafe server. The header text and OPERATIONS say so.
+
+### A2 (2026-11-23): the default event queue follows `max_connections`
+
+**Problem.** `EventQueue` reserves, when a connection opens, a slot (and `kReservedCloseBytes`) for that connection's Close event, and keeps it until the connection ends, so a Close can never be refused (section 4). The default queue was 4096 events, whatever `max_connections` said (default 10 000). A server therefore held at most 4095 live connections: the 4096th was accepted and upgraded, then closed by the overload path. Found by the 1.0 benchmark: 5000 idle connections lost 905, and a 5000-subscriber broadcast delivered to nobody because the publisher's own connection was one of the dropped ones. Nothing in the configuration, the metrics or the documentation said so.
+
+**Decision.** `EmbeddedConfig::queue()` derives the two limits the operator did not set: events = `max_connections` + 4096, bytes = `max_connections` * `kReservedCloseBytes` + 8 MiB. One slot per connection, plus the old defaults as room for events in flight. A limit the operator did set is returned exactly as set (an explicit tiny queue is how the overload path is tested, and a bounded queue is still the point), and the documentation says that a queue below `max_connections` caps the server below it.
+
+**Rejected.** (a) Raising the constant to a bigger fixed number: moves the cliff, keeps the inconsistency. (b) Refusing a start when an explicit queue is smaller than `max_connections`: breaks the tests and embedders that choose a small queue on purpose. (c) Releasing the Close reservation: the whole point of it.
+
+**Consequences.** + The default configuration is consistent: every connection the server accepts has room. + Memory stays bounded: a reservation is a counter, not an allocation, and the payload bytes waiting are still capped by `event_queue_bytes`. - An operator who sets `event_queue_events` below `max_connections` can still cap connections silently; the OPERATIONS table says so.

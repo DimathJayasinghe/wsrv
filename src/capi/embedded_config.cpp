@@ -438,6 +438,7 @@ Result<void> EmbeddedConfig::set_event_queue_events(std::string_view value) {
         return std::unexpected{number.error()};
     }
     queue_.max_events = *number;
+    queue_events_set_ = true;
     return {};
 }
 
@@ -448,6 +449,7 @@ Result<void> EmbeddedConfig::set_event_queue_bytes(std::string_view value) {
         return std::unexpected{number.error()};
     }
     queue_.max_bytes = *number;
+    queue_bytes_set_ = true;
     return {};
 }
 

@@ -107,8 +107,12 @@ WSRV_API void wsrv_config_free(wsrv_config *config); /* NULL is fine */
  *                        is no authentication: keep it on loopback or behind a network policy.
  *   admin_host           IP literal for the admin port, default "127.0.0.1"
  *   shutdown_grace_ms    graceful shutdown deadline
- *   event_queue_events   most events waiting for the host
- *   event_queue_bytes    most payload bytes waiting for the host
+ *   event_queue_events   most events waiting for the host. Every live connection holds one slot
+ *                        for its Close event, so this must exceed max_connections. Unset, it is
+ *                        max_connections + 4096; set by hand, it is used as given (a smaller
+ *                        value caps the connections the server can hold at that value)
+ *   event_queue_bytes    most payload bytes waiting for the host. Unset, it is max_connections
+ *                        times the bytes reserved per Close plus 8 MiB; set by hand, as given
  *   handshake_hook       "true"/"false"/"1"/"0", default false. When true, every valid upgrade
  *                        waits for the host: a WSRV_EV_HANDSHAKE event, answered with
  *                        wsrv_handshake_accept() or wsrv_handshake_reject(). Unanswered upgrades
