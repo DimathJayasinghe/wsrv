@@ -106,6 +106,14 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
         KeyEntry{"tls_cert", &EmbeddedConfig::set_tls_cert},
         KeyEntry{"tls_key", &EmbeddedConfig::set_tls_key},
         KeyEntry{"tls_sni", &EmbeddedConfig::add_tls_sni},
+        KeyEntry{"broker", &EmbeddedConfig::set_broker},
+        KeyEntry{"broker_max_topics", &EmbeddedConfig::set_broker_max_topics},
+        KeyEntry{"broker_max_subscribers_per_topic",
+                 &EmbeddedConfig::set_broker_max_subscribers_per_topic},
+        KeyEntry{"broker_max_topics_per_connection",
+                 &EmbeddedConfig::set_broker_max_topics_per_connection},
+        KeyEntry{"broker_max_subscriptions", &EmbeddedConfig::set_broker_max_subscriptions},
+        KeyEntry{"broker_max_payload_bytes", &EmbeddedConfig::set_broker_max_payload_bytes},
         KeyEntry{"permessage_deflate", &EmbeddedConfig::set_permessage_deflate},
         KeyEntry{"deflate_server_max_window_bits",
                  &EmbeddedConfig::set_deflate_server_max_window_bits},
@@ -274,6 +282,80 @@ Result<void> EmbeddedConfig::set_max_new_connections_per_ip_per_second(std::stri
                     "config: max_new_connections_per_ip_per_second needs a number");
     }
     server_.max_new_connections_per_ip_per_second = *number;
+    return {};
+}
+
+// ADR-0027 section 1: the ceilings below are the documented upper limits of the broker bounds.
+constexpr std::uint64_t kBrokerMaxTopicsCeiling = 1'000'000;
+constexpr std::uint64_t kBrokerMaxSubscribersPerTopicCeiling = 1'000'000;
+constexpr std::uint64_t kBrokerMaxTopicsPerConnectionCeiling = 1024;
+constexpr std::uint64_t kBrokerMaxSubscriptionsCeiling = 10'000'000;
+constexpr std::uint64_t kBrokerMaxPayloadCeiling = std::uint64_t{1} << 20;
+
+Result<void> EmbeddedConfig::set_broker(std::string_view value) {
+    const auto flag = parse_bool(value);
+    if (!flag) {
+        return fail(ErrorCode::InvalidConfig, "config: broker needs true, false, 1 or 0");
+    }
+    broker_enabled_ = *flag;
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_broker_max_topics(std::string_view value) {
+    const Result<std::uint64_t> number = parse_limit(
+        value, kBrokerMaxTopicsCeiling, "config: broker_max_topics needs a number 1..1000000");
+    if (!number) {
+        return std::unexpected{number.error()};
+    }
+    broker_.max_topics = static_cast<std::size_t>(*number);
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_broker_max_subscribers_per_topic(std::string_view value) {
+    const Result<std::uint64_t> number =
+        parse_limit(value,
+                    kBrokerMaxSubscribersPerTopicCeiling,
+                    "config: broker_max_subscribers_per_topic needs a number 1..1000000");
+    if (!number) {
+        return std::unexpected{number.error()};
+    }
+    broker_.max_subscribers_per_topic = static_cast<std::size_t>(*number);
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_broker_max_topics_per_connection(std::string_view value) {
+    const Result<std::uint64_t> number =
+        parse_limit(value,
+                    kBrokerMaxTopicsPerConnectionCeiling,
+                    "config: broker_max_topics_per_connection needs a number 1..1024");
+    if (!number) {
+        return std::unexpected{number.error()};
+    }
+    broker_.max_topics_per_connection = static_cast<std::size_t>(*number);
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_broker_max_subscriptions(std::string_view value) {
+    const Result<std::uint64_t> number =
+        parse_limit(value,
+                    kBrokerMaxSubscriptionsCeiling,
+                    "config: broker_max_subscriptions needs a number 1..10000000");
+    if (!number) {
+        return std::unexpected{number.error()};
+    }
+    broker_.max_subscriptions = static_cast<std::size_t>(*number);
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_broker_max_payload_bytes(std::string_view value) {
+    const Result<std::uint64_t> number =
+        parse_limit(value,
+                    kBrokerMaxPayloadCeiling,
+                    "config: broker_max_payload_bytes needs a number 1..1048576");
+    if (!number) {
+        return std::unexpected{number.error()};
+    }
+    broker_.max_payload_bytes = static_cast<std::size_t>(*number);
     return {};
 }
 

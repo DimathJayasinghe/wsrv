@@ -18,5 +18,7 @@ No release has been tagged yet. Everything below is on `main` and is what the fi
 - Composer package layout, `bin/wsrv-install-lib` (SHA-256 verified download of the native library) and a tag-triggered release workflow with checksums and build attestation (ADR-0026).
 - Documentation set: requirements, architecture, ADRs, edge-case catalogue, 41 lessons.
 
+- Broker driven by connection id in the embedded server (`broker` and five `broker_max_*` config keys, ADR-0027 slice 1); the C ABI and PHP follow.
+
 ### Fixed
 - permessage-deflate: an offer that repeats a parameter is declined (RFC 7692 section 7) instead of failing the handshake; a message ended by a final block is accepted and keeps its window, with one restart per message.

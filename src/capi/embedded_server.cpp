@@ -68,7 +68,10 @@ struct EmbeddedServer::TlsState {};  // never created: asking for TLS fails at s
 Result<std::unique_ptr<EmbeddedServer>> EmbeddedServer::create(const EmbeddedConfig& config) {
     try {
         auto server = std::make_unique<EmbeddedServer>(Key{}, config);
-        auto bridge = HostBridge::make(server->sys_, config.queue());
+        auto bridge = HostBridge::make(
+            server->sys_,
+            config.queue(),
+            config.broker_enabled() ? std::make_shared<Broker>(config.broker_config()) : nullptr);
         if (!bridge) {
             return std::unexpected{bridge.error()};
         }
@@ -221,6 +224,7 @@ void EmbeddedServer::io_thread_main(std::promise<Started>& ready) {
         }
 #endif
         server = builder.build();
+        bridge_->use_broker_metrics(server->shared_metrics());  // the broker's counters (ADR-0024)
     } catch (const ConfigError& error) {
         // The code says what kind of failure it is; the message says which field or address.
         ready.set_value(Started{fail(error.code(), "embedded server: start"), error.what()});
@@ -302,6 +306,43 @@ Result<void> EmbeddedServer::close(ConnectionId id, CloseCode code, std::string_
         return same;
     }
     return bridge_->close(id, code, reason);
+}
+
+Result<void> EmbeddedServer::subscribe(ConnectionId id, std::string_view topic) {
+    if (const Result<void> same = check_process(); !same) {
+        return same;
+    }
+    return bridge_->subscribe(id, topic);
+}
+
+Result<void> EmbeddedServer::unsubscribe(ConnectionId id, std::string_view topic) {
+    if (const Result<void> same = check_process(); !same) {
+        return same;
+    }
+    return bridge_->unsubscribe(id, topic);
+}
+
+Result<PublishReport>
+EmbeddedServer::publish_text(std::string_view topic, std::string_view text, ConnectionId except) {
+    if (const Result<void> same = check_process(); !same) {
+        return std::unexpected{same.error()};
+    }
+    return bridge_->publish_text(topic, text, except);
+}
+
+Result<PublishReport>
+EmbeddedServer::publish_binary(std::string_view topic, ByteView data, ConnectionId except) {
+    if (const Result<void> same = check_process(); !same) {
+        return std::unexpected{same.error()};
+    }
+    return bridge_->publish_binary(topic, data, except);
+}
+
+Result<std::size_t> EmbeddedServer::topic_subscribers(std::string_view topic) const {
+    if (const Result<void> same = check_process(); !same) {
+        return std::unexpected{same.error()};
+    }
+    return bridge_->topic_subscribers(topic);
 }
 
 Result<void> EmbeddedServer::accept_handshake(ConnectionId id,

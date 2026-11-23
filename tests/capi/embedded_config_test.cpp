@@ -323,4 +323,55 @@ TEST(EmbeddedConfig, ARefusedLimitChangesNothing) {
     EXPECT_EQ(config.server().session.assembler.max_fragments, 5000U);
 }
 
+TEST(EmbeddedConfig, TheBrokerIsOffByDefaultWithTheLibraryBounds) {  // ADR-0027 section 1
+    const EmbeddedConfig config;
+    EXPECT_FALSE(config.broker_enabled());
+    const BrokerConfig defaults;
+    EXPECT_EQ(config.broker_config().max_topics, defaults.max_topics);
+    EXPECT_EQ(config.broker_config().max_subscribers_per_topic, defaults.max_subscribers_per_topic);
+    EXPECT_EQ(config.broker_config().max_topics_per_connection, defaults.max_topics_per_connection);
+    EXPECT_EQ(config.broker_config().max_subscriptions, defaults.max_subscriptions);
+    EXPECT_EQ(config.broker_config().max_payload_bytes, defaults.max_payload_bytes);
+}
+
+TEST(EmbeddedConfig, TheBrokerKeysAreStored) {
+    EmbeddedConfig config;
+    EXPECT_TRUE(config.set("broker", "true").has_value());
+    EXPECT_TRUE(config.set("broker_max_topics", "10").has_value());
+    EXPECT_TRUE(config.set("broker_max_subscribers_per_topic", "20").has_value());
+    EXPECT_TRUE(config.set("broker_max_topics_per_connection", "3").has_value());
+    EXPECT_TRUE(config.set("broker_max_subscriptions", "400").has_value());
+    EXPECT_TRUE(config.set("broker_max_payload_bytes", "2048").has_value());
+    EXPECT_TRUE(config.broker_enabled());
+    EXPECT_EQ(config.broker_config().max_topics, 10U);
+    EXPECT_EQ(config.broker_config().max_subscribers_per_topic, 20U);
+    EXPECT_EQ(config.broker_config().max_topics_per_connection, 3U);
+    EXPECT_EQ(config.broker_config().max_subscriptions, 400U);
+    EXPECT_EQ(config.broker_config().max_payload_bytes, 2048U);
+}
+
+TEST(EmbeddedConfig, TheBrokerBoundsRefuseZeroAndAnythingAboveTheirCeiling) {
+    struct Case {
+        const char* key;
+        const char* ceiling;
+        const char* above;
+    };
+    const Case cases[] = {{"broker_max_topics", "1000000", "1000001"},
+                          {"broker_max_subscribers_per_topic", "1000000", "1000001"},
+                          {"broker_max_topics_per_connection", "1024", "1025"},
+                          {"broker_max_subscriptions", "10000000", "10000001"},
+                          {"broker_max_payload_bytes", "1048576", "1048577"}};
+    for (const Case& c : cases) {
+        EmbeddedConfig config;
+        EXPECT_FALSE(config.set(c.key, "0").has_value()) << c.key;  // never "unlimited"
+        EXPECT_FALSE(config.set(c.key, c.above).has_value()) << c.key;
+        EXPECT_FALSE(config.set(c.key, "-1").has_value()) << c.key;
+        EXPECT_FALSE(config.set(c.key, "10 ").has_value()) << c.key;
+        EXPECT_TRUE(config.set(c.key, c.ceiling).has_value()) << c.key;
+    }
+    EmbeddedConfig bad;
+    EXPECT_FALSE(bad.set("broker", "yes").has_value());
+    EXPECT_FALSE(bad.broker_enabled());
+}
+
 }  // namespace
