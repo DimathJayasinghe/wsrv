@@ -25,6 +25,16 @@ struct PublishConfig {
     std::size_t max_body_bytes = std::size_t{64} * 1024;  ///< a longer declared body is 413
 };
 
+/// What the endpoint works with, all borrowed and valid for its whole life (kept in one struct so
+/// that create() stays within the parameter limit of the coding standard).
+struct PublishDeps {
+    EventLoop& loop;
+    ISyscalls& sys;
+    const PublishSources& sources;    ///< the token and the action
+    IMetrics& metrics;                ///< where the answers are counted
+    std::function<bool()> accepting;  ///< false while the server shuts down: the answer is 503
+};
+
 /// The publish listener (ADR-0028 section 3): `POST /publish` with a bearer token, on the loop
 /// that owns it (loop 0), so it needs no thread and no lock. The order of checks is the security
 /// property (amendment 2, item 4): the head is parsed and interpreted, then the token is compared
@@ -37,17 +47,10 @@ struct PublishConfig {
 /// Thread-affinity: loop-thread-only (the thread that runs `loop`), including the destructor.
 class PublishEndpoint {
 public:
-    /// `sources` is borrowed and must outlive the endpoint; `metrics` too. `accepting` says whether
-    /// the server still takes work (false while it shuts down: the answer is 503).
     /// @return Error{InvalidConfig} (token shorter than kMinPublishTokenBytes, no publish action),
     /// or an error from the listener (AddressInUse...) or the acceptor.
     [[nodiscard]] static Result<std::unique_ptr<PublishEndpoint>>
-    create(EventLoop& loop,
-           ISyscalls& sys,
-           const PublishConfig& config,
-           const PublishSources& sources,
-           IMetrics& metrics,
-           std::function<bool()> accepting);
+    create(PublishDeps deps, const PublishConfig& config);
     PublishEndpoint(const PublishEndpoint&) = delete;
     PublishEndpoint& operator=(const PublishEndpoint&) = delete;
     PublishEndpoint(PublishEndpoint&&) = delete;
@@ -64,13 +67,7 @@ public:
         friend class PublishEndpoint;
         Key() = default;
     };
-    PublishEndpoint(Key /*passkey*/,
-                    EventLoop& loop,
-                    ISyscalls& sys,
-                    const PublishConfig& config,
-                    const PublishSources& sources,
-                    IMetrics& metrics,
-                    std::function<bool()> accepting);
+    PublishEndpoint(Key /*passkey*/, PublishDeps deps, const PublishConfig& config);
 
 private:
     class Client;
