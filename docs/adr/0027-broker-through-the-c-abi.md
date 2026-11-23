@@ -56,7 +56,7 @@ To close the race in the Context, `wsrv_subscribe` calls `broker.subscribe` **wh
 The PHP embedded binding gets `Server::subscribe($conn, $topic)`, `unsubscribe`, `publish($topic, $data, $binary, $except)` (returning the report as an array) and `subscribers($topic)`, with `broker` and the bounds as ordinary config keys. `WSRV_ERR_LIMIT` becomes a `LimitReached` exception subclass of `WsrvException` (a caller acts differently: tell the user the room is full). The cdef is regenerated and its drift test covers the new functions. The chat example then drops its own room table for the broker.
 
 ### 7. Not in this ADR
-- **The sidecar (`wsrvd`, IPC).** `Client::publish()/subscribe()` need IPC v0.3 frames and a daemon-side broker; they get their own amendment to ADR-0017 after this ADR is implemented, and reuse the same bounds. Until then, PHP applications behind the sidecar keep their own rooms.
+- **The sidecar (`wsrvd`, IPC).** `Client::publish()/subscribe()` need IPC v0.3 frames and a daemon-side broker; they are specified in [ADR-0028](0028-publish-from-anywhere.md) (IPC v0.3 frames and an HTTP publish endpoint) and reuse the same bounds. Until then, PHP applications behind the sidecar keep their own rooms.
 - Wildcards, history, acknowledgements, cross-process brokers: as in ADR-0024.
 
 ## Slices
