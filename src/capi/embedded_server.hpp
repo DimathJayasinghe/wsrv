@@ -72,6 +72,10 @@ public:
     [[nodiscard]] std::uint16_t admin_port() const noexcept {
         return admin_port_.load();
     }
+    /// The publish listener's bound port (ADR-0028); 0 when it is off or before a successful start.
+    [[nodiscard]] std::uint16_t publish_port() const noexcept {
+        return publish_port_.load();
+    }
     /// True from a successful start until the loops have stopped.
     [[nodiscard]] bool running() const noexcept {
         return running_.load();
@@ -135,13 +139,16 @@ private:
     struct Started {
         Result<std::uint16_t> port;
         std::string detail;
-        std::uint16_t admin_port = 0;  ///< 0 = the admin listener is off
+        std::uint16_t admin_port = 0;    ///< 0 = the admin listener is off
+        std::uint16_t publish_port = 0;  ///< 0 = the publish listener is off
     };
 
     void io_thread_main(std::promise<Started>& ready);
     /// Load the certificate when TLS was asked for. Runs in start(), before the thread exists, so
     /// a bad setup is reported by start() and nothing is listening yet.
     [[nodiscard]] Result<void> prepare_tls();
+    /// Check the publish settings and build its token and action (ADR-0028). Same timing as TLS.
+    [[nodiscard]] Result<void> prepare_publish();
 
     const pid_t owner_pid_;
     const EmbeddedConfig config_;
@@ -153,6 +160,8 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<std::uint16_t> port_{0};
     std::atomic<std::uint16_t> admin_port_{0};
+    std::atomic<std::uint16_t> publish_port_{0};
+    PublishSources publish_sources_;  // the token and the action; lives as long as the server
     std::string start_error_;
     // A pointer so that a forked child can abandon it: it names a thread that exists only in the
     // parent, so the child must neither join nor destroy it (destroying a joinable thread aborts).

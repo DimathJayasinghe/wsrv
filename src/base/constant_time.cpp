@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "wsrvd/token.hpp"
+#include "base/constant_time.hpp"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 
-namespace wsrv::wsrvd {
+namespace wsrv {
 
 bool constant_time_equal(ByteView a, ByteView b) noexcept {
     const std::size_t longest = std::max(a.size(), b.size());
@@ -19,4 +19,4 @@ bool constant_time_equal(ByteView a, ByteView b) noexcept {
     return difference == 0;
 }
 
-}  // namespace wsrv::wsrvd
+}  // namespace wsrv

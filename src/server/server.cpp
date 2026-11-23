@@ -21,7 +21,7 @@ namespace wsrv {
 
 Server::Server(Key /*unused*/, ServerConfig config, const ServerDeps& deps)
     : config_{std::move(config)}, factory_{*deps.factory}, decider_{deps.decider},
-      wrapper_{deps.transport_wrapper},
+      publish_sources_{deps.publish}, wrapper_{deps.transport_wrapper},
       sys_{deps.sys != nullptr ? *deps.sys : static_cast<ISyscalls&>(own_sys_)},
       clock_{deps.clock != nullptr ? *deps.clock : static_cast<const IClock&>(own_clock_)},
       logger_{deps.logger != nullptr ? *deps.logger : static_cast<ILogger&>(own_logger_)} {}
@@ -97,6 +97,9 @@ Result<std::unique_ptr<Server>> Server::create(ServerConfig config, const Server
     if (const Result<void> valid = validate(config); !valid) {
         return std::unexpected{valid.error()};
     }
+    if (config.publish.has_value() && deps.publish == nullptr) {
+        return fail(ErrorCode::InvalidConfig, "server: publish needs its token and action");
+    }
     std::unique_ptr<Server> server;
     try {
         server = std::make_unique<Server>(Key{}, std::move(config), deps);
@@ -169,7 +172,43 @@ Result<void> Server::init() {
     if (const Result<void> started = acceptor_->start(); !started) {
         return started;
     }
-    return start_admin();
+    if (const Result<void> admin = start_admin(); !admin) {
+        return admin;
+    }
+    return start_publish();
+}
+
+/// The publish listener, on loop 0 (ADR-0028 section 3), after the admin one. It counts into loop
+/// 0's bank, so its answers reach /metrics like everything else.
+Result<void> Server::start_publish() {
+    if (!config_.publish) {
+        return {};
+    }
+    PublishConfig publish;
+    publish.listen = *config_.publish;
+    publish.max_connections = config_.publish_max_connections;
+    publish.request_timeout = config_.publish_request_timeout;
+    publish.max_body_bytes = config_.publish_max_body_bytes;
+    auto endpoint = PublishEndpoint::create(
+        main_->loop(), sys_, publish, *publish_sources_, main_->metrics(), [this] {
+            return !shutting_down_;
+        });
+    if (!endpoint) {
+        return std::unexpected{endpoint.error()};
+    }
+    publish_ = std::move(*endpoint);
+    const Endpoint bound = publish_->local_endpoint();
+    try {
+        logger_.log(LogLevel::Info, "server: publish listening on " + format_endpoint(bound));
+        if (!is_loopback(bound)) {
+            logger_.log(LogLevel::Warn,
+                        "server: the publish port is not on loopback; the token travels in clear "
+                        "text unless a TLS proxy or a private network protects it");
+        }
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "server: out of memory");
+    }
+    return {};
 }
 
 /// The admin listener, on loop 0 (ADR-0023 section 3). Its pages read what already exists: the

@@ -74,6 +74,11 @@ public:
     /// authentication, so loopback unless the network around it is trusted. Port 0 = any free port
     /// (see Server::admin_endpoint()). Off unless called.
     ServerBuilder& admin(std::string_view ip, std::uint16_t port);
+    /// Serve `POST /publish` on this address (ADR-0028): a bearer token (`sources.token`, at least
+    /// 32 bytes) and the one action it may take. Plain HTTP: loopback, a private network or a TLS
+    /// proxy in front. `sources` is borrowed and must outlive the Server. Port 0 = any free port
+    /// (see Server::publish_endpoint()). Off unless called. Limits: config().publish_*.
+    ServerBuilder& publish(std::string_view ip, std::uint16_t port, const PublishSources& sources);
     ServerBuilder& handler_factory(IHandlerFactory& factory) noexcept;
     ServerBuilder& logger(ILogger& logger) noexcept;
     ServerBuilder& clock(const IClock& clock) noexcept;
@@ -109,7 +114,8 @@ private:
     std::optional<DeflateOptions> deflate_;  ///< applied by build(), after config() was copied
     std::string ip_ = "127.0.0.1";           ///< loopback unless the operator opts into exposure
     std::uint16_t port_ = 0;
-    std::optional<std::pair<std::string, std::uint16_t>> admin_;  ///< ip and port, when enabled
+    std::optional<std::pair<std::string, std::uint16_t>> admin_;    ///< ip and port, when enabled
+    std::optional<std::pair<std::string, std::uint16_t>> publish_;  ///< same, for publish
 };
 
 }  // namespace wsrv

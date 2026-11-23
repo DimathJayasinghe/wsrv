@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "wsrvd/handshake.hpp"
 
+#include "base/constant_time.hpp"
 #include "wsrv/wsrv.h"
 
 #include <utility>
 #include <variant>
 
-#include "wsrvd/token.hpp"
 
 namespace wsrv::wsrvd {
 

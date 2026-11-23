@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "wsrvd/token.hpp"
+#include "base/constant_time.hpp"
 
 #include <gtest/gtest.h>
 
@@ -8,7 +8,7 @@
 namespace {
 
 using wsrv::ByteView;
-using wsrv::wsrvd::constant_time_equal;
+using wsrv::constant_time_equal;
 
 ByteView bytes(std::string_view text) {
     return ByteView{reinterpret_cast<const std::byte*>(text.data()), text.size()};  // NOLINT

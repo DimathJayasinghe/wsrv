@@ -54,6 +54,13 @@ ServerBuilder& ServerBuilder::listen(std::string_view ip, std::uint16_t port) {
     return *this;
 }
 
+ServerBuilder&
+ServerBuilder::publish(std::string_view ip, std::uint16_t port, const PublishSources& sources) {
+    publish_ = std::make_pair(std::string{ip}, port);
+    deps_.publish = &sources;
+    return *this;
+}
+
 ServerBuilder& ServerBuilder::admin(std::string_view ip, std::uint16_t port) {
     admin_ = std::make_pair(std::string{ip}, port);
     return *this;
@@ -108,6 +115,14 @@ std::unique_ptr<Server> ServerBuilder::build() const {
                 Error{ErrorCode::InvalidConfig, "admin address is not an IP literal"});
         }
         config.admin = *admin;
+    }
+    if (publish_) {
+        const Result<Endpoint> publish = parse_endpoint(publish_->first, publish_->second);
+        if (!publish) {
+            throw_config_error(
+                Error{ErrorCode::InvalidConfig, "publish address is not an IP literal"});
+        }
+        config.publish = *publish;
     }
     if (deflate_) {
         apply_deflate(*deflate_, config);
