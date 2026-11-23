@@ -3,14 +3,43 @@
 A from-scratch, standards-compliant **RFC 6455** WebSocket server written in modern C++.
 No Boost, no Asio, no third-party WebSocket libraries. Quality over feature count.
 
-> Status: **pre-release, no tagged version yet; for evaluation, not for production.** RFC 6455 +
-> permessage-deflate + TLS, multi-loop server, per-IP limits, pub/sub broker (C++), Prometheus
-> metrics, C ABI, the `wsrvd` sidecar and a PHP package (sidecar client and embedded server over
-> FFI, PHP 8.2 to the latest release) are built, tested under ASan/UBSan/TSan, fuzzed, and
-> Autobahn-clean (517 cases, 0 failed). Linux only (x86-64 and aarch64). What is not done, and what
-> stands between this and a 1.0, is listed in [docs/RELEASE.md](docs/RELEASE.md); changes are in
+> Status: **0.1.x, usable today to build real-time features; the API is not frozen until 1.0.**
+> RFC 6455 + permessage-deflate + TLS, a multi-loop server, per-IP limits, a pub/sub broker, Prometheus
+> metrics, a C ABI, the `wsrvd` sidecar (with an HTTP publish endpoint) and a PHP package are built,
+> tested under ASan/UBSan/TSan, fuzzed, and Autobahn-clean (517 cases, 0 failed). Linux only (x86-64
+> and aarch64). Before 1.0 an API can change between minor versions, so pin the version you use. What
+> stands between this and a 1.0 is listed in [docs/RELEASE.md](docs/RELEASE.md); changes are in
 > [CHANGELOG.md](CHANGELOG.md). The documents below are the contract the code satisfies; read them
 > before changing code.
+
+## Run it in 60 seconds (PHP, Docker; no C++ and no compiler)
+
+```sh
+git clone https://github.com/DimathJayasinghe/wsrv && cd wsrv/examples/docker
+docker compose up -d                       # port 8080 busy? WSRV_PORT=18080 docker compose up -d
+npx wscat -c ws://localhost:8080/          # any WebSocket client works
+> hello                                    # < hello            (the PHP worker echoes)
+> join room.1                              # < joined room.1
+```
+
+In a second terminal, publish from a separate process, as a controller or a queue job would:
+
+```sh
+docker compose run --rm worker php /app/publish.php room.1 "hello from outside"
+# subscribers=1 accepted=1 refused=0   and the first terminal prints: hello from outside
+```
+
+Use it in your own project:
+
+| You want | Do this |
+|---|---|
+| The daemon | `docker run ghcr.io/dimathjayasinghe/wsrvd:0.1.0` (amd64 and arm64), or the checksummed binary from the [releases](https://github.com/DimathJayasinghe/wsrv/releases) |
+| The PHP client | `composer require wsrv/client` (PHP 8.2 or newer, no extension needed for the sidecar) |
+| Rooms and push from a controller or job | `Wsrv\Publisher`, see [bindings/php/README.md](bindings/php/README.md) |
+| Laravel | [docs/LARAVEL.md](docs/LARAVEL.md) (ticket login, an Artisan worker, queued publishing; tried against Laravel 13) |
+| Production notes | TLS, limits, metrics, hardening: [docs/OPERATIONS.md](docs/OPERATIONS.md) |
+
+Browser (`Origin`) checks are on by default; the example allows command-line clients with `--allow-missing-origin=true`: remove that for anything browser-facing.
 
 ## Why this exists
 
@@ -66,7 +95,7 @@ examples/          echo, chat
 docs/              this documentation set
 ```
 
-## Quick start (Docker, recommended)
+## Build from source (contributors)
 
 ```bash
 make image      # once: builds the dev image (GCC 14, Clang 18, CMake, sanitizers, ...)
