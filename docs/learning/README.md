@@ -48,5 +48,6 @@ We teach as we build. Each lesson answers three questions: **What** are we build
 | 41 | [Shipping a native library with a PHP package](41-shipping-a-native-library-with-a-php-package.md) | M12 | written |
 | 42 | [A daemon in a container](42-a-daemon-in-a-container.md) | M14 | written |
 | 43 | [Rooms for a host that only has ids](43-rooms-for-a-host-that-only-has-ids.md) | M14 | written |
+| 44 | [Broker commands over the IPC link](44-broker-commands-over-the-ipc-link.md) | M14 | written |
 
 Lesson template: *Goal → Background (the problem) → Design (why this way) → Walkthrough (code, small steps) → Tests (what proves it works) → Pitfalls → Exercises.*

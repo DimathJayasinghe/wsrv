@@ -16,7 +16,7 @@ No release has been tagged yet. Everything below is on `main` and is what the fi
 - `wsrvd` sidecar daemon and IPC protocol v0.
 - PHP package: sidecar client and worker (pure PHP), embedded server over FFI (`Wsrv\Embedded\Server`) with the `authenticate` hook, echo and chat examples. Supports PHP 8.2 to the latest release (tested in CI).
 - Composer package layout, `bin/wsrv-install-lib` (SHA-256 verified download of the native library) and a tag-triggered release workflow with checksums and build attestation (ADR-0026).
-- Documentation set: requirements, architecture, ADRs, edge-case catalogue, 43 lessons.
+- Documentation set: requirements, architecture, ADRs, edge-case catalogue, 44 lessons.
 - `wsrvd` container image (`docker/wsrvd.Dockerfile`, published to GHCR by `release.yml`, amd64 and arm64) and a Docker quickstart with a PHP worker (`examples/docker`), ADR-0026 amendment 1.
 - Broker driven by connection id in the embedded server (`broker` and five `broker_max_*` config keys, ADR-0027 slice 1); the C ABI and PHP follow.
 
