@@ -57,6 +57,12 @@ namespace {
         return std::unexpected{
             bad_config("max_new_connections_per_ip_per_second out of range (ADR-0021)")};
     }
+    if (config.trusted_proxies.size() > kMaxTrustedProxies) {
+        return std::unexpected{bad_config("trusted_proxies has too many entries (ADR-0029)")};
+    }
+    if (!is_token(config.client_ip_header)) {
+        return std::unexpected{bad_config("client_ip_header is not a header name (ADR-0029)")};
+    }
     if (config.http.max_request_line == 0 || config.http.max_total_bytes == 0 ||
         config.http.max_headers == 0) {
         return std::unexpected{bad_config("http limits must be non-zero")};

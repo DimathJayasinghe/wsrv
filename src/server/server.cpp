@@ -347,7 +347,9 @@ void Server::on_accept(Fd client, const Endpoint& peer) {
         }
         return;
     }
-    if (ip_limits_ != nullptr) {
+    // A trusted proxy (ADR-0029) takes no per-IP slot here: its clients are admitted by the
+    // connection once the upgrade request names them. The shard decides the same way on release.
+    if (ip_limits_ != nullptr && !is_trusted_proxy(config_.trusted_proxies, peer)) {
         if (const Admission verdict = ip_limits_->admit(peer); verdict != Admission::Admitted) {
             refuse_for_ip_limit(std::move(client), verdict);
             return;
@@ -371,20 +373,6 @@ constexpr std::string_view kAnswer429 = "HTTP/1.1 429 Too Many Requests\r\nRetry
 constexpr std::string_view kAnswer503 = "HTTP/1.1 503 Service Unavailable\r\nRetry-After: "
                                         "1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
 }  // namespace
-
-/// Which counter a refusal belongs to (ADR-0023): the reason is a closed set, never peer data.
-Metric Server::refusal_metric(Admission verdict) noexcept {
-    switch (verdict) {
-    case Admission::TooManyConnections:
-        return Metric::RejectedIpConnections;
-    case Admission::RateExceeded:
-        return Metric::RejectedIpRate;
-    case Admission::TableFull:
-    case Admission::Admitted:  // never refused; counted with the table, the strictest reading
-        return Metric::RejectedIpTable;
-    }
-    return Metric::RejectedIpTable;
-}
 
 /// An address over its limit: tell it so in one send and close. Best effort by design: a client
 /// that already sent its request may see a reset instead; the close is what counts. The table

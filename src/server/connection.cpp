@@ -2,6 +2,7 @@
 #include "server/connection.hpp"
 
 #include "base/assert.hpp"
+#include "server/client_ip.hpp"
 
 #include <algorithm>
 #include <exception>
@@ -85,7 +86,7 @@ Connection::Connection(ConnectionId id,
                        const Endpoint& peer,
                        std::unique_ptr<ITransport> transport,
                        const ConnectionContext& context)
-    : id_{id}, peer_{peer}, transport_{std::move(transport)}, ctx_{context},
+    : id_{id}, peer_{peer}, client_{peer}, transport_{std::move(transport)}, ctx_{context},
       driver_{context.negotiator, context.config.http} {}
 
 Connection::~Connection() {
@@ -222,6 +223,9 @@ void Connection::on_handshake_bytes(MutableByteView chunk) {
         close_after_head_ = true;
         return;
     case HandshakeStep::Accepted: {
+        if (!resolve_client()) {
+            return;  // refused: 429 or 503, the answer is queued
+        }
         const MutableByteView behind = chunk.subspan(std::min(outcome.consumed, chunk.size()));
         if (ctx_.decider != nullptr) {
             await_decision(outcome, behind);
@@ -233,6 +237,34 @@ void Connection::on_handshake_bytes(MutableByteView chunk) {
     }
 }
 
+/// Behind a trusted proxy (ADR-0029) the TCP peer is the proxy, so the client is named by the
+/// forwarded header, read only because the peer is trusted. The client is admitted through the
+/// per-IP table now, the way the accept path does for everyone else. Anything unusable keeps the
+/// proxy's own address, which only makes the limits stricter. @return false if the client was
+/// refused (the answer is queued).
+bool Connection::resolve_client() {
+    const ServerConfig& config = ctx_.config;
+    if (config.trusted_proxies.empty() || !is_trusted_proxy(config.trusted_proxies, peer_)) {
+        return true;  // the accept path already admitted this address, or there are no limits
+    }
+    const std::vector<std::string_view> values = driver_.request().values(config.client_ip_header);
+    const std::optional<Endpoint> named =
+        client_address(config.trusted_proxies, forwarded_style(config.client_ip_header), values);
+    const Endpoint client = named.value_or(peer_);
+    if (ctx_.ip_limits != nullptr) {
+        const Admission verdict = ctx_.ip_limits->admit(client);
+        if (verdict != Admission::Admitted) {
+            count(refusal_metric(verdict));
+            log(LogLevel::Warn, "per-IP limit reached behind a trusted proxy, refusing");
+            refuse(verdict == Admission::TableFull ? 503 : 429);
+            return false;
+        }
+        client_slot_ = client;
+    }
+    client_ = client;
+    return true;
+}
+
 /// The 101 is queued (it is written before any frame), the session starts Open and the handler
 /// hears about it. Bytes that arrived behind the request head are the first frame bytes and go
 /// straight to the session (EC-H19, FR-H8).
@@ -242,7 +274,8 @@ void Connection::establish(HandshakeOutcome& outcome, MutableByteView leftover) 
     phase_ = Phase::Established;
     session_.emplace(session_config_for(ctx_.config.session, outcome), ctx_.host.now());
 
-    ConnectionInfo info{id_, peer_, std::move(outcome.subprotocol), std::move(outcome.annotations)};
+    ConnectionInfo info{
+        id_, client_, std::move(outcome.subprotocol), std::move(outcome.annotations)};
     guarded([&] { handler_ = ctx_.factory.create(info); });
     if (handler_) {
         opened_ = true;  // from here on_close is owed, even if on_open throws
@@ -277,7 +310,7 @@ void Connection::await_decision(HandshakeOutcome& outcome, ByteView leftover) {
         return;
     }
     std::optional<HandshakeRequest> request =
-        make_handshake_request(HandshakeFacts{id_, peer_, driver_.request(), outcome.subprotocol},
+        make_handshake_request(HandshakeFacts{id_, client_, driver_.request(), outcome.subprotocol},
                                ctx_.config.handshake_forward_headers);
     if (!request) {
         log(LogLevel::Info, "handshake header over the forwarding cap, refusing");  // EC-H34
@@ -821,6 +854,10 @@ void Connection::release() noexcept {
     disarm(stall_timer_);
     disarm(reread_timer_);
     end_wait();  // frees the place among the waiting upgrades, whatever ended the wait
+    if (client_slot_ && ctx_.ip_limits != nullptr) {
+        ctx_.ip_limits->release(*client_slot_);  // the slot this connection took itself (ADR-0029)
+        client_slot_.reset();
+    }
     if (watching_) {
         ctx_.host.unwatch(watch_);
         watching_ = false;

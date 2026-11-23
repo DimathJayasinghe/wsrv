@@ -6,6 +6,7 @@
 #include "net/endpoint.hpp"
 #include "protocol/handshake.hpp"
 #include "protocol/session.hpp"
+#include "server/client_ip.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -42,6 +43,12 @@ struct ServerConfig {
     /// switch off.
     std::size_t max_connections_per_ip = 100;
     std::uint32_t max_new_connections_per_ip_per_second = 50;
+    /// Reverse proxies whose forwarded-address header is believed (ADR-0029). Empty = off: the TCP
+    /// peer is always the client. A connection from one of these takes no per-IP slot at accept;
+    /// its client address (from `client_ip_header`) is admitted after the upgrade request.
+    std::vector<IpNet> trusted_proxies;
+    /// The header that names the client: X-Forwarded-For is read as a list, any other as one value.
+    std::string client_ip_header = "X-Forwarded-For";
     /// The admin listener for /metrics, /healthz and /readyz (ADR-0023). Absent = off. Plain HTTP
     /// and unauthenticated: keep it on loopback or behind a network policy.
     std::optional<Endpoint> admin;

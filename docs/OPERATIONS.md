@@ -27,7 +27,8 @@ idle_timeout_s = 60
 [security]
 allowed_origins = ["https://app.example.com"]
 allow_missing_origin = false
-trusted_proxies = []
+trusted_proxies = []                # addresses/CIDRs of your reverse proxies (ADR-0029); text key: trusted_proxy, repeatable
+client_ip_header = "X-Forwarded-For"  # text key: client_ip_header
 
 [tls]
 enabled = false
@@ -84,8 +85,22 @@ Two limits keep one client address from taking the whole server: `max_connection
 
 - **Who is "one address":** an IPv4 address; an IPv4-mapped IPv6 address counts as the IPv4 address it maps; any other IPv6 address counts as its **/64** (a subscriber owns at least a /64, so single addresses would let one machine rotate through 2^64 of them). The port is ignored.
 - **What the client sees:** `HTTP/1.1 429 Too Many Requests` with `Retry-After: 1` and a closed connection. A client that already sent its request may see a reset instead: the answer is best effort, the close is the guarantee. The global cap (`max_connections`) keeps its silent close.
-- **Behind a reverse proxy or NAT** every user shares one address, so the defaults can refuse real users. Raise the limits or set them to `0` and rate-limit at the proxy (real client addresses via the PROXY protocol are not implemented; EC-N21).
+- **Behind a reverse proxy** every user would share the proxy's address, so tell the server which peers are your proxies (section 1.2.1) and the limits then count real clients. **Behind a NAT or a PROXY-protocol-only load balancer** (no header) every user is still one address: raise the limits or set them to `0` and rate-limit at the balancer (the PROXY protocol is not implemented yet; ADR-0029 section 6).
 - **Cost:** a table of at most `2 * max_connections` entries (about 40 bytes plus the map node each), one mutex taken twice per connection life. An idle server holds no per-address state. When the table is full a new address is refused (fail closed), after one sweep of entries that carry no information.
+
+#### 1.2.1 The real client address behind a reverse proxy (ADR-0029)
+
+```ini
+trusted_proxy = 10.0.0.0/8      # repeatable: an address or a CIDR, at most 64; empty (default) = off
+trusted_proxy = 192.168.1.5
+client_ip_header = X-Forwarded-For   # default; any other name is read as one single address
+```
+
+- **Nothing is believed by default.** The header is read only when the TCP peer is inside `trusted_proxy`; from any other peer it is ignored, so a client that sends `X-Forwarded-For` straight to `wsrvd` gains nothing. List only machines you run.
+- **Which entry is the client:** for `X-Forwarded-For` (a list every proxy appends to) the **rightmost entry that is not itself a trusted proxy**; what lies left of it is controlled by the client and never used. For `X-Real-IP`, `CF-Connecting-IP`, `True-Client-IP` and the like, the single value. Your proxy must set or overwrite the header (nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` for a list, `proxy_set_header X-Real-IP $remote_addr;` for one value).
+- **Fail safe:** a missing header, an entry that is not an address, more than 32 entries or more than 1 KiB all leave the proxy's own address in place, so the limits only get stricter.
+- **What changes:** a connection from a trusted proxy takes no per-IP slot at accept (the proxy would exhaust its own budget) but still counts against `max_connections`. Once its upgrade request is valid, the client address is admitted through the per-IP limits (429 or 503 on refusal, like any handshake refusal) and the slot comes back when the connection ends. The application's `open` event, the handshake hook and the logs then show the client, with port 0.
+- **Not yet:** PROXY protocol v1/v2 and the `Forwarded` (RFC 7239) header.
 
 ### 1.3 Frame, fragment and frame-rate limits (ADR-0016 A1)
 
@@ -196,7 +211,7 @@ What to watch: `wsrv_broker_deliveries_total{result="refused"}` rising means a l
 - systemd unit: `NoNewPrivileges=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`, `PrivateDevices=yes`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `SystemCallFilter=@system-service`, `LimitNOFILE=…`, `MemoryMax=…`, `Restart=on-failure`.
 - Container: distroless/minimal image, read-only rootfs, drop all capabilities, non-root user, no shell.
 - Kernel tuning (documented, not applied by the server): `net.core.somaxconn`, `net.ipv4.tcp_max_syn_backlog`, `tcp_syncookies=1`, `fs.file-max`, ephemeral port range, `tcp_keepalive_*`.
-- Behind a reverse proxy: configure `trusted_proxies`, ensure proxy timeouts > heartbeat, forward `Upgrade/Connection`, pass real client IP via PROXY protocol or `X-Forwarded-For` from trusted hops only.
+- Behind a reverse proxy: configure `trusted_proxies`, ensure proxy timeouts > heartbeat, forward `Upgrade/Connection`, pass the real client IP in `X-Forwarded-For` (or another single-address header) and list the proxies in `trusted_proxy` (section 1.2.1); the PROXY protocol is not implemented yet.
 - Capacity planning: memory/connection × max_connections + buffer pool headroom; documented in `docs/perf/`.
 
 ## 6. Runbook (seed, expand in M10)

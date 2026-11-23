@@ -115,6 +115,11 @@ WSRV_API void wsrv_config_free(wsrv_config *config); /* NULL is fine */
  *                        are refused with 503 (fail closed). See "handshake decisions" below.
  *   handshake_forward_header  a request header name (for example "Cookie") to include in the
  *                        event; repeatable. Cookie and Authorization are NOT sent unless listed.
+ *   trusted_proxy       an address or CIDR of a reverse proxy whose forwarded-address header is
+ *                        believed; repeatable, at most 64, default none (feature off). Behind such
+ *                        a proxy the per-IP limits and the peer address in events are the client's.
+ *   client_ip_header     the header naming the client, default "X-Forwarded-For" (read as a list,
+ *                        rightmost untrusted entry); any other name is read as one address.
  *   handshake_decision_timeout_ms  how long the host has to answer, default 3000 (> 0)
  *   max_pending_handshakes  most upgrades waiting at once, default 256 (> 0); more get 503
  *   tls_cert             path of the server certificate chain (PEM, certificate first)

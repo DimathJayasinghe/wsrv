@@ -100,6 +100,8 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
         KeyEntry{"event_queue_bytes", &EmbeddedConfig::set_event_queue_bytes},
         KeyEntry{"handshake_hook", &EmbeddedConfig::set_handshake_hook},
         KeyEntry{"handshake_forward_header", &EmbeddedConfig::add_handshake_forward_header},
+        KeyEntry{"trusted_proxy", &EmbeddedConfig::add_trusted_proxy},
+        KeyEntry{"client_ip_header", &EmbeddedConfig::set_client_ip_header},
         KeyEntry{"handshake_decision_timeout_ms",
                  &EmbeddedConfig::set_handshake_decision_timeout_ms},
         KeyEntry{"max_pending_handshakes", &EmbeddedConfig::set_max_pending_handshakes},
@@ -464,6 +466,34 @@ Result<void> EmbeddedConfig::add_handshake_forward_header(std::string_view value
     }
     try {
         server_.handshake_forward_headers.emplace_back(value);
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "config: out of memory");
+    }
+    return {};
+}
+
+Result<void> EmbeddedConfig::add_trusted_proxy(std::string_view value) {
+    const Result<IpNet> net = parse_ip_net(value);
+    if (!net) {
+        return std::unexpected{net.error()};
+    }
+    if (server_.trusted_proxies.size() >= kMaxTrustedProxies) {
+        return fail(ErrorCode::InvalidConfig, "config: too many trusted_proxy entries");
+    }
+    try {
+        server_.trusted_proxies.push_back(*net);
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "config: out of memory");
+    }
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_client_ip_header(std::string_view value) {
+    if (!is_header_name(value)) {
+        return fail(ErrorCode::InvalidConfig, "config: client_ip_header needs a header name");
+    }
+    try {
+        server_.client_ip_header = std::string{value};
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::ResourceExhausted, "config: out of memory");
     }
