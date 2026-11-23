@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "wsrvd/startup.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <ios>
 #include <vector>
@@ -12,6 +13,75 @@ namespace wsrv::wsrvd {
 namespace {
 
 constexpr std::string_view kConfigFlag = "--config=";
+constexpr std::string_view kEnvironmentPrefix = "WSRVD_";
+constexpr std::string_view kHealthcheckFlag = "--healthcheck";
+
+/// The keys that may be given several times (ADR-0030 section 1): one variable carries a comma list.
+[[nodiscard]] bool repeatable(std::string_view key) noexcept {
+    return key == "allow_origin" || key == "handshake_forward_header" || key == "trusted_proxy" ||
+           key == "tls_sni";
+}
+
+[[nodiscard]] std::string lower_ascii(std::string_view text) {
+    std::string out{text};
+    std::ranges::transform(out, out.begin(), [](char c) {
+        return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+    });
+    return out;
+}
+
+[[nodiscard]] std::string_view trim_blanks(std::string_view text) noexcept {
+    while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) {
+        text.remove_prefix(1);
+    }
+    while (!text.empty() && (text.back() == ' ' || text.back() == '\t')) {
+        text.remove_suffix(1);
+    }
+    return text;
+}
+
+/// One variable: the key is the name after the prefix in lower case; a repeatable key takes a comma
+/// list, one `set` per non-empty item.
+Result<void> apply_variable(DaemonConfig& config, std::string_view name, std::string_view value) {
+    const std::string key = lower_ascii(name.substr(kEnvironmentPrefix.size()));
+    if (!repeatable(key)) {
+        return config.set(key, value);
+    }
+    while (!value.empty()) {
+        const std::size_t comma = value.find(',');
+        const std::string_view item = trim_blanks(value.substr(0, comma));
+        value = comma == std::string_view::npos ? std::string_view{} : value.substr(comma + 1);
+        if (item.empty()) {
+            continue;
+        }
+        if (const Result<void> done = config.set(key, item); !done) {
+            return done;
+        }
+    }
+    return {};
+}
+
+/// The environment layer (ADR-0030 section 1). Entries without the prefix, without an `=`, or
+/// with an empty value are skipped; a prefixed one that is not a key is an error naming it.
+Result<void> apply_environment(DaemonConfig& config,
+                               std::span<const std::string_view> environment,
+                               std::string* detail) {
+    for (const std::string_view entry : environment) {
+        const std::size_t equals = entry.find('=');
+        if (!entry.starts_with(kEnvironmentPrefix) || equals == std::string_view::npos ||
+            equals == kEnvironmentPrefix.size() || equals + 1 == entry.size()) {
+            continue;
+        }
+        const std::string_view name = entry.substr(0, equals);
+        if (const Result<void> done = apply_variable(config, name, entry.substr(equals + 1)); !done) {
+            if (detail != nullptr) {
+                *detail = std::string{name};
+            }
+            return done;
+        }
+    }
+    return {};
+}
 
 /// Read a whole config file, refusing one larger than kMaxConfigFileSize (reads one byte past the
 /// limit to tell "exactly at the limit" from "over it", never the whole file).
@@ -44,11 +114,25 @@ Result<void> apply(DaemonConfig& config, std::string_view arg) {
 }  // namespace
 
 Result<Startup> prepare(std::span<const std::string_view> args, ISyscalls& sys) {
+    return prepare(args, {}, sys);
+}
+
+Result<Startup> prepare(std::span<const std::string_view> args,
+                        std::span<const std::string_view> environment,
+                        ISyscalls& sys,
+                        std::string* detail) {
     Startup startup;
+    if (std::ranges::any_of(args, [](std::string_view arg) { return arg == "--help" || arg == "-h"; })) {
+        startup.help = true;  // help wins over a bad variable or flag: it is how one finds out
+        return startup;
+    }
+    if (const Result<void> done = apply_environment(startup.config, environment, detail); !done) {
+        return std::unexpected{done.error()};
+    }
     for (const std::string_view arg : args) {
-        if (arg == "--help" || arg == "-h") {
-            startup.help = true;
-            return startup;
+        if (arg == kHealthcheckFlag) {
+            startup.healthcheck = true;
+            continue;
         }
         if (const Result<void> done = apply(startup.config, arg); !done) {
             return std::unexpected{done.error()};
@@ -56,6 +140,9 @@ Result<Startup> prepare(std::span<const std::string_view> args, ISyscalls& sys) 
     }
     if (const Result<void> done = startup.config.finish(); !done) {
         return std::unexpected{done.error()};
+    }
+    if (startup.healthcheck) {
+        return startup;  // it only looks at the sockets: no secret needs reading
     }
     if (!startup.config.token_file().empty()) {
         Result<std::string> token = read_token_file(sys, startup.config.token_file());
@@ -89,6 +176,9 @@ std::string_view usage() noexcept {
            "  --ipc-stall-ms=MS          drop an application that reads nothing for MS (default "
            "10000)\n"
            "  --config=FILE              read 'key = value' lines (later arguments override)\n"
+           "  --healthcheck              probe the running daemon (GET /healthz on the admin port,\n"
+           "                             else connect to the websocket port and the IPC socket);\n"
+           "                             exit 0 = healthy, 1 = not; reads the same settings\n"
            "  --listen-host=ADDR  --listen-port=PORT  --threads=N  --allow-origin=ORIGIN\n"
            "  --max-message-size=BYTES  --max-connections=N  --shutdown-grace-ms=MS\n"
            "  --admin-port=PORT  --admin-host=ADDR (127.0.0.1)  serve /metrics, /healthz and\n"
@@ -112,7 +202,13 @@ std::string_view usage() noexcept {
            "  --deflate-server-no-context-takeover=BOOL (true)  --deflate-min-size=BYTES (128)\n"
            "  --deflate-max-ratio=1..1000 (100)  inflated size limit, times the compressed size\n"
            "\n"
-           "The token is never accepted on the command line: it would show in `ps`.\n";
+           "Every setting is also an environment variable: WSRVD_ and the key in upper case\n"
+           "(WSRVD_LISTEN_PORT, WSRVD_ALLOW_ORIGIN=a,b for repeatable keys). The environment is\n"
+           "the base layer; --config and flags override it. An unknown WSRVD_ variable is an\n"
+           "error; an empty one counts as unset.\n"
+           "\n"
+           "The token is never accepted on the command line or in the environment: it would show\n"
+           "in `ps` and /proc. Use ipc_token_file / publish_token_file.\n";
 }
 
 }  // namespace wsrv::wsrvd

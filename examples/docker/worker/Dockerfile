@@ -1,7 +1,9 @@
 # Stage 1: composer:2 has the zip support that php:cli lacks, so it installs the package.
 FROM composer:2 AS vendor
 WORKDIR /app
-RUN composer require --no-interaction --no-progress "wsrv/client:^0.1.0"
+# The package constraint; a release candidate needs its exact version (WSRV_CLIENT=0.1.0-rc.2 docker compose build).
+ARG WSRV_CLIENT=^0.1.0
+RUN composer require --no-interaction --no-progress "wsrv/client:${WSRV_CLIENT}"
 
 # Stage 2: a plain PHP CLI image with only the installed vendor/ copied in.
 FROM php:8.3-cli

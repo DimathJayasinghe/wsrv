@@ -1,0 +1,142 @@
+# wsrv on Kubernetes: reference manifests (docs/DEPLOYMENT.md). One pod = one wsrvd + your worker
+# (a daemon serves ONE application connection), sharing the IPC socket through an emptyDir. Scale by
+# replicas; rooms are per pod (see "Using more than one node"), so publish to every pod.
+#
+# Replace: the image names, WSRVD_ALLOW_ORIGIN, the worker command and the Secret. These manifests were
+# reviewed against the daemon's behaviour but are not applied to a live cluster by CI.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wsrv-config
+data:
+  # Every setting is WSRVD_<KEY> (ADR-0030). The image already sets the socket, 0.0.0.0:8080 and admin port 9101.
+  WSRVD_ALLOW_ORIGIN: "https://app.example.com"
+  # The ingress controller's pod network, so per-IP limits count real clients (ADR-0029). Adjust to your cluster.
+  WSRVD_TRUSTED_PROXY: "10.0.0.0/8"
+  WSRVD_MAX_CONNECTIONS: "10000"
+  # /healthz, /readyz and /metrics for the kubelet and Prometheus; protected by the NetworkPolicy below.
+  WSRVD_ADMIN_HOST: "0.0.0.0"
+  WSRVD_BROKER: "true"
+  WSRVD_PUBLISH_HOST: "0.0.0.0"
+  WSRVD_PUBLISH_PORT: "9200"
+  WSRVD_PUBLISH_TOKEN_FILE: "/etc/wsrv-secret/publish-token"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: wsrv-secret
+type: Opaque
+stringData:
+  # At least 32 bytes. Generate: head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'
+  publish-token: "REPLACE-WITH-64-RANDOM-HEX-CHARACTERS-REPLACE-WITH-64-RANDOM-HEX-CHARS"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wsrv
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: wsrv}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  template:
+    metadata:
+      labels: {app: wsrv}
+    spec:
+      # A pod gets Close 1001 sent to its clients at SIGTERM, then exits within shutdown_grace (10 s).
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001        # the daemon checks that the application's uid equals its own
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        # An emptyDir is world-writable, and wsrvd refuses a socket directory that others can write:
+        # make a private subdirectory (mode 0700) and put the socket there.
+        - name: ipc-dir
+          image: ghcr.io/dimathjayasinghe/wsrvd:1.0.0
+          command: ["sh", "-c", "mkdir -p -m 0700 /run/wsrv/ipc"]
+          volumeMounts: [{name: ipc, mountPath: /run/wsrv}]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
+      containers:
+        - name: wsrvd
+          image: ghcr.io/dimathjayasinghe/wsrvd:1.0.0
+          envFrom: [{configMapRef: {name: wsrv-config}}]
+          env:
+            - {name: WSRVD_IPC_SOCKET, value: /run/wsrv/ipc/ipc.sock}
+          ports:
+            - {name: ws, containerPort: 8080}
+            - {name: admin, containerPort: 9101}
+            - {name: publish, containerPort: 9200}
+          volumeMounts:
+            - {name: ipc, mountPath: /run/wsrv}
+            - {name: secret, mountPath: /etc/wsrv-secret, readOnly: true}
+          # The same command Docker's HEALTHCHECK runs; it reads the environment above.
+          livenessProbe:
+            exec: {command: ["/usr/local/bin/wsrvd", "--healthcheck"]}
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # /readyz fails while the daemon is shutting down, so a terminating pod leaves the Service first.
+          readinessProbe:
+            httpGet: {path: /readyz, port: admin}
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 250m, memory: 128Mi}
+            limits: {memory: 1Gi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
+        - name: worker
+          image: registry.example.com/your-app-worker:latest   # your PHP worker (docs/LARAVEL.md, examples/docker/worker)
+          # Connect the worker to /run/wsrv/ipc/ipc.sock (Client::connect) and publish to
+          # http://127.0.0.1:9200 with the token in /etc/wsrv-secret/publish-token (Publisher).
+          env:
+            - {name: WSRV_PUBLISH_URL, value: "http://127.0.0.1:9200"}
+          volumeMounts:
+            - {name: ipc, mountPath: /run/wsrv}
+            - {name: secret, mountPath: /etc/wsrv-secret, readOnly: true}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
+      volumes:
+        - {name: ipc, emptyDir: {}}
+        - name: secret
+          secret:
+            secretName: wsrv-secret
+            defaultMode: 0440
+---
+# The browsers' door. The publish port (9200) and the admin port (9101) are deliberately NOT here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: wsrv
+spec:
+  selector: {app: wsrv}
+  ports:
+    - {name: ws, port: 80, targetPort: ws}
+---
+# Reach the admin port only from the monitoring namespace and the publish port only from your app's pods;
+# the kubelet's probes are not affected. Adjust the selectors, and remove this if you have no network policies.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: wsrv
+spec:
+  podSelector:
+    matchLabels: {app: wsrv}
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [{port: 8080}]            # the ingress controller / any client of the WebSocket port
+    - from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}}]
+      ports: [{port: 9101}]
+    - from: [{podSelector: {matchLabels: {role: wsrv-publisher}}}]
+      ports: [{port: 9200}]
+---
+# Keep at least one pod during a node drain.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: wsrv
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: wsrv}

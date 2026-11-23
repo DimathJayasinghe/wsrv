@@ -2,16 +2,15 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [Semantic Versioning](https://semver.org/) for the C++ API and the PHP package; the C ABI has its own `major.minor` (`wsrv_abi_version()`), additive within a major.
 
-Known gaps are listed in [docs/RELEASE.md](docs/RELEASE.md). `0.1.0-rc.1` and `0.1.0-rc.2` were pre-releases of what is below.
+Known gaps are listed in [docs/RELEASE.md](docs/RELEASE.md). `0.1.0-rc.1` and `0.1.0-rc.2` were early pre-releases of what is below.
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-11-23
-
-The first release meant for developers to build with. Not 1.0: APIs can still change in a minor version.
+What the first stable release will contain. The owner decided (2026-11-23) that nothing is announced before the library is production-ready, so the first stable version is `1.0.0`, reached through `1.0.0-rc.N` pre-releases.
 
 ### Added
 - The real client address behind a reverse proxy: `trusted_proxy` (addresses/CIDRs) and `client_ip_header` keys; the per-IP limits and the peer address in events then follow the client, not the proxy. Header ignored from untrusted peers, rightmost untrusted `X-Forwarded-For` entry, anything unusable falls back to the proxy address (ADR-0029). PROXY protocol is not implemented yet.
+- Container and production operations (ADR-0030): every setting is a `WSRVD_<KEY>` environment variable (the base layer; flags and `--config` override it; an unknown `WSRVD_*` variable is a startup error), `wsrvd --healthcheck` (also the image's `HEALTHCHECK`), image defaults by environment, a hardened systemd unit and Kubernetes reference manifests under `deploy/`, and `docs/DEPLOYMENT.md`.
 - RFC 6455 WebSocket server: sans-I/O protocol core, handshake with Origin policy, frame codec, UTF-8 validation, fragmentation, close handshake, multi-loop epoll server, bounded queues with backpressure. Autobahn|Testsuite: 517 cases, 0 failed (plain and wss; C and PHP bindings too).
 - permessage-deflate (RFC 7692) over system zlib, with a decompression-bomb guard.
 - TLS (`wss://`) over OpenSSL, with certificate reload.

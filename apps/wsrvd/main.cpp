@@ -7,6 +7,7 @@
 #include "net/syscalls.hpp"
 
 #include <array>
+#include <chrono>
 #include <csignal>
 #include <exception>
 #include <iostream>
@@ -17,6 +18,7 @@
 
 #include "capi/embedded_server.hpp"
 #include "wsrvd/embedded_backend.hpp"
+#include "wsrvd/healthcheck.hpp"
 #include "wsrvd/ipc_server.hpp"
 #include "wsrvd/reload.hpp"
 #include "wsrvd/startup.hpp"
@@ -111,17 +113,37 @@ int serve(const wsrv::wsrvd::Startup& startup, wsrv::ISyscalls& sys) {
     return run_daemon(**loop, sys, startup, reloadable);
 }
 
-int run(const std::vector<std::string_view>& args) {
+/// --healthcheck (ADR-0030): one line, exit 0 or 1.
+int health(const wsrv::wsrvd::Startup& startup) {
+    constexpr std::chrono::milliseconds kDeadline{2000};
+    const wsrv::Result<void> result =
+        wsrv::wsrvd::check_health(wsrv::wsrvd::health_target(startup.config), kDeadline);
+    if (!result) {
+        std::cerr << "wsrvd: unhealthy: " << result.error().context << '\n';
+        return 1;
+    }
+    std::cout << "wsrvd: healthy\n";
+    return 0;
+}
+
+int run(const std::vector<std::string_view>& args, const std::vector<std::string_view>& environment) {
     wsrv::LinuxSyscalls sys;
-    const auto startup = wsrv::wsrvd::prepare(args, sys);
+    std::string detail;
+    const auto startup = wsrv::wsrvd::prepare(args, environment, sys, &detail);
     if (!startup) {
         const int code = fail_with("cannot start", startup.error());
+        if (!detail.empty()) {
+            std::cerr << "wsrvd: the setting came from the environment variable " << detail << '\n';
+        }
         std::cerr << '\n' << wsrv::wsrvd::usage();
         return code;
     }
     if (startup->help) {
         std::cout << wsrv::wsrvd::usage();
         return 0;
+    }
+    if (startup->healthcheck) {
+        return health(*startup);
     }
     if (startup->token.empty()) {
         std::cerr << "wsrvd: warning: no ipc_token_file; only the peer uid check protects the "
@@ -132,10 +154,14 @@ int run(const std::vector<std::string_view>& args) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv, char** envp) {
     try {
         const std::vector<std::string_view> args{argv + 1, argv + argc};
-        return run(args);
+        std::vector<std::string_view> environment;
+        for (char** entry = envp; entry != nullptr && *entry != nullptr; ++entry) {
+            environment.emplace_back(*entry);
+        }
+        return run(args, environment);
     } catch (const std::exception& error) {
         // Only startup can reach here (allocation while parsing); report it, never swallow it.
         std::cerr << "wsrvd: fatal: " << error.what() << '\n';
