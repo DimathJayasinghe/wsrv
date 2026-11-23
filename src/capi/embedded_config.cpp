@@ -105,6 +105,7 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
         KeyEntry{"handshake_decision_timeout_ms",
                  &EmbeddedConfig::set_handshake_decision_timeout_ms},
         KeyEntry{"max_pending_handshakes", &EmbeddedConfig::set_max_pending_handshakes},
+        KeyEntry{"max_pending_send_bytes", &EmbeddedConfig::set_max_pending_send_bytes},
         KeyEntry{"tls_cert", &EmbeddedConfig::set_tls_cert},
         KeyEntry{"tls_key", &EmbeddedConfig::set_tls_key},
         KeyEntry{"tls_sni", &EmbeddedConfig::add_tls_sni},
@@ -507,6 +508,20 @@ Result<void> EmbeddedConfig::set_handshake_decision_timeout_ms(std::string_view 
                     "config: handshake_decision_timeout_ms needs a number above 0");
     }
     server_.handshake_decision_timeout = std::chrono::milliseconds{*number};
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_max_pending_send_bytes(std::string_view value) {
+    const Result<std::size_t> number =
+        parse_size(value, "config: max_pending_send_bytes needs a number");
+    if (!number) {
+        return std::unexpected{number.error()};
+    }
+    if (*number == 0 || *number > kMaxConfiguredQueue) {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: max_pending_send_bytes must be in (0, 1 GiB]");
+    }
+    server_.max_pending_send_bytes = *number;
     return {};
 }
 

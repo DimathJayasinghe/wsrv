@@ -5,6 +5,7 @@
 #include "net/event_loop.hpp"
 #include "server/handler.hpp"
 #include "server/handshake_verdict.hpp"
+#include "server/pending_bytes.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -52,8 +53,10 @@ public:
 /// Thread-affinity: any thread.
 class LoopLink {
 public:
-    LoopLink(EventLoop& loop, ISessionDirectory& directory) noexcept
-        : loop_{&loop}, directory_{&directory} {}
+    /// `max_pending_send_bytes`: the budget for direct sends that wait for the loop (ADR-0032).
+    LoopLink(EventLoop& loop,
+             ISessionDirectory& directory,
+             std::size_t max_pending_send_bytes = kDefaultMaxPendingSendBytes);
     LoopLink(const LoopLink&) = delete;
     LoopLink& operator=(const LoopLink&) = delete;
     LoopLink(LoopLink&&) = delete;
@@ -61,10 +64,14 @@ public:
     ~LoopLink() = default;
 
     /// Run `command` on the loop thread with the session `id`, if it still exists then.
+    /// `payload_bytes` is what the command carries a copy of (0 for a command with no payload): it
+    /// counts against the pending-send budget until the loop has run, or discarded, the command.
     /// @return Error{Closing} after close(), Error{BufferFull} when the loop's task queue is full
-    /// (EC-N14), Error{ResourceExhausted} on allocation failure. Ok means "accepted for
-    /// delivery", not "delivered".
-    [[nodiscard]] Result<void> submit(ConnectionId id, SessionCommand command);
+    /// (EC-N14) or the budget is used up (wait and retry), Error{InvalidArgument} when the payload
+    /// alone is larger than the whole budget (retrying cannot help), Error{ResourceExhausted} on
+    /// allocation failure. Ok means "accepted for delivery", not "delivered".
+    [[nodiscard]] Result<void>
+    submit(ConnectionId id, SessionCommand command, std::size_t payload_bytes = 0);
 
     /// The same for a broadcast: posted with EventLoop::post_bulk, so it is refused (BufferFull)
     /// while a quarter of the loop's task queue is kept free for control tasks (ADR-0024 A1).
@@ -76,13 +83,21 @@ public:
     /// After this, submit() fails with Closing. Safe to call more than once.
     void close() noexcept;
 
+    /// Payload bytes of direct sends accepted but not yet run (the budget's use; a gauge).
+    [[nodiscard]] std::size_t pending_send_bytes() const noexcept {
+        return pending_->used();
+    }
+
 private:
     enum class Lane : std::uint8_t { Control, Bulk };
-    [[nodiscard]] Result<void> submit_in(Lane lane, ConnectionId id, SessionCommand command);
+    [[nodiscard]] Result<void>
+    submit_in(Lane lane, ConnectionId id, SessionCommand command, std::size_t payload_bytes);
+    [[nodiscard]] Result<std::shared_ptr<const SendLease>> reserve(std::size_t payload_bytes);
 
     std::mutex mutex_;
     EventLoop* loop_;
     ISessionDirectory* directory_;
+    std::shared_ptr<PendingBytes> pending_;
 };
 
 /// One payload, built and checked once, sent to many connections (ADR-0024 section 3). It is

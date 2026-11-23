@@ -67,6 +67,10 @@ namespace {
         config.http.max_headers == 0) {
         return std::unexpected{bad_config("http limits must be non-zero")};
     }
+    if (config.max_pending_send_bytes == 0 || config.max_pending_send_bytes > kMaxConfiguredQueue) {
+        return std::unexpected{
+            bad_config("max_pending_send_bytes must be in (0, 1 GiB] (ADR-0032)")};
+    }
     if (config.read.max_reads_per_event == 0 || config.read.max_bytes_per_event == 0 ||
         config.read.max_bytes_per_event > kMaxConfiguredReadBytes) {
         return std::unexpected{bad_config("read budget out of range")};

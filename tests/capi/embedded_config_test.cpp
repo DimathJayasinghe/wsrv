@@ -313,6 +313,17 @@ TEST(EmbeddedConfig, TheHandshakeHookIsOffByDefaultAndItsKeysAreChecked) {  // A
     EXPECT_EQ(config.server().handshake_decision_timeout, 1500ms) << "a refusal changes nothing";
 }
 
+TEST(EmbeddedConfig, ThePendingSendBudgetKeyIsCheckedAndANoOpOnRefusal) {  // ADR-0032
+    EmbeddedConfig config;
+    EXPECT_EQ(config.server().max_pending_send_bytes, std::size_t{64} << 20);
+    ASSERT_TRUE(config.set("max_pending_send_bytes", "1048576").has_value());
+    EXPECT_EQ(config.server().max_pending_send_bytes, 1048576U);
+    EXPECT_FALSE(config.set("max_pending_send_bytes", "0").has_value()) << "no unlimited value";
+    EXPECT_FALSE(config.set("max_pending_send_bytes", "x").has_value());
+    EXPECT_FALSE(config.set("max_pending_send_bytes", "2147483648").has_value()) << "above 1 GiB";
+    EXPECT_EQ(config.server().max_pending_send_bytes, 1048576U) << "a refusal changes nothing";
+}
+
 // ---- ADR-0016 A1: the three limits a conformance run raises ---------------------------------
 
 TEST(EmbeddedConfig, TheThreeLimitKeysDefaultToTheLibraryDefaults) {

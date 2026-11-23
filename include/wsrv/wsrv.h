@@ -122,6 +122,10 @@ WSRV_API void wsrv_config_free(wsrv_config *config); /* NULL is fine */
  *                        rightmost untrusted entry); any other name is read as one address.
  *   handshake_decision_timeout_ms  how long the host has to answer, default 3000 (> 0)
  *   max_pending_handshakes  most upgrades waiting at once, default 256 (> 0); more get 503
+ *   max_pending_send_bytes  per loop, the most payload bytes of wsrv_send_* calls waiting for the
+ *                        loop, default 67108864 (1 .. 1073741824); over it a send returns
+ *                        WSRV_ERR_BACKPRESSURE (wait and retry), a message larger than the whole
+ *                        budget WSRV_ERR_INVALID_ARGUMENT
  *   tls_cert             path of the server certificate chain (PEM, certificate first)
  *   tls_key              path of its private key (PEM, not readable by "others"; no passphrase)
  *                        Setting either asks for wss://: connections are then TLS only (1.2 and

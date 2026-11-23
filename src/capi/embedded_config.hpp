@@ -44,9 +44,11 @@ struct TlsSniSetting {
 /// X-Forwarded-For): the client address behind a reverse proxy (ADR-0029),
 /// shutdown_grace_ms, event_queue_events, event_queue_bytes, and for the handshake hook (ADR-0018):
 /// handshake_hook (bool, off), handshake_forward_header (repeatable header name),
-/// handshake_decision_timeout_ms (> 0), max_pending_handshakes (> 0). and for TLS (ADR-0019):
-/// tls_cert (certificate chain file, PEM), tls_key (private key file, PEM), tls_sni (repeatable
-/// "name=cert_file:key_file", at most 64: a certificate for one host name or one
+/// handshake_decision_timeout_ms (> 0), max_pending_handshakes (> 0). max_pending_send_bytes
+/// (default 64 MiB, 1 .. 1 GiB, per loop): payload bytes of direct sends waiting for the loop
+/// (ADR-0032). and for TLS (ADR-0019): tls_cert (certificate chain file, PEM), tls_key (private key
+/// file, PEM), tls_sni (repeatable "name=cert_file:key_file", at most 64: a certificate for one
+/// host name or one
 /// "*.example.com" wildcard; the paths must not contain a colon).
 /// and for permessage-deflate (ADR-0020 section 6, off by default): permessage_deflate (bool),
 /// deflate_server_max_window_bits (9..15, default 12), deflate_server_no_context_takeover (bool,
@@ -188,6 +190,7 @@ private:
     [[nodiscard]] Result<void> set_client_ip_header(std::string_view value);
     [[nodiscard]] Result<void> set_handshake_decision_timeout_ms(std::string_view value);
     [[nodiscard]] Result<void> set_max_pending_handshakes(std::string_view value);
+    [[nodiscard]] Result<void> set_max_pending_send_bytes(std::string_view value);
     [[nodiscard]] Result<void> set_tls_cert(std::string_view value);
     [[nodiscard]] Result<void> set_tls_key(std::string_view value);
     [[nodiscard]] Result<void> add_tls_sni(std::string_view value);

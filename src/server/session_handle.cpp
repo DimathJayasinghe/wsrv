@@ -10,22 +10,57 @@
 
 namespace wsrv {
 
-Result<void> LoopLink::submit(ConnectionId id, SessionCommand command) {
-    return submit_in(Lane::Control, id, std::move(command));
+LoopLink::LoopLink(EventLoop& loop,
+                   ISessionDirectory& directory,
+                   std::size_t max_pending_send_bytes)
+    : loop_{&loop}, directory_{&directory},
+      pending_{std::make_shared<PendingBytes>(max_pending_send_bytes)} {}
+
+Result<void> LoopLink::submit(ConnectionId id, SessionCommand command, std::size_t payload_bytes) {
+    return submit_in(Lane::Control, id, std::move(command), payload_bytes);
 }
 
 Result<void> LoopLink::submit_bulk(ConnectionId id, SessionCommand command) {
-    return submit_in(Lane::Bulk, id, std::move(command));
+    return submit_in(Lane::Bulk, id, std::move(command), 0);
 }
 
-Result<void> LoopLink::submit_in(Lane lane, ConnectionId id, SessionCommand command) {
+Result<std::shared_ptr<const SendLease>> LoopLink::reserve(std::size_t payload_bytes) {
+    if (payload_bytes == 0) {
+        return std::shared_ptr<const SendLease>{};
+    }
+    if (payload_bytes > pending_->limit()) {
+        return fail(ErrorCode::InvalidArgument,
+                    "session handle: the message is larger than the whole pending-send budget");
+    }
+    if (!pending_->try_add(payload_bytes)) {
+        return fail(ErrorCode::BufferFull,
+                    "session handle: the pending-send byte budget is used up");
+    }
+    try {
+        return std::make_shared<const SendLease>(pending_, payload_bytes);
+    } catch (const std::bad_alloc&) {
+        pending_->release(payload_bytes);
+        return fail(ErrorCode::ResourceExhausted, "session handle: out of memory");
+    }
+}
+
+Result<void>
+LoopLink::submit_in(Lane lane, ConnectionId id, SessionCommand command, std::size_t payload_bytes) {
     const std::lock_guard lock{mutex_};
     if (loop_ == nullptr) {
         return fail(ErrorCode::Closing, "session handle: the server is gone");
     }
     ISessionDirectory* const directory = directory_;
     try {
-        auto task = [directory, id, command = std::move(command)] { directory->run(id, command); };
+        Result<std::shared_ptr<const SendLease>> lease = reserve(payload_bytes);
+        if (!lease) {
+            return std::unexpected{lease.error()};
+        }
+        // The lease lives in the task: the bytes are given back when the task has run, or is
+        // destroyed without running (a refused post, a loop that goes away).
+        auto task = [directory, id, command = std::move(command), lease = std::move(*lease)] {
+            directory->run(id, command);
+        };
         return lane == Lane::Bulk ? loop_->post_bulk(std::move(task))
                                   : loop_->post(std::move(task));
     } catch (const std::bad_alloc&) {
@@ -55,12 +90,14 @@ void LoopLink::close() noexcept {
 
 namespace {
 
-[[nodiscard]] Result<void>
-submit_to(const std::shared_ptr<LoopLink>& link, ConnectionId id, SessionCommand command) {
+[[nodiscard]] Result<void> submit_to(const std::shared_ptr<LoopLink>& link,
+                                     ConnectionId id,
+                                     SessionCommand command,
+                                     std::size_t payload_bytes = 0) {
     if (link == nullptr) {
         return fail(ErrorCode::Closing, "session handle: not connected");
     }
-    return link->submit(id, std::move(command));
+    return link->submit(id, std::move(command), payload_bytes);
 }
 
 }  // namespace
@@ -73,9 +110,13 @@ Result<void> SessionHandle::send_text(std::string_view text) const {
         return fail(ErrorCode::InvalidUtf8, "session handle: text is not valid UTF-8");
     }
     try {
-        return submit_to(link_, id_, [copy = std::string{text}](Session& session) {
-            static_cast<void>(session.send_text(copy).has_value());  // policy applies inside
-        });
+        return submit_to(
+            link_,
+            id_,
+            [copy = std::string{text}](Session& session) {
+                static_cast<void>(session.send_text(copy).has_value());  // policy applies inside
+            },
+            text.size());
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::ResourceExhausted, "session handle: out of memory");
     }
@@ -128,7 +169,8 @@ Result<void> SessionHandle::send_binary(ByteView data) const {
             id_,
             [copy = std::vector<std::byte>(data.begin(), data.end())](Session& session) {
                 static_cast<void>(session.send_binary(ByteView{copy}).has_value());
-            });
+            },
+            data.size());
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::ResourceExhausted, "session handle: out of memory");
     }
