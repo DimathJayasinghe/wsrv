@@ -12,7 +12,7 @@ Controller / job / listener --HTTP POST /publish--+                           (s
 - **`wsrv:work`** is a long-running Artisan command (below). It answers "may this browser connect?" and "may this connection join this room?". Nothing else.
 - **Your app** publishes with `Wsrv\Publisher`: one short HTTP request per message, from anywhere (a controller, a queued job, a model observer).
 
-**Honest scope.** This is not a Laravel Broadcasting driver: `broadcast(new Event)`, Echo and the Pusher protocol are not implemented. You call `Publisher` yourself. The wsrv calls below are covered by the package's tests (including a run against a real `wsrvd`). The Laravel glue was run by hand on 2026-11-23 against a fresh Laravel 13.43 app with the published `0.1.0-rc.2` image and package: the ticket flow (no ticket, wrong ticket, reused ticket: all 401; a good one: 101), the worker joining only rooms the ticket allows, a `Publisher` resolved from the container delivering to the browser, and the queued listener's retry/fail paths. Two things differ from your app: the test used a stub user in place of the `auth` middleware and your `rooms()` relation, and none of it runs in this repository's CI. Treat it as a tested pattern, not a tested package.
+**Honest scope.** This is not a Laravel Broadcasting driver: `broadcast(new Event)`, Echo and the Pusher protocol are not implemented. You call `Publisher` yourself. The wsrv calls below are covered by the package's tests (including a run against a real `wsrvd`). The Laravel glue was run by hand on 2026-11-23 against a fresh Laravel 13.43 app with the published `0.1.0-rc.2` image and package: the ticket flow (no ticket, wrong ticket, reused ticket: all 401; a good one: 101), the worker joining only rooms the ticket allows, a `Publisher` resolved from the container delivering to the browser, and the queued listener's retry/fail paths. Since then the worker's own reconnect loop was replaced by `Wsrv\Supervisor` and the browser snippet by `clients/js`: both are covered by this repository's tests (including restarts of a real `wsrvd` and worker under a connected client) but were not run again inside a Laravel app. Two things differ from your app: the test used a stub user in place of the `auth` middleware and your `rooms()` relation, and none of it runs in this repository's CI. Treat it as a tested pattern, not a tested package.
 
 ## 1. Install
 
@@ -103,9 +103,8 @@ namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
-use Wsrv\Client;
 use Wsrv\Connection;
-use Wsrv\ConnectionClosed;
+use Wsrv\Supervisor;
 use Wsrv\Upgrade;
 use Wsrv\Worker;
 
@@ -119,20 +118,19 @@ class WsrvWork extends Command
 
     public function handle(): int
     {
-        while (true) {
-            try {
-                $this->serve();
-            } catch (ConnectionClosed $e) {
-                $this->warn('wsrvd went away (' . $e->getMessage() . '), retrying in 1 s');
-                $this->sessions = [];
-                sleep(1);
-            }
-        }
+        // Supervisor reconnects to wsrvd with backoff after a restart and stops on SIGTERM; it calls
+        // the closure below with a fresh Worker for every new connection to the daemon.
+        $supervisor = Supervisor::forSocket(config('wsrv.socket'));
+        $supervisor->installSignalHandlers();
+        $supervisor->run(function (Worker $worker): void {
+            $this->sessions = [];  // connection ids restart with the daemon: forget the old ones
+            $this->configure($worker);
+        });
+        return self::SUCCESS;
     }
 
-    private function serve(): void
+    private function configure(Worker $worker): void
     {
-        $worker = new Worker(Client::connect(config('wsrv.socket')));
         $worker
             ->on('authenticate', function (Upgrade $u): bool|int {
                 parse_str($u->request->query, $query);                 // decodes %xx
@@ -156,12 +154,11 @@ class WsrvWork extends Command
             ->on('close', function (Connection $c): void {
                 unset($this->sessions[$c->id]);                         // the daemon drops its rooms itself
             });
-        $worker->run();
     }
 }
 ```
 
-Keep it this small. The handler runs for every browser, one event at a time, so no DB queries and no network calls in it: the ticket lookup is a cache read. Run it under Supervisor or systemd and restart it on deploy (`php artisan wsrv:work` does not reload your code by itself).
+Keep it this small. The handler runs for every browser, one event at a time, so no DB queries and no network calls in it: the ticket lookup is a cache read. `Supervisor` keeps the worker following the daemon across restarts; run the command itself under systemd, Supervisord or a Kubernetes container, and restart it on deploy (`php artisan wsrv:work` does not reload your code by itself). A deploy of the worker closes the browsers' sockets with 1012 after `shutdown_grace_ms`: the reconnecting client in `clients/js` handles that.
 
 ## 5. Publishing from your app
 
@@ -212,19 +209,30 @@ Set `except` to the sender's connection id (the browser can send it in the reque
 
 ## 6. The browser
 
+Use the reconnecting client from `clients/js` (copy `src/client.js`, or import it from your bundler): browsers do not reconnect by themselves, and every deploy of `wsrvd` or of the worker closes the sockets.
+
 ```js
-const { ticket } = await (await fetch('/ws-ticket', { method: 'POST', headers: { 'X-CSRF-TOKEN': csrf } })).json();
-const ws = new WebSocket(`wss://ws.example.com/?ticket=${encodeURIComponent(ticket)}`);
-ws.onopen = () => ws.send(JSON.stringify({ join: 'room.7' }));
-ws.onmessage = (e) => render(JSON.parse(e.data));
+import { WsrvClient } from './client.js';
+
+const client = new WsrvClient('wss://ws.example.com/', {
+  // called before every attempt, because each ticket works once
+  ticket: async () => (await (await fetch('/ws-ticket', { method: 'POST', headers: { 'X-CSRF-TOKEN': csrf } })).json()).ticket,
+  // this guide's worker reads {"join": "<room>"}; the client's default message is "join <room>"
+  joinMessage: (room) => JSON.stringify({ join: room }),
+});
+client.on('message', ({ data }) => render(JSON.parse(data)));
+client.join('room.7');   // remembered, and re-sent after every reconnect
+client.connect();
 ```
 
-On reconnect, ask for a new ticket (each works once). The `Origin` check is the daemon's `--allow-origin`: set it to your site, not `*`.
+Without the client, do the same by hand: open the socket with `?ticket=...`, send the join message in `onopen`, and on `onclose` wait (backoff, jitter), fetch a **new** ticket and start over.
+
+The `Origin` check is the daemon's `--allow-origin`: set it to your site, not `*`.
 
 ## 7. Things to know before production
 
 - **TLS.** `wsrvd` can terminate TLS itself, or sit behind your proxy (Nginx, Caddy, a load balancer) that does. `Publisher` speaks plain `http://`: keep port 9200 on a private network or a loopback.
 - **The ticket is in a URL**, so it can appear in proxy logs. It is single-use and expires in `ticket_ttl` seconds, which makes a logged one worthless. Keep the TTL short.
 - **Delivery is at most once.** A publish to a subscriber whose queue is full is refused (`refused` in the result), and a browser that is offline misses the message. Store messages in your database and let a reconnecting client fetch what it missed; the room is for "now".
-- **One worker at a time.** The daemon talks to a single application connection. Run one `wsrv:work`; Supervisor restarts it if it dies, and the daemon refuses browsers (503) in between rather than accepting unauthenticated ones.
+- **One worker at a time.** The daemon talks to a single application connection. Run one `wsrv:work`; your process manager restarts it if it dies, and the daemon refuses browsers (503) in between rather than accepting unauthenticated ones.
 - **Limits are real.** Topic names are `[A-Za-z0-9._:/@-]` up to 128 bytes, and the broker bounds topics, subscriptions and payload size (`docs/OPERATIONS.md`). `LIMIT` on a subscribe means a bound was hit, not that retrying soon will help.
