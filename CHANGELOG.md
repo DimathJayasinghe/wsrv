@@ -32,4 +32,5 @@ What the first stable release will contain. The owner decided (2026-11-23) that 
 - IPC protocol 0.3: `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH` frames and the status `LIMIT`; the daemon drops a departed application's subscriptions at once (ADR-0028 slice 2).
 
 ### Fixed
+- The server held at most 4095 concurrent connections whatever `max_connections` said (default 10 000): every live connection reserves a slot of the 4096-event host queue for its Close, and the 4096th was accepted, upgraded and then closed. The queue defaults now follow `max_connections` (ADR-0016 A2); `event_queue_events` / `event_queue_bytes` set by hand still win. Found by the 1.0 benchmark (5 000 idle connections lost 905).
 - permessage-deflate: an offer that repeats a parameter is declined (RFC 7692 section 7) instead of failing the handshake; a message ended by a final block is accepted and keeps its window, with one restart per message.

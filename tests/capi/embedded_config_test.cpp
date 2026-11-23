@@ -226,6 +226,52 @@ TEST(EmbeddedConfig, TheEventQueueLimitsAreCheckedWhenTheQueueIsBuiltNotHere) {
     EXPECT_EQ(config.queue().max_events, 1U);
 }
 
+// A live connection holds one slot of the event queue for its Close event (event_queue.hpp), so a
+// queue of 4096 events silently capped the server at 4095 connections whatever max_connections said
+// (found by the 1.0 benchmark: 5000 idle connections lost 905). The defaults now follow
+// max_connections; a value the operator sets stays exactly as set.
+TEST(EmbeddedConfig, TheDefaultEventQueueHoldsEveryConnectionTheServerAccepts) {
+    EmbeddedConfig config;  // max_connections 10000
+    EXPECT_GT(config.queue().max_events, config.server().max_connections)
+        << "every live connection reserves a slot for its Close";
+    EXPECT_GE(config.queue().max_bytes,
+              config.server().max_connections * EventQueue::kReservedCloseBytes)
+        << "and the bytes set aside for it";
+}
+
+TEST(EmbeddedConfig, TheDefaultEventQueueGrowsWithMaxConnectionsInEitherOrderOfSetting) {
+    EmbeddedConfig config;
+    ASSERT_TRUE(config.set("max_connections", "50000").has_value());
+    EXPECT_GT(config.queue().max_events, 50000U);
+    EXPECT_GE(config.queue().max_bytes, 50000U * EventQueue::kReservedCloseBytes);
+
+    EmbeddedConfig small;
+    ASSERT_TRUE(small.set("max_connections", "10").has_value());
+    // One slot per connection, plus the old default (4096 events, 8 MiB) as room for events in
+    // flight.
+    EXPECT_EQ(small.queue().max_events, 10U + 4096U);
+    EXPECT_EQ(small.queue().max_bytes,
+              10U * EventQueue::kReservedCloseBytes + (std::size_t{8} << 20));
+}
+
+TEST(EmbeddedConfig, AnEventQueueTheOperatorSetsIsNeverChanged) {
+    EmbeddedConfig config;
+    ASSERT_TRUE(config.set("max_connections", "50000").has_value());
+    ASSERT_TRUE(config.set("event_queue_events", "100").has_value());
+    ASSERT_TRUE(config.set("event_queue_bytes", "4096").has_value());
+    EXPECT_EQ(config.queue().max_events, 100U)
+        << "an explicit value wins: it is the operator's call";
+    EXPECT_EQ(config.queue().max_bytes, 4096U);
+}
+
+TEST(EmbeddedConfig, SettingOnlyOneEventQueueLimitLeavesTheOtherDerived) {
+    EmbeddedConfig config;
+    ASSERT_TRUE(config.set("max_connections", "50000").has_value());
+    ASSERT_TRUE(config.set("event_queue_events", "70000").has_value());
+    EXPECT_EQ(config.queue().max_events, 70000U);
+    EXPECT_GE(config.queue().max_bytes, 50000U * EventQueue::kReservedCloseBytes);
+}
+
 TEST(EmbeddedConfig, PermessageDeflateIsOffByDefaultAndItsKeysAreStored) {  // ADR-0020 section 6
     EmbeddedConfig config;
     EXPECT_FALSE(config.permessage_deflate()) << "compression is opt-in (CRIME/BREACH class risk)";

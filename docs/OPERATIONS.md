@@ -118,6 +118,8 @@ Three per-connection limits protect the server from a single peer, and each has 
 
 None of them has an "off" value; a refused value changes nothing and `wsrv_config_set` reports `WSRV_ERR_INVALID_CONFIG`. Whoever sets `max_message_size` above the event-queue size must also raise `event_queue_bytes`: the host receives messages whole, so a queue smaller than one message cannot deliver it.
 
+**The event queue and the connection ceiling.** Events for the application (a connection opened, a message arrived, a connection closed) wait in a bounded queue between the I/O threads and the application. Every live connection holds one slot of it for its own `Close` event, so the queue must be larger than the number of connections: with `event_queue_events` unset (the default) it is `max_connections + 4096` and `event_queue_bytes` is `max_connections * 123 + 8 MiB`, so the default is consistent for any `max_connections`. If you set `event_queue_events` yourself, it is used as given, and a value below `max_connections` caps the server at that value (the connection beyond it is accepted, upgraded and closed with the overload close code 1013). Before 1.0 the queue was a fixed 4096 and capped every server at 4095 connections.
+
 ## 2. Logging
 
 - Structured, one event per line. Fields: `ts` (RFC 3339 UTC), `level`, `conn` (ID), `peer`, `event`, `code`, `msg`.
