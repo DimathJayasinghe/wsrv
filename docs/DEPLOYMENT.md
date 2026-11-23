@@ -126,3 +126,25 @@ Rooms and subscriptions live inside each `wsrvd`. To reach every subscriber, **p
 - [ ] The healthcheck/readiness probe is wired; `SIGTERM` reaches the daemon (not a shell wrapper).
 - [ ] Clients reconnect with backoff (`clients/js`, or your own loop); the worker runs under `Supervisor` and your process supervisor restarts it.
 - [ ] `max_connections` is below the descriptor limit and the memory you have.
+- [ ] You know how you will upgrade: daemon first, then workers (section 10).
+
+## 10. Upgrading
+
+The two halves of a deployment (the `wsrvd` daemon and the PHP package that talks to it) are versioned together (`1.0.x` daemon with `1.0.x` package), and the wire between them has its own rule, so you can upgrade them one at a time.
+
+**The IPC protocol** (docs/IPC_PROTOCOL.md section 7) is `0.3`. Its guarantee for the whole `1.x` line: frames and fields are never removed or changed, minors are **additive only**, and a major bump (which would make an old client refuse to start) happens only with wsrv 2.0. In practice:
+
+| Combination | Works? |
+|---|---|
+| a newer daemon with an older worker package of the same major | yes, an older minor in `HELLO` is accepted; only the features of that minor are available. Tested: a `0.1.0-rc.1` worker against a `1.0` daemon |
+| a newer worker package with an older daemon | basics yes; a feature the daemon does not know (for example rooms against a daemon below minor 3) is refused with a status `INVALID_ARGUMENT` or closes the link, never silently wrong |
+| a daemon started with `handshake_hook` and a worker below minor 2 | refused at `HELLO` (the worker could not answer upgrades) |
+
+So **upgrade the daemon first, then the workers**.
+
+**Restarting one node (what clients see):** a daemon and its worker are one pair, and a browser's socket lives on the daemon.
+1. *Worker upgrade* (stop the old worker, start the new one): the daemon has exactly one application connection, so there is a gap. In it the daemon keeps accepting WebSocket upgrades and queues their events for the next application (with `handshake_hook` on it answers `503` instead). The connections the old worker knew are closed with 1012 after `shutdown_grace_ms` (IPC_PROTOCOL section 6), so every connected client reconnects once per worker deploy: use the reconnecting client (`clients/js`).
+2. *Daemon upgrade*: every socket gets 1001 and is closed after the grace period; clients reconnect to the new daemon, and the supervised worker (`Supervisor`) reconnects to it by itself.
+3. *Several nodes behind a load balancer*: drain and upgrade one node at a time; its clients reconnect to the others.
+
+**What 1.x does not promise:** the C++ headers under `src/` (only `include/wsrv/wsrv.h` is the stable C surface), the metric names marked experimental in OPERATIONS section 3, and anything in `bench/` or `tests/`.

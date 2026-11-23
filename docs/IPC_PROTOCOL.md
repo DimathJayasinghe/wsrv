@@ -79,7 +79,7 @@ Need a daemon started with `broker = true` (otherwise every one answers `INVALID
 - Delivery is at most once across a disconnect: events already written to a dying link are lost with it.
 
 ## 7. Versioning
-Major version in `HELLO` must equal the daemon's (currently 0); minors are additive. `HELLO_OK` carries the daemon's own minor (currently 3). Version 0 is not frozen: until 1.0, the frame set may change between minors with an ADR.
+Major version in `HELLO` must equal the daemon's (currently 0); minors are additive. `HELLO_OK` carries the daemon's own minor (currently 3). **Freeze (decision for 1.0, 2026-11-23): the frames and fields of `0.3` are the contract of the whole wsrv 1.x line.** Nothing is removed or changed; a new minor only adds frames, fields at the end of a frame, or status values; a major bump (an old client would refuse to start) happens only with wsrv 2.0. Before 1.0 the frame set could change between minors with an ADR.
 
 Minor 3 added the broker frames (12 to 14) and the status value `LIMIT` (12). Minor 2 added the handshake hook. A daemon started **with** `handshake_hook` refuses (like any other bad `HELLO`: `STATUS(request 0, INVALID_ARGUMENT)`) an application whose `HELLO` says minor below 2, because that application could not read a Handshake event and every browser would wait for a 503. Without `handshake_hook` an older minor is fine.
 
