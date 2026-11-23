@@ -1,0 +1,5 @@
+POST /publish?topic=room.7 HTTP/1.1
+Host: h
+Authorization: Bearer s3cret
+Content-Length: 5
+
