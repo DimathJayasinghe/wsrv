@@ -74,5 +74,10 @@ The open question above is answered yes. PHP developers who will not install a n
 - **Not decided here:** the GHCR package starts private; making it public is a setting on the package page (the owner's). No image signing beyond the registry's own digests yet; the release files keep their attestation.
 - **Not a security default to weaken:** the compose example sets `--allow-missing-origin=true` only so command-line clients work in the first minute; its comment says to remove it in production.
 
+## Amendment 2 (2026-11-23): the first real release, `0.1.0-rc.2`
+Run for real, end to end, from the published artifacts only (no build from source): the release workflow built both architectures, attested the files (`gh attestation verify` passed) and pushed the multi-arch image; the image pulled anonymously (the GHCR package was already public) and ran the compose quickstart; Packagist picked the tag up by itself within minutes; `wsrv-install-lib --version=0.1.0-rc.2 --daemon` downloaded, checksum-verified and ran `wsrvd`.
+- **What it found:** `wsrv-install-lib` defaults to `Version::PACKAGE`, which is the core version (`0.1.0`), so for a pre-release the helper needs `--version=0.1.0-rc.2`; documented, and not a problem for a final release. A Docker layer cache served an old `composer require` result in the example worker, so its constraint now names the minimum version.
+- **Laravel:** `docs/LARAVEL.md` was run against a fresh Laravel 13 app with these artifacts; that run found a missing `InteractsWithQueue` trait in the guide's listener (fixed).
+
 ## Revisit trigger
 Users on musl or macOS asking for prebuilt libraries (then add targets to the release matrix), or a second language binding that needs the same artifacts (then the helper's logic moves to a shared script).

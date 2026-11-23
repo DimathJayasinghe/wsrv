@@ -12,7 +12,7 @@ Controller / job / listener --HTTP POST /publish--+                           (s
 - **`wsrv:work`** is a long-running Artisan command (below). It answers "may this browser connect?" and "may this connection join this room?". Nothing else.
 - **Your app** publishes with `Wsrv\Publisher`: one short HTTP request per message, from anywhere (a controller, a queued job, a model observer).
 
-**Honest scope.** This is not a Laravel Broadcasting driver: `broadcast(new Event)`, Echo and the Pusher protocol are not implemented. You call `Publisher` yourself. The wsrv calls below are covered by the package's tests (including a run against a real `wsrvd`); the Laravel glue (service provider, Artisan command, route) was written against Laravel 11/12 and is **not** run in this repository's CI, so treat it as a tested pattern, not a tested package.
+**Honest scope.** This is not a Laravel Broadcasting driver: `broadcast(new Event)`, Echo and the Pusher protocol are not implemented. You call `Publisher` yourself. The wsrv calls below are covered by the package's tests (including a run against a real `wsrvd`). The Laravel glue was run by hand on 2026-11-23 against a fresh Laravel 13.43 app with the published `0.1.0-rc.2` image and package: the ticket flow (no ticket, wrong ticket, reused ticket: all 401; a good one: 101), the worker joining only rooms the ticket allows, a `Publisher` resolved from the container delivering to the browser, and the queued listener's retry/fail paths. Two things differ from your app: the test used a stub user in place of the `auth` middleware and your `rooms()` relation, and none of it runs in this repository's CI. Treat it as a tested pattern, not a tested package.
 
 ## 1. Install
 
@@ -46,7 +46,7 @@ return [
 ];
 ```
 
-`app/Providers/WsrvServiceProvider.php` (add it to `bootstrap/providers.php`):
+`app/Providers/WsrvServiceProvider.php` (add `App\Providers\WsrvServiceProvider::class` to the list in `bootstrap/providers.php`):
 
 ```php
 <?php
@@ -72,7 +72,7 @@ class WsrvServiceProvider extends ServiceProvider
 
 The browser cannot send your session cookie to a WebSocket on another port in a way the worker can decrypt (Laravel encrypts it). Use a **ticket**: a random, single-use, short-lived string your app hands to a logged-in user, which the browser passes in the WebSocket URL.
 
-`routes/web.php`:
+`routes/web.php` (merge the `use` lines with the ones the file already has):
 
 ```php
 use Illuminate\Http\Request;
@@ -182,11 +182,14 @@ namespace App\Listeners;
 
 use App\Events\MessagePosted;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Queue\InteractsWithQueue;
 use Wsrv\PublishFailed;
 use Wsrv\Publisher;
 
 class PushMessageToRoom implements ShouldQueue
 {
+    use InteractsWithQueue;      // gives the listener $this->fail()
+
     public int $tries = 5;
     public array $backoff = [1, 5, 15, 60];
 

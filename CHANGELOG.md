@@ -2,9 +2,13 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [Semantic Versioning](https://semver.org/) for the C++ API and the PHP package; the C ABI has its own `major.minor` (`wsrv_abi_version()`), additive within a major.
 
-No release has been tagged yet. Everything below is on `main` and is what the first release (`0.1.0`, first as a `-rc` tag) will contain. Known gaps are listed in [docs/RELEASE.md](docs/RELEASE.md).
+Known gaps are listed in [docs/RELEASE.md](docs/RELEASE.md). `0.1.0-rc.1` and `0.1.0-rc.2` were pre-releases of what is below.
 
 ## [Unreleased]
+
+## [0.1.0] - 2026-11-23
+
+The first release meant for developers to build with. Not 1.0: APIs can still change in a minor version.
 
 ### Added
 - RFC 6455 WebSocket server: sans-I/O protocol core, handshake with Origin policy, frame codec, UTF-8 validation, fragmentation, close handshake, multi-loop epoll server, bounded queues with backpressure. Autobahn|Testsuite: 517 cases, 0 failed (plain and wss; C and PHP bindings too).
@@ -20,6 +24,7 @@ No release has been tagged yet. Everything below is on `main` and is what the fi
 - `wsrvd` container image (`docker/wsrvd.Dockerfile`, published to GHCR by `release.yml`, amd64 and arm64) and a Docker quickstart with a PHP worker (`examples/docker`), ADR-0026 amendment 1.
 - Broker driven by connection id in the embedded server (`broker` and five `broker_max_*` config keys, ADR-0027 slice 1); the C ABI and PHP follow.
 
+- Laravel integration guide (`docs/LARAVEL.md`), run against Laravel 13.
 - PHP: `Connection::subscribe`/`unsubscribe`, `Worker::publish` (IPC 0.3) and `Wsrv\Publisher` for HTTP publishing (ADR-0028 slice 4); `wsrvd` reports the publish port.
 - HTTP publish endpoint (`POST /publish`, bearer token file, bounded, off by default; `publish_port`, `publish_host`, `publish_token_file`), `wsrv_publish_http_total{status}`, ADR-0028 slice 3.
 - IPC protocol 0.3: `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH` frames and the status `LIMIT`; the daemon drops a departed application's subscriptions at once (ADR-0028 slice 2).
