@@ -14,13 +14,13 @@ Open an issue before starting so nobody duplicates it.
 ## Workflow
 
 1. **Discuss first** for anything non-trivial: open an issue (bug / feature / design). Structural changes need an ADR ([docs/adr/](docs/adr/)).
-2. Fork / branch from `main`: `feat/<topic>`, `fix/<topic>`, `docs/<topic>`.
+2. Fork / branch from `develop` (the integration branch): `feat/<topic>`, `fix/<topic>`, `docs/<topic>`, and open the PR **into `develop`**. `main` only receives `develop` when a milestone is ready to ship (release tags are cut from `main`).
 3. **Test first** for protocol/net code (write the failing test or add the edge-case row).
 4. Keep PRs small and single-purpose (≈ ≤ 400 changed lines excluding tests/generated).
 5. Run locally: `cmake --preset dev && cmake --build --preset dev && ctest --preset dev`, then format/tidy targets.
 6. Open the PR using the template; link the issue, requirement IDs (`FR-F5`), and edge-case rows (`EC-U06`).
 7. At least one maintainer approval; two for changes in `http/ protocol/ net/ extensions/`, TLS, limit defaults, or the C ABI.
-8. Squash-merge with a Conventional Commit title.
+8. Feature PRs into `develop` are squash-merged with a Conventional Commit title. `develop` into `main` is a **merge commit** (never squash: a squash would leave the two branches diverged and every later release PR would re-show old changes).
 
 ## Commit messages (Conventional Commits)
 
