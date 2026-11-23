@@ -102,6 +102,10 @@ client_ip_header = X-Forwarded-For   # default; any other name is read as one si
 - **What changes:** a connection from a trusted proxy takes no per-IP slot at accept (the proxy would exhaust its own budget) but still counts against `max_connections`. Once its upgrade request is valid, the client address is admitted through the per-IP limits (429 or 503 on refusal, like any handshake refusal) and the slot comes back when the connection ends. The application's `open` event, the handshake hook and the logs then show the client, with port 0.
 - **Not yet:** PROXY protocol v1/v2 and the `Forwarded` (RFC 7239) header.
 
+### 1.2.2 Application sends waiting for a loop (ADR-0032)
+
+An application (the C API, the PHP worker through `wsrvd`) sends from its own thread: each `send_text` / `send_binary` is copied and queued to the loop that owns the connection. The queue is bounded in count, and since ADR-0032 also in bytes: `max_pending_send_bytes` (per loop, default 64 MiB, 1 B to 1 GiB, no unlimited value; `WSRVD_MAX_PENDING_SEND_BYTES` in a container). When the budget is used up a send returns `BufferFull` (C: `WSRV_ERR_BACKPRESSURE`, a PHP worker sees status `BACKPRESSURE`): wait and retry. A single message larger than the whole budget is refused for good with `InvalidArgument`, so keep the budget above your largest message. Worst case memory is `threads x budget`. Broadcasts and control commands are not charged (one shared buffer, and they must always get through).
+
 ### 1.3 Frame, fragment and frame-rate limits (ADR-0016 A1)
 
 Three per-connection limits protect the server from a single peer, and each has a text key in the embedded and `wsrvd` configuration. They exist because some legitimate clients need more than the defaults (a trusted batch uploader; the Autobahn conformance run), not because the defaults are wrong for the web.

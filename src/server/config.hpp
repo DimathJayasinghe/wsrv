@@ -7,6 +7,7 @@
 #include "protocol/handshake.hpp"
 #include "protocol/session.hpp"
 #include "server/client_ip.hpp"
+#include "server/pending_bytes.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -84,6 +85,9 @@ struct ServerConfig {
 
     SlowConsumerPolicy slow_consumer = SlowConsumerPolicy::Close;
     ReadBudget read;
+    /// Per loop: payload bytes of direct sends (SessionHandle::send_text / send_binary) that may
+    /// wait for the loop at once (ADR-0032). 1 .. kMaxConfiguredQueue; no unlimited value.
+    std::size_t max_pending_send_bytes = kDefaultMaxPendingSendBytes;
 };
 
 /// Hard ceilings (SECURITY_DESIGN section 3): a misconfiguration is rejected, never honoured.

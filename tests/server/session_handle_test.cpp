@@ -235,6 +235,111 @@ TEST_F(SessionHandleTest, AHandleOutlivesTheLinkOwnerAndCopiesShareTheTarget) {
     EXPECT_EQ(copy.id(), kId);
 }
 
+// ---- the pending-send byte budget (ADR-0032) ----------------------------------------------------
+
+class BudgetTest : public ::testing::Test {
+protected:
+    static constexpr ConnectionId kId = 7;
+    static constexpr std::size_t kBudget = 100;
+
+    BudgetTest() {
+        wsrv::EventLoopConfig config;
+        auto loop = wsrv::EventLoop::create(sys_, clock_, config);
+        EXPECT_TRUE(loop.has_value());
+        loop_ = std::move(*loop);
+        link_ = std::make_shared<wsrv::LoopLink>(*loop_, directory_, kBudget);
+        directory_.sessions[kId] = &session_;
+    }
+
+    void run_loop() {
+        for (int i = 0; i < 5; ++i) {
+            ASSERT_TRUE(loop_->run_once(10ms).has_value());
+        }
+    }
+
+    static inline wsrv::LinuxSyscalls sys_;
+    static inline wsrv::SteadyClock clock_;
+    FakeDirectory directory_;
+    RecordingSession session_{kId};
+    std::unique_ptr<wsrv::EventLoop> loop_;
+    std::shared_ptr<wsrv::LoopLink> link_;
+};
+
+TEST_F(BudgetTest, DirectSendsAreRefusedOnceTheBytesWaitingForTheLoopReachTheBudget) {
+    const SessionHandle handle{link_, kId};
+    EXPECT_TRUE(handle.send_text(std::string(60, 'a')).has_value());
+    EXPECT_EQ(link_->pending_send_bytes(), 60U);
+    const auto over = handle.send_text(std::string(60, 'b'));
+    ASSERT_FALSE(over.has_value());
+    EXPECT_EQ(over.error().code, ErrorCode::BufferFull) << "wait for the loop and try again";
+    EXPECT_EQ(link_->pending_send_bytes(), 60U) << "a refused send holds nothing";
+    EXPECT_TRUE(handle.send_text(std::string(40, 'c')).has_value()) << "exactly to the budget";
+    EXPECT_EQ(link_->pending_send_bytes(), 100U);
+    EXPECT_EQ(handle.send_text("x").error().code, ErrorCode::BufferFull);
+}
+
+TEST_F(BudgetTest, TheBytesAreGivenBackWhenTheLoopHasRunTheSend) {
+    const SessionHandle handle{link_, kId};
+    ASSERT_TRUE(handle.send_text(std::string(90, 'a')).has_value());
+    ASSERT_FALSE(handle.send_binary(std::vector<std::byte>(90)).has_value());
+    run_loop();
+    EXPECT_EQ(link_->pending_send_bytes(), 0U);
+    EXPECT_EQ(session_.texts.size(), 1U);
+    ASSERT_TRUE(handle.send_binary(std::vector<std::byte>(90)).has_value()) << "room again";
+}
+
+TEST_F(BudgetTest, ASendLargerThanTheWholeBudgetCanNeverBeSentAndIsInvalidNotBusy) {
+    const SessionHandle handle{link_, kId};
+    const auto too_big = handle.send_text(std::string(kBudget + 1, 'a'));
+    ASSERT_FALSE(too_big.has_value());
+    EXPECT_EQ(too_big.error().code, ErrorCode::InvalidArgument) << "retrying cannot help";
+    EXPECT_EQ(handle.send_binary(std::vector<std::byte>(kBudget + 1)).error().code,
+              ErrorCode::InvalidArgument);
+    EXPECT_EQ(link_->pending_send_bytes(), 0U);
+    EXPECT_TRUE(handle.send_text(std::string(kBudget, 'a')).has_value())
+        << "exactly the budget fits";
+}
+
+TEST_F(BudgetTest, SendsThatTheLoopNeverRunsAreGivenBackWhenTheLoopIsDestroyed) {
+    const SessionHandle handle{link_, kId};
+    ASSERT_TRUE(handle.send_text(std::string(80, 'a')).has_value());
+    ASSERT_EQ(link_->pending_send_bytes(), 80U);
+    link_->close();
+    loop_.reset();  // the queued task is discarded, never run
+    EXPECT_EQ(link_->pending_send_bytes(), 0U);
+}
+
+TEST_F(BudgetTest, ASendTheFullTaskQueueRefusesHoldsNoBudget) {
+    wsrv::EventLoopConfig config;
+    config.max_queued_tasks = 1;
+    auto small = wsrv::EventLoop::create(sys_, clock_, config);
+    ASSERT_TRUE(small.has_value());
+    auto link = std::make_shared<wsrv::LoopLink>(**small, directory_, kBudget);
+    const SessionHandle handle{link, kId};
+    ASSERT_TRUE(handle.send_text("first").has_value());
+    const auto refused = handle.send_text("second");
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, ErrorCode::BufferFull);
+    EXPECT_EQ(link->pending_send_bytes(), 5U) << "only the one that was queued";
+}
+
+TEST_F(BudgetTest, BroadcastsControlCommandsAndDecisionsAreNotChargedToTheBudget) {
+    const SessionHandle handle{link_, kId};
+    const auto big = wsrv::SharedMessage::text(std::string(10 * kBudget, 'a'));
+    ASSERT_TRUE(big.has_value());
+    EXPECT_TRUE(handle.send(*big).has_value()) << "one shared buffer for all subscribers";
+    EXPECT_TRUE(handle.close(CloseCode::Normal, "bye").has_value());
+    EXPECT_TRUE(handle.resume_reads().has_value());
+    EXPECT_EQ(link_->pending_send_bytes(), 0U);
+}
+
+TEST_F(BudgetTest, TheBudgetIsPerLink) {
+    wsrv::LoopLink other{*loop_, directory_, kBudget};
+    const SessionHandle first{link_, kId};
+    ASSERT_TRUE(first.send_text(std::string(kBudget, 'a')).has_value());
+    EXPECT_EQ(other.pending_send_bytes(), 0U);
+}
+
 TEST_F(SmallQueueTest, AFullTaskQueueIsReportedAsBufferFull) {  // EC-N14
     const SessionHandle handle{link_, kId};
     int accepted = 0;
