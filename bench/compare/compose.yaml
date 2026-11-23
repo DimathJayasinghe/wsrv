@@ -1,0 +1,83 @@
+# One contender at a time: `docker compose --profile wsrv up -d`, run the load generator, `down`.
+# bench/compare/run.py does this for every contender and records the numbers.
+#
+# Equal footing (bench/compare/README.md): every container of a contender is pinned to the same CPUs
+# (BENCH_SERVER_CPUS) and has the same memory limit; the load generator runs on other CPUs, inside
+# the same Docker network (the contender is always reachable as `target`, port 8080).
+name: wsrv-bench
+
+x-limits: &limits
+  cpuset: ${BENCH_SERVER_CPUS:-2-5}
+  mem_limit: ${BENCH_MEMORY:-4g}
+  memswap_limit: ${BENCH_MEMORY:-4g}
+  restart: "no"
+  ulimits:
+    nofile: 1048576
+
+services:
+  # ---- wsrv: the daemon (C++ I/O) and one PHP worker over a Unix socket ----------------------------
+  wsrvd:
+    profiles: [wsrv]
+    image: ${WSRVD_IMAGE:-wsrvd:local}
+    <<: *limits
+    environment:
+      WSRVD_THREADS: ${WSRV_THREADS:-2}
+      WSRVD_BROKER: "true"
+      WSRVD_ALLOW_MISSING_ORIGIN: "true"
+      WSRVD_MAX_CONNECTIONS: "20000"
+      WSRVD_MAX_CONNECTIONS_PER_IP: "0"               # one load generator: every connection is one address
+      WSRVD_MAX_NEW_CONNECTIONS_PER_IP_PER_SECOND: "0"
+      WSRVD_BROKER_MAX_SUBSCRIBERS_PER_TOPIC: "20000"
+      WSRVD_BROKER_MAX_SUBSCRIPTIONS: "200000"
+    volumes:
+      - ipc:/run/wsrv
+    networks:
+      default:
+        aliases: [target]
+  worker:
+    profiles: [wsrv]
+    image: php:8.3-cli
+    <<: *limits
+    user: "10001:10001"
+    depends_on: [wsrvd]
+    volumes:
+      - ipc:/run/wsrv
+      - ./servers/wsrv/worker.php:/app/worker.php:ro
+      - ../../bindings/php/src:/wsrv-src:ro
+    command: ["php", "-d", "memory_limit=-1", "/app/worker.php"]
+
+  # ---- the others: one process each ----------------------------------------------------------------
+  workerman:
+    profiles: [workerman]
+    build: ./servers/workerman
+    <<: *limits
+    networks:
+      default:
+        aliases: [target]
+  swoole:
+    profiles: [swoole]
+    build: ./servers/swoole
+    <<: *limits
+    networks:
+      default:
+        aliases: [target]
+  reverb:
+    profiles: [reverb]
+    build: ./servers/reverb
+    <<: *limits
+    networks:
+      default:
+        aliases: [target]
+
+  # ---- the load generator (shares no code with wsrv; see wsbench/wsbench.cpp) ---------------------
+  loadgen:
+    profiles: [loadgen]
+    image: ${LOADGEN_IMAGE:-wsrv-bench-loadgen:local}
+    build: ./wsbench
+    cpuset: ${BENCH_CLIENT_CPUS:-10-17}
+    mem_limit: ${BENCH_CLIENT_MEMORY:-1g}
+    ulimits:
+      nofile: 1048576
+
+volumes:
+  ipc:
