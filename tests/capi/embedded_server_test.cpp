@@ -218,6 +218,48 @@ TEST(EmbeddedServer, ClientsThatIgnoreTheShutdownStillGiveTheHostOneCloseEachOnE
     EXPECT_EQ(closes, 4);
 }
 
+// ADR-0027: the broker is a config key; a host drives rooms by connection id.
+TEST(EmbeddedServer, TheBrokerKeyGivesTheHostRoomsByConnectionIdAndItsCountersReachTheMetrics) {
+    EmbeddedConfig config = base_config();
+    ASSERT_TRUE(config.set("broker", "true").has_value());
+    ASSERT_TRUE(config.set("admin_port", "0").has_value());
+    const auto server = started(config);
+    TcpClient a{server->port()};
+    TcpClient b{server->port()};
+    ASSERT_TRUE(a.upgrade());
+    const auto open_a = server->poll(3000ms);
+    ASSERT_TRUE(b.upgrade());
+    const auto open_b = server->poll(3000ms);
+    ASSERT_TRUE(open_a && open_b);
+    ASSERT_TRUE(server->subscribe(open_a->conn, "room.1").has_value());
+    ASSERT_TRUE(server->subscribe(open_b->conn, "room.1").has_value());
+    EXPECT_EQ(server->topic_subscribers("room.1").value_or(0), 2U);
+
+    const auto report = server->publish_text("room.1", "hello all", open_a->conn);
+    ASSERT_TRUE(report.has_value());
+    EXPECT_EQ(report->accepted, 1U);
+    const auto frame = b.read_frame();
+    ASSERT_TRUE(frame.has_value());
+    EXPECT_EQ(frame->payload, "hello all");
+    EXPECT_TRUE(a.silent_for(200ms));
+
+    // The broker's counters reach the server's metrics (ADR-0024 section 6): one publish, one
+    // accepted delivery (the publisher was left out).
+    TcpClient admin{server->admin_port()};
+    ASSERT_TRUE(admin.send("GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n"));
+    const std::string page = admin.read_http_head() + admin.read_all();
+    EXPECT_NE(page.find("wsrv_broker_publishes_total 1"), std::string::npos) << page;
+    EXPECT_NE(page.find("wsrv_broker_deliveries_total{result=\"accepted\"} 1"), std::string::npos)
+        << page;
+}
+
+TEST(EmbeddedServer, WithoutTheBrokerKeyBrokerCommandsAreInvalidArgument) {
+    const auto server = started();
+    const auto result = server->publish_text("room", "x");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ErrorCode::InvalidArgument);
+}
+
 // ADR-0023: the admin listener is a text key like every other.
 TEST(EmbeddedServer, TheAdminKeysServeMetricsOnTheirOwnPort) {
     EmbeddedConfig config = base_config();

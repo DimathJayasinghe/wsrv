@@ -2,6 +2,7 @@
 #pragma once
 
 #include "base/error.hpp"
+#include "server/broker.hpp"
 #include "server/config.hpp"
 #include "server/server_builder.hpp"
 
@@ -62,6 +63,10 @@ struct TlsSniSetting {
 /// it switches the listener on, 0 lets the kernel choose) and admin_host (an IP literal, default
 /// 127.0.0.1). It serves /metrics, /healthz and /readyz over plain HTTP with no authentication:
 /// keep it on loopback or behind a network policy.
+/// and for the pub/sub broker (ADR-0027 section 1, off by default): broker (bool) and its bounds
+/// broker_max_topics (default 1024, ceiling 1000000), broker_max_subscribers_per_topic (10000,
+/// 1000000), broker_max_topics_per_connection (64, 1024), broker_max_subscriptions (100000,
+/// 10000000) and broker_max_payload_bytes (65536, 1048576). Never 0: a bound is not switched off.
 /// Thread-affinity: not thread-safe; configure on one thread before starting.
 class EmbeddedConfig {
 public:
@@ -120,10 +125,20 @@ public:
         return deflate_;
     }
 
+    /// The pub/sub broker (ADR-0027): on only with broker=true; the bounds apply when it is.
+    [[nodiscard]] bool broker_enabled() const noexcept {
+        return broker_enabled_;
+    }
+    [[nodiscard]] const BrokerConfig& broker_config() const noexcept {
+        return broker_;
+    }
+
     /// Copy the listen address and the server settings into `builder`.
     void apply_to(ServerBuilder& builder) const;
 
 private:
+    [[nodiscard]] std::optional<Result<void>> set_broker_key(std::string_view key,
+                                                             std::string_view value);
     [[nodiscard]] Result<void> set_listen_host(std::string_view value);
     [[nodiscard]] Result<void> set_listen_port(std::string_view value);
     [[nodiscard]] Result<void> set_threads(std::string_view value);
@@ -148,6 +163,12 @@ private:
     [[nodiscard]] Result<void> set_tls_cert(std::string_view value);
     [[nodiscard]] Result<void> set_tls_key(std::string_view value);
     [[nodiscard]] Result<void> add_tls_sni(std::string_view value);
+    [[nodiscard]] Result<void> set_broker(std::string_view value);
+    [[nodiscard]] Result<void> set_broker_max_topics(std::string_view value);
+    [[nodiscard]] Result<void> set_broker_max_subscribers_per_topic(std::string_view value);
+    [[nodiscard]] Result<void> set_broker_max_topics_per_connection(std::string_view value);
+    [[nodiscard]] Result<void> set_broker_max_subscriptions(std::string_view value);
+    [[nodiscard]] Result<void> set_broker_max_payload_bytes(std::string_view value);
     [[nodiscard]] Result<void> set_permessage_deflate(std::string_view value);
     [[nodiscard]] Result<void> set_deflate_server_max_window_bits(std::string_view value);
     [[nodiscard]] Result<void> set_deflate_server_no_context_takeover(std::string_view value);
@@ -165,6 +186,8 @@ private:
     std::string tls_cert_;
     std::string tls_key_;
     std::vector<TlsSniSetting> tls_sni_;
+    bool broker_enabled_ = false;
+    BrokerConfig broker_;
     bool deflate_enabled_ = false;
     DeflateOptions deflate_;  ///< tuning; used only when deflate_enabled_
 };

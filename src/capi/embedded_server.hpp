@@ -97,6 +97,16 @@ public:
     [[nodiscard]] Result<void> send_binary(ConnectionId id, ByteView data);
     [[nodiscard]] Result<void> close(ConnectionId id, CloseCode code, std::string_view reason);
 
+    /// The broker by connection id (ADR-0027); see HostBridge. Error{InvalidArgument} unless the
+    /// config key `broker` is true. Any thread.
+    [[nodiscard]] Result<void> subscribe(ConnectionId id, std::string_view topic);
+    [[nodiscard]] Result<void> unsubscribe(ConnectionId id, std::string_view topic);
+    [[nodiscard]] Result<PublishReport>
+    publish_text(std::string_view topic, std::string_view text, ConnectionId except = 0);
+    [[nodiscard]] Result<PublishReport>
+    publish_binary(std::string_view topic, ByteView data, ConnectionId except = 0);
+    [[nodiscard]] Result<std::size_t> topic_subscribers(std::string_view topic) const;
+
     /// Answer a HostEventType::Handshake (only with handshake_hook on); see HostBridge.
     [[nodiscard]] Result<void> accept_handshake(ConnectionId id,
                                                 std::optional<std::string_view> subprotocol);
