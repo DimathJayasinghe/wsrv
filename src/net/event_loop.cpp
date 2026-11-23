@@ -301,6 +301,10 @@ void EventLoop::dispatch(const PollEvent& event) {
     handler->on_event(event.events);
 }
 
+void EventLoop::set_iteration_end(Task hook) {
+    iteration_end_ = std::move(hook);
+}
+
 void EventLoop::run_timers() {
     expired_.clear();
     wheel_.advance(clock_.now(), expired_, config_.max_timers_per_iteration);
@@ -354,6 +358,9 @@ Result<void> EventLoop::run_once(std::chrono::milliseconds max_wait) {
     run_timers();
     run_tasks();
     run_deferred();
+    if (iteration_end_) {
+        invoke(iteration_end_);
+    }
     return {};
 }
 

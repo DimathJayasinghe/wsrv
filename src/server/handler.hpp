@@ -147,6 +147,13 @@ public:
     virtual ~IHandlerFactory() = default;
 
     [[nodiscard]] virtual std::unique_ptr<IWebSocketHandler> create(const ConnectionInfo& info) = 0;
+
+    /// Called by every loop, on its own thread, at the end of each iteration, after all the
+    /// callbacks that iteration ran (ADR-0035). A factory whose handlers deferred work, such as a
+    /// wake-up of the host, to batch it across a burst pays it here. It runs on every iteration of
+    /// every loop, concurrently from several loop threads, so it must be thread-safe, quick, and
+    /// must not block or throw. The default does nothing.
+    virtual void on_loop_iteration_end() noexcept {}
 };
 
 }  // namespace wsrv

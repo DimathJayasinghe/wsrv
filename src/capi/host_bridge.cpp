@@ -48,6 +48,9 @@ public:
         announced_ = true;
     }
 
+    // Messages are the hot path and arrive in bursts: they only owe the host's wake-up, which the
+    // loop pays once at the end of its iteration (on_loop_iteration_end). Open, Close and the rest
+    // are rare and wake the host at once.
     void on_text(Session& session, std::string_view text) override {
         deliver(session, make_event(HostEventType::Text, session.id(), text));
     }
@@ -83,14 +86,14 @@ public:
 private:
     void deliver(Session& session, HostEvent event) {
         if (announced_ && !overloaded_) {
-            static_cast<void>(push(session, std::move(event)));
+            static_cast<void>(push(session, std::move(event), EventQueue::Wake::AtFlush));
         }
     }
 
     /// @return false after the queue refused the event: the host is too slow, so the connection is
     /// closed with 1013 (ADR-0016 section 4) and nothing more is queued for it but its Close.
-    bool push(Session& session, HostEvent event) {
-        const Result<PushOutcome> pushed = bridge_.events().push(std::move(event));
+    bool push(Session& session, HostEvent event, EventQueue::Wake wake = EventQueue::Wake::Now) {
+        const Result<PushOutcome> pushed = bridge_.events().push(std::move(event), wake);
         if (pushed) {
             if (pushed->pause_reads) {
                 pause_until_drained(session);
@@ -130,6 +133,10 @@ HostBridge::make(ISyscalls& sys, EventQueueConfig queue, std::shared_ptr<Broker>
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::ResourceExhausted, "capi: out of memory");
     }
+}
+
+void HostBridge::on_loop_iteration_end() noexcept {
+    events_->flush_wake();
 }
 
 std::unique_ptr<IWebSocketHandler> HostBridge::create(const ConnectionInfo& /*info*/) {

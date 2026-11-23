@@ -4,6 +4,7 @@
 #include "base/clock.hpp"
 #include "net/event_loop.hpp"
 #include "net/syscalls.hpp"
+#include "support/recording_session.hpp"
 #include "support/running_server.hpp"
 #include "support/tcp_client.hpp"
 
@@ -693,4 +694,84 @@ TEST_F(HostBridgeTest, SubscribingWhileTheConnectionClosesNeverLeaksASubscriptio
     }
 }
 
+// A host that waits on the descriptor alone, as wsrvd does, must be woken by the loop's own end of
+// iteration. next() would hide a missing hook: it falls back to polling the queue after its
+// timeout.
+TEST_F(HostBridgeTest, ARealLoopWakesAHostThatOnlyWaitsOnTheDescriptor) {
+    start();
+    TcpClient client{server_->port()};
+    ASSERT_TRUE(client.upgrade());
+    ASSERT_TRUE(next().has_value());  // the Open
+    ASSERT_TRUE(client.send_frame(Opcode::Text, "ping"));
+    pollfd p{bridge_->events().event_fd(), POLLIN, 0};
+    ASSERT_EQ(::poll(&p, 1, 1500), 1) << "no wake-up: the loop never paid the owed one";
+    const auto text = bridge_->poll();
+    ASSERT_TRUE(text.has_value());
+    EXPECT_EQ(text->type, HostEventType::Text);
+}
+
+// ---- the wake-up of the host is paid once per loop iteration (ADR-0035)
+// --------------------------
+
+/// A bridge driven by hand, without a server: the handler is called the way a loop would.
+class HostBridgeWakeTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        auto made = HostBridge::make(sys_, {}, std::shared_ptr<Broker>{});
+        ASSERT_TRUE(made.has_value());
+        bridge_ = std::move(*made);
+        ConnectionInfo info;
+        info.id = 1;
+        handler_ = bridge_->create(info);
+        ASSERT_NE(handler_, nullptr);
+    }
+
+    [[nodiscard]] bool readable() const {
+        pollfd p{bridge_->events().event_fd(), POLLIN, 0};
+        return ::poll(&p, 1, 0) == 1 && (p.revents & POLLIN) != 0;
+    }
+
+    LinuxSyscalls sys_;
+    std::unique_ptr<HostBridge> bridge_;
+    std::unique_ptr<IWebSocketHandler> handler_;
+    RecordingSession session_{1};
+};
+
+TEST_F(HostBridgeWakeTest, AnOpenWakesTheHostAtOnce) {
+    handler_->on_open(session_);
+    EXPECT_TRUE(readable()) << "rare events are not held back";
+    ASSERT_TRUE(bridge_->poll().has_value());
+}
+
+TEST_F(HostBridgeWakeTest, MessagesWaitForTheEndOfTheIterationAndThenWakeTheHostOnce) {
+    handler_->on_open(session_);
+    ASSERT_TRUE(bridge_->poll().has_value());  // the Open; the queue is empty again
+    ASSERT_FALSE(readable());
+    handler_->on_text(session_, "one");
+    const std::byte payload[] = {std::byte{1}, std::byte{2}};
+    handler_->on_binary(session_, ByteView{payload});
+    EXPECT_EQ(bridge_->events().pending(), 2U);
+    EXPECT_FALSE(readable()) << "a message does not wake the host by itself";
+    bridge_->on_loop_iteration_end();
+    EXPECT_TRUE(readable()) << "the end of the iteration does, once for the whole burst";
+    const auto first = bridge_->poll();
+    ASSERT_TRUE(first.has_value());
+    EXPECT_EQ(first->type, HostEventType::Text);
+    const auto second = bridge_->poll();
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(second->type, HostEventType::Binary);
+    EXPECT_FALSE(readable());
+}
+
+TEST_F(HostBridgeWakeTest, AHostThatPollsBeforeTheEndOfTheIterationLosesNothing) {
+    handler_->on_open(session_);
+    ASSERT_TRUE(bridge_->poll().has_value());
+    handler_->on_text(session_, "early");
+    ASSERT_TRUE(bridge_->poll().has_value());  // the host was awake and took it
+    bridge_->on_loop_iteration_end();
+    EXPECT_FALSE(readable()) << "no wake-up for an empty queue";
+    handler_->on_text(session_, "next");
+    bridge_->on_loop_iteration_end();
+    EXPECT_TRUE(readable());
+}
 }  // namespace
