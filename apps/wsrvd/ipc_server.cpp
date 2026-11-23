@@ -9,6 +9,8 @@
 #include <array>
 #include <cerrno>
 #include <cstddef>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 
@@ -28,6 +30,8 @@ constexpr std::size_t kMaxReadsPerEvent = 16;   // fairness budget (EC-N07, EC-N
 constexpr std::size_t kMaxEventsPerFill = 256;  // events encoded before the buffer is flushed
 constexpr std::size_t kMaxPumpRounds = 16;      // fill+flush rounds before the loop gets a turn
 constexpr std::chrono::milliseconds kAcceptRetry{100};
+/// How soon a stale close that a full loop queue refused is tried again (ADR-0034).
+constexpr std::chrono::milliseconds kCloseRetry{25};
 // Close codes (RFC 6455 section 7.4.1; 1012 is in the IANA registry): 1001 Going Away,
 // 1012 Service Restart.
 constexpr std::uint16_t kCloseGoingAway = 1001;
@@ -475,6 +479,9 @@ IpcServer::~IpcServer() {
     if (grace_timer_) {
         loop_.cancel(*grace_timer_);
     }
+    if (close_retry_) {
+        loop_.cancel(*close_retry_);
+    }
     if (events_watch_) {
         loop_.unwatch(*events_watch_);
     }
@@ -519,7 +526,7 @@ void IpcServer::application_lost(bool stalled) noexcept {
     }
     if (stalled) {
         // The application holds our output hostage; waiting would only grow the backlog.
-        relay_.close_stale(kCloseGoingAway, "application stalled");
+        close_stale_connections(kCloseGoingAway, "application stalled");
         return;
     }
     // A restart is the common case: give the replacement the grace period, then close what it
@@ -534,13 +541,36 @@ void IpcServer::application_lost(bool stalled) noexcept {
                 return;
             }
             grace_timer_.reset();
-            relay_.close_stale(kCloseServiceRestart, "service restart");
+            close_stale_connections(kCloseServiceRestart, "service restart");
         });
     if (timer) {
         grace_timer_ = *timer;
     } else {
         // No timer to wait with: close now rather than leave connections nobody will ever serve.
-        relay_.close_stale(kCloseServiceRestart, "service restart");
+        close_stale_connections(kCloseServiceRestart, "service restart");
+    }
+}
+
+void IpcServer::close_stale_connections(std::uint16_t code, std::string_view reason) {
+    if (close_retry_) {
+        loop_.cancel(*close_retry_);
+        close_retry_.reset();
+    }
+    if (relay_.close_stale(code, reason) == 0) {
+        return;
+    }
+    // A loop's task queue was full for some of them: they are still open. Try again shortly; each
+    // round only asks the ones still refused, and the set is bounded by max_connections.
+    const Result<TimerHandle> timer = loop_.run_after(
+        kCloseRetry, [this, code, text = std::string{reason}, weak = std::weak_ptr<char>{epoch_}] {
+            if (weak.expired()) {
+                return;
+            }
+            close_retry_.reset();
+            close_stale_connections(code, text);
+        });
+    if (timer) {
+        close_retry_ = *timer;
     }
 }
 

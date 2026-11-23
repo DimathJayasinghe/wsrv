@@ -178,20 +178,22 @@ Broker::publish(std::string_view topic, const SharedMessage& message, Connection
     report.subscribers = recipients.size();
     // Start somewhere else each time: when the loops cannot take every delivery, the refused ones
     // are the tail of this order, and a fixed order would refuse the same subscribers every time.
+    // The start moves by one chunk, the unit a loop accepts or refuses (ADR-0034): a step of one
+    // recipient would leave the far end of a big room refused almost every time.
     const std::size_t count = recipients.size();
-    const std::size_t start =
-        count == 0 ? 0 : rotation_.fetch_add(1, std::memory_order_relaxed) % count;
-    for (std::size_t i = 0; i < count; ++i) {
-        const SessionHandle& handle = recipients[(start + i) % count];
-        const Result<void> sent = handle.send(message);
-        if (sent) {
-            ++report.accepted;
-            continue;
-        }
-        ++report.refused;
-        if (sent.error().code == ErrorCode::Closing) {
-            unsubscribe(handle.id(), topic);  // permanent: the server is gone (rare, one lock each)
-        }
+    if (count > 1) {
+        const std::size_t start =
+            rotation_.fetch_add(kBulkChunk, std::memory_order_relaxed) % count;
+        std::rotate(recipients.begin(),
+                    recipients.begin() + static_cast<std::ptrdiff_t>(start),
+                    recipients.end());
+    }
+    // One queue slot per chunk of recipients on a loop, not one per recipient (ADR-0034).
+    const BulkSendReport sent = send_to_many(recipients, message);
+    report.accepted = sent.accepted;
+    report.refused = sent.refused;
+    for (const ConnectionId gone : sent.gone) {
+        unsubscribe(gone, topic);  // permanent: the server is gone (rare, one lock each)
     }
     if (metrics != nullptr) {
         metrics->add(Metric::BrokerPublishes);

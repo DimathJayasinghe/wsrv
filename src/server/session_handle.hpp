@@ -12,6 +12,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -77,6 +78,13 @@ public:
     /// while a quarter of the loop's task queue is kept free for control tasks (ADR-0024 A1).
     [[nodiscard]] Result<void> submit_bulk(ConnectionId id, SessionCommand command);
 
+    /// The same command for several connections of this loop in ONE bulk task (ADR-0034): it runs
+    /// on each id that is still alive, in the order given. At most kBulkChunk ids, so the memory a
+    /// queued task holds stays bounded (kBulkChunk * 8 bytes); more is InvalidArgument.
+    /// @return as submit_bulk(): all the ids are accepted, or none is.
+    [[nodiscard]] Result<void> submit_bulk_many(std::span<const ConnectionId> ids,
+                                                SessionCommand command);
+
     /// The same for a handshake decision: runs `ISessionDirectory::decide` on the loop thread.
     [[nodiscard]] Result<void> submit_decision(ConnectionId id, HandshakeVerdict verdict);
 
@@ -98,6 +106,20 @@ private:
     EventLoop* loop_;
     ISessionDirectory* directory_;
     std::shared_ptr<PendingBytes> pending_;
+};
+
+/// How many connection ids one broadcast task carries (ADR-0034). A loop's task queue holds at
+/// most 3072 bulk tasks, so one loop can take a broadcast to hundreds of thousands of recipients
+/// at once, and the ids a full queue holds are at most 3072 * 256 * 8 bytes = 6 MiB.
+inline constexpr std::size_t kBulkChunk = 256;
+
+/// What one send to many connections did, counted per recipient.
+struct BulkSendReport {
+    std::size_t accepted = 0;  ///< recipients whose loop took the message (not "delivered")
+    std::size_t refused = 0;   ///< every recipient that was not accepted, `gone` included
+    /// Refused for good: the loop's server is gone (Closing). A caller keeping a list of
+    /// subscribers should forget these.
+    std::vector<ConnectionId> gone;
 };
 
 /// One payload, built and checked once, sent to many connections (ADR-0024 section 3). It is
@@ -158,9 +180,23 @@ public:
     /// Lift a pause_reads() on the connection (Session::resume_reads), from any thread.
     [[nodiscard]] Result<void> resume_reads() const;
 
+    /// The loop this connection lives on; null for an inert handle. Handles with the same link
+    /// are served by the same loop thread (send_to_many groups by it).
+    [[nodiscard]] const std::shared_ptr<LoopLink>& link() const noexcept {
+        return link_;
+    }
+
 private:
     std::shared_ptr<LoopLink> link_;
     ConnectionId id_ = 0;
 };
+
+/// Send one message to many connections, costing the loops one queue slot per kBulkChunk
+/// recipients instead of one per recipient (ADR-0034). Recipients are grouped by loop; inside a
+/// loop they keep the order given, and every chunk of this call is posted before the call returns,
+/// so successive calls reach one connection in call order. A chunk is accepted or refused whole.
+/// Thread-affinity: any thread.
+[[nodiscard]] BulkSendReport send_to_many(std::span<const SessionHandle> targets,
+                                          const SharedMessage& message);
 
 }  // namespace wsrv
