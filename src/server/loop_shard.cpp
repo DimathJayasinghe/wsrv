@@ -51,6 +51,7 @@ LoopShard::LoopShard(Key /*unused*/,
                      std::function<void()> on_drained)
     : shared_{shared}, bank_{shared.banks.claim()}, on_drained_{std::move(on_drained)},
       loop_{std::move(loop)} {
+    loop_->set_iteration_end([factory = &shared_.factory] { factory->on_loop_iteration_end(); });
     table_ = std::make_unique<ConnectionTable>(*loop_,
                                                [this](const Endpoint& peer) { on_removed(peer); });
     host_ = std::make_unique<LoopHost>(*loop_, shared_.clock, shared_.logger, *table_);

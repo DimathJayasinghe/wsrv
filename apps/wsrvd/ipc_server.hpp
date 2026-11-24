@@ -113,7 +113,8 @@ private:
     /// stopped reading). Decide what happens to the connections it knew.
     void application_lost(bool stalled) noexcept;
     /// Ask the loop to report the backend's event_fd again (it is edge-triggered): used when the
-    /// pump stops with events still queued but wants to come back on a later loop iteration.
+    /// pump stops with events still queued but wants to come back on a later loop iteration (when
+    /// the queue's wake-up is still owed, the loop that owes it supplies the edge; ADR-0035).
     void rearm_event_source() noexcept;
 
     void accept_burst() noexcept;

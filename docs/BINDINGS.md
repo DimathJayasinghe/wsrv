@@ -62,7 +62,7 @@ wsrv_status  wsrv_config_set(wsrv_config*, const char *key, const char *val, wsr
 wsrv_status  wsrv_server_create(const wsrv_config*, wsrv_server **out, wsrv_error *err);
 wsrv_status  wsrv_server_start(wsrv_server*, wsrv_error*);    /* spawns the I/O thread, waits until listening */
 uint16_t     wsrv_server_port(const wsrv_server*);
-int          wsrv_server_event_fd(const wsrv_server*);        /* readable when events pending (eventfd) */
+int          wsrv_server_event_fd(const wsrv_server*);        /* readable when events wait (eventfd); may lag by one loop iteration */
 wsrv_status  wsrv_poll(wsrv_server*, wsrv_event *out, uint32_t timeout_ms); /* host thread drains */
 void         wsrv_event_release(wsrv_event*);
 wsrv_status  wsrv_send_text(wsrv_server*, wsrv_conn_id, const char*, size_t);   /* any-thread, non-blocking */

@@ -111,6 +111,13 @@ public:
     /// an empty task.
     [[nodiscard]] Result<void> defer(Task task);
 
+    /// Run `hook` once at the end of every iteration, on the loop's thread, after the I/O events,
+    /// timers, tasks and deferred tasks of that iteration (ADR-0035). It is how work that handlers
+    /// batched during the iteration is paid once. Call it before the loop runs (it is not
+    /// synchronised). An exception is contained and counted like a task failure. The hook must be
+    /// quick and must not block: it delays the next iteration.
+    void set_iteration_end(Task hook);
+
     /// Run `task` once, `delay` from now (by the injected clock). Error{BufferFull} at max_timers.
     [[nodiscard]] Result<TimerHandle> run_after(std::chrono::milliseconds delay, Task task);
     /// @return true if the timer was still pending. Safe on fired, cancelled and unknown timers.
@@ -189,6 +196,7 @@ private:
     std::atomic<bool> stopping_{false};
     std::atomic<std::thread::id> owner_;
     std::atomic<std::uint64_t> task_failures_{0};
+    Task iteration_end_;  // loop thread only; set before the loop runs
 };
 
 }  // namespace wsrv

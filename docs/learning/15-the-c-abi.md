@@ -34,7 +34,7 @@ while (wsrv_poll(server, &ev, 0) == WSRV_OK) {
 }
 ```
 
-`wsrv_server_event_fd()` returns an `eventfd` that is readable exactly while events wait, so a host with its own event loop (ReactPHP, Revolt, `stream_select`, asyncio, libuv) can wait on it with everything else and call `wsrv_poll(.., 0)` when it fires. The descriptor and the queue are updated together under one mutex, so a wake-up cannot be lost between "look" and "sleep" (the trap from lesson 13, section 4).
+`wsrv_server_event_fd()` returns an `eventfd` that becomes readable when events wait (a message's wake-up is batched per loop iteration, ADR-0035, lesson 49, so it can lag by one iteration), so a host with its own event loop (ReactPHP, Revolt, `stream_select`, asyncio, libuv) can wait on it with everything else and call `wsrv_poll(.., 0)` when it fires. The descriptor and the queue are updated together under one mutex, so a wake-up cannot be lost between "look" and "sleep" (the trap from lesson 13, section 4).
 
 ### Commands go the other way, by id
 `wsrv_send_text(server, conn, ...)` takes a number, never a pointer. The library finds the connection's `SessionHandle` (lesson 13) and posts the send to the owning loop. An id for a connection that has ended gives `WSRV_ERR_NO_SUCH_CONN`; a pointer would have been a use-after-free. Ids are process-unique and never reused. "OK" means *queued for the loop*, not *delivered*.
@@ -78,7 +78,7 @@ The `wsrv.h` file is excluded from clang-tidy on purpose (`HeaderFilterRegex` co
 - **Passing the wrong `struct_size`.** The library refuses a `wsrv_event` whose `struct_size` is smaller than its own; this is how a *newer* library can add fields at the end and still serve an *older* program.
 - **Freeing the event data yourself.** `ev.data` points into library memory; copy what you need, then call `wsrv_event_release`.
 - **Polling from two threads.** `wsrv_poll` is single-consumer by design; it is documented, not locked.
-- **Reading `event_fd` yourself.** It is level-triggered by the queue's state. Draining it by hand desynchronises it. Only `wsrv_poll` touches it.
+- **Reading `event_fd` yourself.** It is level-triggered by the queue's state (and the wake-up, ADR-0035). Draining it by hand desynchronises it. Only `wsrv_poll` touches it.
 - **Calling into a destroyed server from a callback thread of your own.** `wsrv_server_destroy` must be the last call on that server, from one thread.
 - **Assuming "OK" means delivered.** It means handed to the connection's loop.
 - **Exposing a C++ type "just this once".** One `std::string` in the header and every binding breaks on the next compiler.
