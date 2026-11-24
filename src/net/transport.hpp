@@ -47,8 +47,8 @@ public:
 
     /// True when a read that returns fewer bytes than the buffer it was given proves that nothing
     /// more is waiting (a stream socket: the kernel hands out what it has, up to the buffer). The
-    /// connection then skips the read that would only answer "would block". A transport that buffers
-    /// or reads in records (TLS) cannot say so.
+    /// connection then skips the read that would only answer "would block". A transport that
+    /// buffers or reads in records (TLS) cannot say so.
     [[nodiscard]] virtual bool short_read_means_drained() const noexcept {
         return false;
     }

@@ -1154,7 +1154,8 @@ TEST_F(ConnectionTest, AShortReadFromAStreamTransportEndsTheEventWithoutAnotherR
     transport->read_calls = 0;
     send_frame(Opcode::Text, "hello");
     EXPECT_EQ(script.texts.size(), 1U);
-    EXPECT_EQ(transport->read_calls, 1U) << "the kernel gave all it had: no read to hear WouldBlock";
+    EXPECT_EQ(transport->read_calls, 1U)
+        << "the kernel gave all it had: no read to hear WouldBlock";
 }
 
 TEST_F(ConnectionTest, ATransportThatCannotVouchForItselfReadsOnUntilItAnswersWouldBlock) {

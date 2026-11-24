@@ -21,10 +21,13 @@ ForkGuard::ForkGuard(bool use_wipe_on_fork) noexcept {
     if (page <= 0) {
         return;
     }
-    void* memory =
-        ::mmap(nullptr, static_cast<std::size_t>(page), PROT_READ | PROT_WRITE,
-               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);  // NOLINT(cppcoreguidelines-pro-type-vararg)
-    if (memory == MAP_FAILED) {                      // NOLINT(performance-no-int-to-ptr)
+    void* memory = ::mmap(nullptr,
+                          static_cast<std::size_t>(page),
+                          PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS,
+                          -1,
+                          0);    // NOLINT(cppcoreguidelines-pro-type-vararg)
+    if (memory == MAP_FAILED) {  // NOLINT(performance-no-int-to-ptr)
         return;
     }
     if (::madvise(memory, static_cast<std::size_t>(page), MADV_WIPEONFORK) != 0) {
