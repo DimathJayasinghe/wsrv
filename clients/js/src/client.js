@@ -12,6 +12,7 @@ const DEFAULTS = {
   ticketParam: 'ticket',
   backoff: { min: 500, max: 15_000, factor: 2 },
   resetAfter: 10_000,
+  connectTimeout: 15_000, // ms an attempt (ticket and handshake) may take before it is abandoned; 0 = never
   maxRetries: Infinity,
   queueWhileOffline: false,
   maxQueue: 100,
@@ -35,6 +36,7 @@ export class WsrvClient {
   #attempt = 0; // consecutive failed attempts: the backoff exponent
   #retries = 0; // attempts since the last stable connection: compared with maxRetries
   #timer = null;
+  #connectTimer = null; // the deadline of the attempt in progress
   #openedAt = 0;
   #everOpened = false; // lets 'open' say whether this is a reconnect
   #rooms = new Set();
@@ -61,6 +63,10 @@ export class WsrvClient {
     const { min, max, factor } = this.#options.backoff;
     if (!(min > 0) || !(max >= min) || !(factor >= 1)) {
       throw new RangeError('backoff needs 0 < min <= max and factor >= 1');
+    }
+    const { connectTimeout } = this.#options;
+    if (typeof connectTimeout !== 'number' || !Number.isFinite(connectTimeout) || connectTimeout < 0) {
+      throw new RangeError('connectTimeout is a number of milliseconds, 0 or more (0 turns the deadline off)');
     }
   }
 
@@ -119,6 +125,7 @@ export class WsrvClient {
     const wasOpen = this.#state === 'open' || this.#state === 'connecting';
     this.#state = 'closed';
     this.#clearTimer();
+    this.#clearConnectTimer();
     this.#unwatchOnline();
     this.#queue = [];
     const ws = this.#ws;
@@ -152,6 +159,7 @@ export class WsrvClient {
   async #attemptConnection() {
     this.#state = 'connecting';
     const generation = ++this.#generation;
+    this.#armConnectTimeout(generation);
     let url;
     try {
       url = await this.#urlWithTicket();
@@ -176,8 +184,61 @@ export class WsrvClient {
     this.#ws = ws;
     ws.onopen = () => this.#handleOpen(generation);
     ws.onmessage = (event) => generation === this.#generation && this.#emit('message', { data: event.data });
-    ws.onerror = (event) => generation === this.#generation && this.#emit('error', { error: event });
+    ws.onerror = (event) => this.#handleSocketError(generation, ws, event);
     ws.onclose = (event) => this.#handleClose(generation, event);
+  }
+
+  #handleSocketError(generation, ws, event) {
+    if (generation !== this.#generation) {
+      return;
+    }
+    this.#emit('error', { error: event });
+    if (generation === this.#generation && this.#state === 'connecting') {
+      // The socket failed before it opened. The specification sends a 'close' next, but Node 22's
+      // built-in WebSocket (undici 6.x, e.g. the official node:22 images) does not: it leaves the socket
+      // in CONNECTING for ever, and waiting for the close would leave this client stuck. An error
+      // before open is the end of the attempt.
+      this.#failAttempt(generation, ws, { code: 1006, reason: '', wasClean: false });
+    }
+  }
+
+  /** The attempt cannot finish: report it the way a close would, back off, and stop listening to its socket. */
+  #failAttempt(generation, ws, info) {
+    this.#handleClose(generation, info);
+    this.#generation += 1; // whatever the abandoned socket still reports (a close, perhaps) is not ours any more
+    try {
+      ws?.close();
+    } catch {
+      // a socket that cannot be closed is already gone
+    }
+  }
+
+  /** Every attempt has a deadline, so no platform behaviour can leave the client in 'connecting' for ever. */
+  #armConnectTimeout(generation) {
+    this.#clearConnectTimer();
+    const { connectTimeout } = this.#options;
+    if (connectTimeout > 0) {
+      this.#connectTimer = setTimeout(() => this.#connectTimedOut(generation), connectTimeout);
+    }
+  }
+
+  #connectTimedOut(generation) {
+    this.#connectTimer = null;
+    if (generation !== this.#generation || this.#state !== 'connecting') {
+      return;
+    }
+    const error = new Error(`no connection after ${this.#options.connectTimeout} ms`);
+    this.#emit('error', { error });
+    if (generation === this.#generation) {
+      this.#failAttempt(generation, this.#ws, { code: 1006, reason: 'connect timeout', wasClean: false });
+    }
+  }
+
+  #clearConnectTimer() {
+    if (this.#connectTimer !== null) {
+      clearTimeout(this.#connectTimer);
+      this.#connectTimer = null;
+    }
   }
 
   async #urlWithTicket() {
@@ -195,6 +256,7 @@ export class WsrvClient {
     if (generation !== this.#generation) {
       return;
     }
+    this.#clearConnectTimer();
     const reconnect = this.#everOpened;
     this.#everOpened = true;
     this.#state = 'open';
@@ -212,6 +274,7 @@ export class WsrvClient {
     if (generation !== this.#generation) {
       return;
     }
+    this.#clearConnectTimer();
     const wasOpen = this.#state === 'open';
     this.#ws = null;
     const lasted = wasOpen ? Date.now() - this.#openedAt : 0;
@@ -222,6 +285,9 @@ export class WsrvClient {
     const info = { code: event?.code ?? 1006, reason: event?.reason ?? '', wasClean: Boolean(event?.wasClean) };
     const willRetry = this.#mayRetry(info);
     this.#emit('close', { ...info, willRetry });
+    if (generation !== this.#generation) {
+      return; // a listener called close() (or connect()): what happens next is not ours to schedule
+    }
     if (willRetry) {
       this.#scheduleRetry(info);
     } else {
@@ -239,6 +305,7 @@ export class WsrvClient {
   }
 
   #scheduleRetry(info) {
+    this.#clearConnectTimer();
     if (this.#retries >= this.#options.maxRetries) {
       this.#state = 'closed';
       this.#unwatchOnline();

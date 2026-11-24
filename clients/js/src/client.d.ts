@@ -24,6 +24,12 @@ export interface WsrvClientOptions {
   backoff?: BackoffOptions;
   /** A connection that stayed open this long (ms) makes the next failure start the backoff over (default 10000). */
   resetAfter?: number;
+  /**
+   * An attempt (the ticket call and the handshake) that has not opened after this many milliseconds is
+   * abandoned and retried with the backoff, so a socket that never answers cannot leave the client in
+   * "connecting" for ever. 0 turns the deadline off (default 15000).
+   */
+  connectTimeout?: number;
   /** Give up after this many consecutive attempts without a stable connection (default Infinity). */
   maxRetries?: number;
   /** Return false to stop reconnecting after a close. Code 1008 never reconnects. */

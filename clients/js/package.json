@@ -16,7 +16,7 @@
   "engines": { "node": ">=22" },
   "repository": { "type": "git", "url": "git+https://github.com/DimathJayasinghe/wsrv.git", "directory": "clients/js" },
   "scripts": {
-    "test": "node --test test/client.test.js test/interop.test.js"
+    "test": "node --test test/client.test.js test/platform.test.js test/interop.test.js"
   },
   "private": true
 }

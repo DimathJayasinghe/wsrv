@@ -24,6 +24,7 @@ client.send(JSON.stringify({ text: 'hi' })); // false if not connected: the mess
 ## What it does
 
 - **Backoff:** 500 ms doubling to 15 s, each delay jittered to 50-100% so a crowd of clients does not return in step. The backoff starts over only after a connection stayed open 10 s (`resetAfter`), so a server that accepts and drops immediately is not hammered.
+- **Never stuck connecting:** an attempt that fails before the socket opens ends at the `error`, without waiting for a `close` (Node 22's built-in WebSocket, undici 6.x as in the official `node:22` images, fires `error` for a failed handshake and never `close`, and a client that waited for it would never reconnect). Every attempt also has a deadline, `connectTimeout` (default 15 s, ticket call included), after which it is abandoned and retried.
 - **Ticket per attempt:** `ticket` may be a string or an (async) function. A function that throws is an `error` event and a backoff, not a crash.
 - **Rooms:** `join(room)` / `leave(room)` send `join <room>` / `leave <room>` (the protocol of the examples; change it with `joinMessage` / `leaveMessage`). The rooms still wanted are sent again after every reconnect. The daemon never lets a browser name a room: your worker decides on that message.
 - **Stops retrying** on `close()`, on close code 1008 (policy: the server refused this client), when `shouldReconnect(info)` returns false, and after `maxRetries`.
@@ -44,7 +45,8 @@ client.send(JSON.stringify({ text: 'hi' })); // false if not connected: the mess
 
 ```sh
 node --test test/client.test.js                      # unit tests: fake WebSocket, fake timers
+node --test test/platform.test.js                    # the platform's own WebSocket against a server that refuses the handshake
 WSRVD=/path/to/wsrvd node --test test/interop.test.js # real wsrvd + a supervised PHP worker, both restarted
 ```
 
-The interop test connects a client, kills the daemon with `SIGKILL` and starts it again on the same port, then stops and restarts the worker, and checks that the client reconnects each time with a new ticket, re-joins its room and gets answers. CTest runs both as `js_unit` and `js_interop` when Node 22+ is installed.
+The interop test connects a client, kills the daemon with `SIGKILL` and starts it again on the same port, then stops and restarts the worker, and checks that the client reconnects each time with a new ticket, re-joins its room and gets answers. CTest runs them as `js_unit` (the unit and platform tests) and `js_interop` when Node 22+ is installed.

@@ -21,3 +21,16 @@ A dependency-free ES module in `clients/js` (`WsrvClient`), for browsers and Nod
 + No dependency, no build, one file to audit.
 − Messages sent while disconnected are lost unless the application opts in to the bounded queue; replay of messages missed during the gap needs application-level sequencing.
 − A second language to test and release: the JS tests run in CI next to the PHP ones, and the package is versioned with the rest.
+
+## Amendments
+
+### A1 (2026-11-24): an attempt that fails before it opens ends at the error, and every attempt has a deadline
+
+**Problem.** The 1.0 soak test (a fleet of clients against a daemon that is restarted, killed and cut off) found every client stuck in `connecting` for ever after the first restart. The client waited for a `close` event after a failed attempt, as the WebSocket specification promises. Node 22's built-in WebSocket (undici 6.x, which the official `node:22` images ship) fires `error` for a failed opening handshake (refused, reset, a `503`, garbage) and **never fires `close`**: the socket stays in `CONNECTING`. One failed attempt, for example while the daemon restarts, therefore ended reconnecting for good. Browsers are not affected.
+
+**Decision.**
+- An `error` on a socket that has not opened ends the attempt at once: the client reports it as a `close` (`1006`, `willRetry` as usual), backs off, closes the socket and ignores anything it reports later, so a platform that does send the `close` afterwards causes one retry, not two.
+- Every attempt has a deadline, `connectTimeout` (default 15 000 ms, `0` turns it off), covering the `ticket` call and the handshake. On expiry the attempt is reported as an `error` and a `close` (`1006`, reason `connect timeout`), abandoned and retried with the backoff. Whatever else a platform does (or does not do), the client cannot stay in `connecting` for ever. The default is five times the daemon's `handshake_decision_timeout_ms` (3 s), so a slow but healthy handshake is not cut off.
+- `close()` called from a `close` listener is final: the retry that the close handler was about to schedule is not.
+
+**Consequences.** One new option; no change to the wire, the events or the defaults of the other options. Verified by unit tests (fake socket that errors without closing, with and without a following close; the deadline with a silent socket and with a ticket function that never settles), by `test/platform.test.js` against the platform's own WebSocket (it fails on the affected Node builds without the fix), and by the soak run.
