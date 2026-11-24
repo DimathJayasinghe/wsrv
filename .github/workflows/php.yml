@@ -1,6 +1,7 @@
 name: php
 
-# The PHP binding (bindings/php) on the oldest PHP with security support and on the latest PHP, in ONE
+# The PHP binding (bindings/php) and the JavaScript client (clients/js, its js_ tests run here too) on the
+# oldest PHP with security support and on the latest PHP, in ONE
 # job and only when something it depends on changes. Cost design (the repository's CI minutes are
 # scarce): ci.yml ignores bindings/php/**, so a PHP-only change costs this job (one build of wsrvd and
 # libwsrv.so, two quick test runs) and not the three C++ jobs; a change to the C ABI or the sidecar
@@ -10,9 +11,9 @@ name: php
 on:
   push:
     branches: [main]
-    paths: ['composer.json', '.gitattributes', 'bindings/php/**', 'include/wsrv/wsrv.h', 'src/capi/**', 'apps/wsrvd/**', 'src/ipc/**', '.github/workflows/php.yml']
+    paths: ['composer.json', '.gitattributes', 'bindings/php/**', 'clients/js/**', 'include/wsrv/wsrv.h', 'src/capi/**', 'apps/wsrvd/**', 'src/ipc/**', '.github/workflows/php.yml']
   pull_request:
-    paths: ['composer.json', '.gitattributes', 'bindings/php/**', 'include/wsrv/wsrv.h', 'src/capi/**', 'apps/wsrvd/**', 'src/ipc/**', '.github/workflows/php.yml']
+    paths: ['composer.json', '.gitattributes', 'bindings/php/**', 'clients/js/**', 'include/wsrv/wsrv.h', 'src/capi/**', 'apps/wsrvd/**', 'src/ipc/**', '.github/workflows/php.yml']
 
 permissions:
   contents: read
