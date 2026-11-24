@@ -1145,6 +1145,62 @@ TEST_F(ConnectionTest, APausedConnectionStillWatchesWritabilityWhileOutputIsBloc
     EXPECT_TRUE(wsrv::has(host.interest_now, PollEvents::Write));
 }
 
+// ---- a short read from a stream socket ends the event without a read that would only block
+// ----------
+
+TEST_F(ConnectionTest, AShortReadFromAStreamTransportEndsTheEventWithoutAnotherRead) {
+    establish();
+    transport->stream_like(true);
+    transport->read_calls = 0;
+    send_frame(Opcode::Text, "hello");
+    EXPECT_EQ(script.texts.size(), 1U);
+    EXPECT_EQ(transport->read_calls, 1U) << "the kernel gave all it had: no read to hear WouldBlock";
+}
+
+TEST_F(ConnectionTest, ATransportThatCannotVouchForItselfReadsOnUntilItAnswersWouldBlock) {
+    establish();  // the fake is not stream-like by default, like TLS
+    transport->read_calls = 0;
+    send_frame(Opcode::Text, "hello");
+    EXPECT_EQ(script.texts.size(), 1U);
+    EXPECT_EQ(transport->read_calls, 2U);
+}
+
+TEST_F(ConnectionTest, AFullReadOnAStreamTransportIsFollowedByAnotherUntilOneComesBackShort) {
+    open_with_tiny_reads(*this, 16);
+    transport->stream_like(true);
+    script.echo = true;
+    for (int i = 0; i < 3; ++i) {
+        const auto frame = client_frame(Opcode::Text, true, "buffered");
+        transport->feed(wsrv::ByteView{frame});
+    }
+    transport->read_calls = 0;
+    readable();
+    EXPECT_EQ(script.texts.size(), 3U) << "42 bytes through a 16-byte buffer: 16, 16, then 10";
+    EXPECT_EQ(transport->read_calls, 3U);
+    EXPECT_EQ(transport->unread(), 0U);
+}
+
+TEST_F(ConnectionTest, APeerThatIsClosingIsReadToTheEndEvenAfterAShortRead) {
+    establish();
+    transport->stream_like(true);
+    const auto frame = client_frame(Opcode::Text, true, "last words");
+    transport->feed(wsrv::ByteView{frame});
+    transport->feed_eof();
+    transport->read_calls = 0;
+    conn->on_event(PollEvents::Read | PollEvents::Hangup);  // the FIN came with the data
+    EXPECT_EQ(script.texts.size(), 1U);
+    EXPECT_EQ(transport->read_calls, 2U) << "the read that returns 0 must still happen";
+    EXPECT_TRUE(conn->finished());
+}
+
+TEST_F(ConnectionTest, APeerThatIsClosingAndLeftNothingIsStillSeen) {
+    establish();
+    transport->stream_like(true);
+    transport->feed_eof();
+    conn->on_event(PollEvents::Read | PollEvents::Hangup);
+    EXPECT_TRUE(conn->finished());
+}
+
 TEST_F(ConnectionTest, APeerThatHangsUpWhilePausedIsStillSeenAndTheConnectionEnds) {
     establish();
     script.on_text = [&](Session& s, std::string_view) { s.pause_reads(); };

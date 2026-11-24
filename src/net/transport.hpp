@@ -45,6 +45,14 @@ public:
         return false;
     }
 
+    /// True when a read that returns fewer bytes than the buffer it was given proves that nothing
+    /// more is waiting (a stream socket: the kernel hands out what it has, up to the buffer). The
+    /// connection then skips the read that would only answer "would block". A transport that buffers
+    /// or reads in records (TLS) cannot say so.
+    [[nodiscard]] virtual bool short_read_means_drained() const noexcept {
+        return false;
+    }
+
     /// True while the transport holds input it already took from the descriptor but has not handed
     /// out (TLS: decrypted data or whole records not yet processed). The kernel will not report
     /// that data again, so a connection that stopped reading early (read budget, back-pressure)

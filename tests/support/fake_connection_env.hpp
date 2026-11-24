@@ -104,6 +104,14 @@ public:
         yield_next_read_ = true;
         held_input_ = true;
     }
+    /// Behave like a stream socket: a read that returns fewer bytes than asked proves the kernel
+    /// buffer is empty (PlainTransport). Off by default, like TLS.
+    void stream_like(bool on) {
+        stream_like_ = on;
+    }
+    [[nodiscard]] bool short_read_means_drained() const noexcept override {
+        return stream_like_;
+    }
     [[nodiscard]] bool wants_write() const noexcept override {
         return held_output_;
     }
@@ -133,6 +141,7 @@ private:
     bool held_output_ = false;
     bool held_input_ = false;
     bool yield_next_read_ = false;
+    bool stream_like_ = false;
     static constexpr std::size_t kUnlimited = static_cast<std::size_t>(-1);
     std::size_t write_capacity_ = kUnlimited;
 };

@@ -21,6 +21,9 @@ public:
     [[nodiscard]] int fd() const noexcept override {
         return fd_.get();
     }
+    [[nodiscard]] bool short_read_means_drained() const noexcept override {
+        return true;  // a stream socket hands out everything it has, up to the buffer
+    }
 
 private:
     Fd fd_;
