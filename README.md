@@ -70,13 +70,14 @@ harness in [`bench/compare/`](bench/compare/README.md) to run yourself):
 
 | | wsrv | Workerman 5 | Swoole | Reverb |
 |---|---|---|---|---|
-| Echo, four CPUs (messages/s) | **213,148** | 115,920 | 128,020 | n/a |
-| Echo, one CPU (messages/s) | 58,091 | **107,937** | **107,808** | n/a |
-| Broadcast to 5 000 subscribers, four CPUs (ms to the last one) | **22.2** | 45.1 | 42.0 | 72.7 |
-| Memory per idle connection, 10 000 connections | 8.2 KiB | 8.8 KiB | 8.7 KiB | 20.5 KiB |
+| Echo, four CPUs (messages/s) | **192,036** | 100,582 | 112,610 | n/a |
+| Echo, one CPU (messages/s) | 99,287 | 112,135 | **126,032** | n/a |
+| Broadcast to 5 000 subscribers, four CPUs (ms to the last one) | **31.1** | 58.6 | 52.2 | 89.5 |
+| Memory per idle connection, 10 000 connections | **8.3 KiB** | 8.8 KiB | 8.9 KiB | 20.5 KiB |
 
-wsrv is ahead when it has several cores and behind per core on echo: the daemon and the PHP worker are
-two processes, the others are one. One laptop, a load generator written by this project, small messages
+wsrv is ahead when it has several cores (about 1.7 to 1.9 times the echo of the others with 512 connections)
+and behind per core on echo, by 11 to 21 percent on one CPU: the daemon and the PHP worker are two
+processes, the others are one. One laptop, a load generator written by this project, small messages
 and no TLS: read the page before you quote a number.
 
 ## Stability
