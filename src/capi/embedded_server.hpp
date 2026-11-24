@@ -88,7 +88,8 @@ public:
     /// Wait up to `timeout` for the next event (0 = only look). Returns nothing on timeout. Before
     /// start, after nothing is left, or from a forked child, it returns nothing.
     [[nodiscard]] std::optional<HostEvent> poll(std::chrono::milliseconds timeout);
-    /// A descriptor that is readable while events wait, for the host's own event loop.
+    /// A descriptor that becomes readable when events wait, for the host's own event loop; it may
+    /// lag poll() by one loop iteration (EventQueue, ADR-0035).
     [[nodiscard]] int event_fd() const noexcept {
         return bridge_->events().event_fd();
     }

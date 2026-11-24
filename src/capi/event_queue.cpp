@@ -144,8 +144,10 @@ void EventQueue::flush_wake() {
         wake_owed_ = false;
         owed_hint_.store(false, std::memory_order_relaxed);
     }
-    // A failed write leaves the wake-up owed: the next flush (the next loop iteration) tries again,
-    // and the events stay queued, so the host loses nothing but time.
+    // A failed write (a closed descriptor, retries exhausted) leaves the wake-up owed. The next
+    // flush, from any loop's next iteration, tries again, and a host that polls still finds the
+    // events queued: it loses time, not events. An idle server has no next iteration until its
+    // next I/O.
 }
 
 std::optional<Popped> EventQueue::try_pop() {

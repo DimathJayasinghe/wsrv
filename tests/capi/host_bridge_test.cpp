@@ -763,6 +763,33 @@ TEST_F(HostBridgeWakeTest, MessagesWaitForTheEndOfTheIterationAndThenWakeTheHost
     EXPECT_FALSE(readable());
 }
 
+TEST_F(HostBridgeWakeTest, ACloseAndAnErrorWakeTheHostAtOnceLikeAnOpen) {
+    handler_->on_open(session_);
+    ASSERT_TRUE(bridge_->poll().has_value());
+    ASSERT_FALSE(readable());
+    handler_->on_error(session_, Error{ErrorCode::Io, "peer reset"});
+    EXPECT_TRUE(readable()) << "an Error is a rare event and is not deferred";
+    ASSERT_TRUE(bridge_->poll().has_value());
+    ASSERT_FALSE(readable());
+    handler_->on_close(session_, CloseInfo{CloseCode::GoingAway, "bye", true});
+    EXPECT_TRUE(readable()) << "a Close is never held back, it may come outside an iteration";
+    const auto closed = bridge_->poll();
+    ASSERT_TRUE(closed.has_value());
+    EXPECT_EQ(closed->type, HostEventType::Close);
+}
+
+TEST_F(HostBridgeWakeTest, ACloseQueuedBehindAnOwedMessageIsPaidByThatMessagesFlush) {
+    handler_->on_open(session_);
+    ASSERT_TRUE(bridge_->poll().has_value());
+    handler_->on_text(session_, "owes the wake");
+    // The queue is not empty, so the Close writes nothing of its own.
+    handler_->on_close(session_, CloseInfo{CloseCode::GoingAway, "", true});
+    EXPECT_FALSE(readable());
+    bridge_->on_loop_iteration_end();
+    EXPECT_TRUE(readable()) << "the loop that owes the wake-up pays it for the Close too";
+    EXPECT_EQ(bridge_->events().pending(), 2U);
+}
+
 TEST_F(HostBridgeWakeTest, AHostThatPollsBeforeTheEndOfTheIterationLosesNothing) {
     handler_->on_open(session_);
     ASSERT_TRUE(bridge_->poll().has_value());
