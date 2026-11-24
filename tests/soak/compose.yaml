@@ -1,0 +1,45 @@
+# The soak stack: the RELEASE image of wsrvd, a supervised PHP worker (the checkout's source) and a
+# fleet of reconnecting JavaScript clients (clients/js). tests/soak/soak.py runs it and breaks it.
+name: wsrv-soak
+
+services:
+  wsrvd:
+    image: ${WSRVD_IMAGE:-wsrvd:local}
+    restart: "no"
+    mem_limit: 1g
+    environment:
+      WSRVD_THREADS: "2"
+      WSRVD_BROKER: "true"
+      WSRVD_ALLOW_MISSING_ORIGIN: "true"
+      WSRVD_MAX_CONNECTIONS: "5000"
+      WSRVD_MAX_CONNECTIONS_PER_IP: "0"               # one load container is one address
+      WSRVD_MAX_NEW_CONNECTIONS_PER_IP_PER_SECOND: "0"
+      WSRVD_SHUTDOWN_GRACE_MS: "1000"
+    volumes:
+      - ipc:/run/wsrv
+  worker:
+    image: php:8.3-cli
+    restart: "no"
+    mem_limit: 512m
+    user: "10001:10001"
+    depends_on: [wsrvd]
+    volumes:
+      - ipc:/run/wsrv
+      - ./worker.php:/app/worker.php:ro
+      - ../../bindings/php/src:/wsrv-src:ro
+    command: ["php", "/app/worker.php"]
+  load:
+    image: node:22-slim
+    restart: "no"
+    mem_limit: 1g
+    depends_on: [wsrvd]
+    environment:
+      TARGET: ws://wsrvd:8080/
+      CLIENTS: ${SOAK_CLIENTS:-200}
+    volumes:
+      - ./load.mjs:/soak/load.mjs:ro
+      - ${SOAK_CLIENT_SRC:-../../clients/js/src}:/soak/client:ro   # override to test a client from another checkout
+    command: ["node", "/soak/load.mjs"]
+
+volumes:
+  ipc:
