@@ -154,7 +154,8 @@ if(WSRV_NODE)
     string(REGEX REPLACE "^v([0-9]+).*" "\\1" WSRV_NODE_MAJOR "${WSRV_NODE_VERSION}")
     if(WSRV_NODE_MAJOR GREATER_EQUAL 22)
         add_test(NAME js_unit
-            COMMAND ${WSRV_NODE} --test ${PROJECT_SOURCE_DIR}/clients/js/test/client.test.js)
+            COMMAND ${WSRV_NODE} --test ${PROJECT_SOURCE_DIR}/clients/js/test/client.test.js
+                ${PROJECT_SOURCE_DIR}/clients/js/test/platform.test.js)
         set_tests_properties(js_unit PROPERTIES LABELS js TIMEOUT 120)
         if(WSRV_PHP)
             add_test(NAME js_interop
