@@ -149,7 +149,9 @@ public:
             }
             if (round + 1 >= kMaxPumpRounds) {
                 // Events remain and the socket takes them, but other work deserves a turn.
-                // The backend's wake-up is edge-triggered: ask for a fresh edge.
+                // The backend's wake-up is edge-triggered: ask for a fresh edge. (If the queue is
+                // non-empty but its wake-up is still owed, the re-arm reports nothing and the
+                // owing loop's flush supplies the edge; ADR-0035.)
                 server_.rearm_event_source();
                 break;
             }

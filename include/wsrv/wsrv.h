@@ -183,8 +183,12 @@ WSRV_API wsrv_status wsrv_server_start(wsrv_server *server, wsrv_error *error);
 /* The port actually bound; 0 before a successful start. Any thread. */
 WSRV_API uint16_t wsrv_server_port(const wsrv_server *server);
 
-/* A descriptor that is readable while events wait: add it to your poll/epoll/select loop, then
- * call wsrv_poll(server, &ev, 0) until it returns WSRV_TIMEOUT. Do not read or close it. */
+/* A descriptor that becomes readable when events wait: add it to your poll/epoll/select loop, then
+ * call wsrv_poll(server, &ev, 0) until it returns WSRV_TIMEOUT. Do not read or close it. The
+ * server may pay a message's wake-up at the end of the I/O loop iteration that received it, so
+ * the descriptor can lag wsrv_poll() by that much; wsrv_poll() returns such an event already, and
+ * the descriptor never stays silent while an event waits (it is the wake-up that is batched, not
+ * the event). Do not use the descriptor's readability as a test that the queue is empty. */
 WSRV_API int wsrv_server_event_fd(const wsrv_server *server);
 
 /* Re-read tls_cert and tls_key and use them for connections accepted from now on (connections
