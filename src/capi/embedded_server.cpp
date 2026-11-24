@@ -101,7 +101,7 @@ EmbeddedServer::~EmbeddedServer() {
 }
 
 Result<void> EmbeddedServer::check_process() const {
-    if (::getpid() != owner_pid_) {
+    if (fork_guard_.forked(owner_pid_)) {
         return fail(ErrorCode::WrongProcess, "embedded server: used after fork(); create it after");
     }
     return {};

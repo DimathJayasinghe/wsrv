@@ -125,7 +125,7 @@ void Connection::on_event(PollEvents events) noexcept {
             reads_paused_ = false;  // a dead peer cannot be slowed down: drain it and see the end
         }
         if ((has(events, PollEvents::Read) && !reads_paused_) || dead_peer) {
-            on_readable();
+            on_readable(dead_peer);
         }
         if (phase_ != Phase::Finished && has(events, PollEvents::Write)) {
             flush();
@@ -161,7 +161,7 @@ void Connection::abort() {
 /// Edge-triggered: read until WouldBlock, but never more than the budget (EC-N07, EC-N08). If the
 /// budget runs out, rewatch() re-arms the edge so the kernel reports the remaining data in the next
 /// loop iteration, after every other ready descriptor had its turn.
-void Connection::on_readable() {
+void Connection::on_readable(bool peer_closing) {
     const ReadBudget& budget = ctx_.config.read;
     std::size_t reads = 0;
     std::size_t bytes = 0;
@@ -187,7 +187,11 @@ void Connection::on_readable() {
         }
         bytes += *got;
         count(Metric::BytesIn, *got);
+        const bool short_read = *got < ctx_.scratch.size();
         on_bytes(ctx_.scratch.first(*got));
+        if (short_read && !peer_closing && transport_->short_read_means_drained()) {
+            return;  // the kernel gave all it had: the next read would only say "would block"
+        }
     }
 }
 

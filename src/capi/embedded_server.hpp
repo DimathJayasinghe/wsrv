@@ -19,6 +19,7 @@
 #include <sys/types.h>
 
 #include "capi/embedded_config.hpp"
+#include "capi/fork_guard.hpp"
 #include "capi/host_bridge.hpp"
 
 namespace wsrv {
@@ -152,6 +153,7 @@ private:
     [[nodiscard]] Result<void> prepare_publish();
 
     const pid_t owner_pid_;
+    ForkGuard fork_guard_;
     const EmbeddedConfig config_;
     LinuxSyscalls sys_;
     std::unique_ptr<HostBridge> bridge_;

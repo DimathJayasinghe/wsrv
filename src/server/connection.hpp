@@ -136,7 +136,7 @@ private:
     enum class Phase : std::uint8_t { Handshaking, AwaitingDecision, Established, Finished };
 
     // reading
-    void on_readable();
+    void on_readable(bool peer_closing);
     void on_read_failed(const Error& error);
     void on_bytes(MutableByteView chunk);
     void on_handshake_bytes(MutableByteView chunk);

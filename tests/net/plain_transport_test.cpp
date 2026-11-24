@@ -157,4 +157,10 @@ TEST(PlainTransport, CloseReleasesTheDescriptorAndIsIdempotent) {
         f.transport.read(in).has_value());  // using a closed transport is an error, not a crash
 }
 
+TEST(PlainTransport, ASocketTransportVouchesThatAShortReadMeansTheKernelIsDrained) {
+    Fixture f;
+    EXPECT_TRUE(f.transport.short_read_means_drained());
+    EXPECT_FALSE(static_cast<const wsrv::ITransport&>(f.transport).wants_write());
+}
+
 }  // namespace
