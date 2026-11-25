@@ -32,7 +32,7 @@ Recommendation: ship **A + B**, with B implemented first for broadest reach (PHP
 ## 3. Stable C ABI (`include/wsrv/wsrv.h`)
 
 - Pure C99 header, opaque handles, no C++ types, no exceptions across the boundary, no allocation ownership ambiguity.
-- Versioned: `wsrv_abi_version()`; additive changes only within a major version; symbol visibility hidden except `WSRV_API` functions.
+- Versioned: `wsrv_abi_version()` (1.0 from wsrv 1.0, ADR-0016 A4); additive changes only within a major version; symbol visibility hidden except `WSRV_API` functions.
 - Thread-safety documented per function (`any-thread` vs `owner-thread`).
 
 Sketch:
