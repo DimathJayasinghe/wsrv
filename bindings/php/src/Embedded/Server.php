@@ -47,8 +47,8 @@ use Wsrv\WsrvException;
 final class Server
 {
     /** The header the cdef was made from (0.4). A library older than this lacks symbols; newer is additive. */
-    public const ABI_MAJOR = 0;
-    public const ABI_MINOR = 4;
+    public const ABI_MAJOR = 1;
+    public const ABI_MINOR = 0;
 
     private const HANDLERS = ['open', 'message', 'close', 'error', 'authenticate'];
 

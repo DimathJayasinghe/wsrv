@@ -34,8 +34,9 @@ extern "C" {
 #define WSRV_API
 #endif
 
-/* (major << 16) | minor. Compare the major with the one you compiled against. */
-#define WSRV_ABI_VERSION ((0u << 16) | 4u)
+/* (major << 16) | minor. Compare the major with the one you compiled against. From 1.0 the major
+ * changes only with wsrv 2.0 and a minor only adds (ADR-0016 amendment A4). */
+#define WSRV_ABI_VERSION ((1u << 16) | 0u)
 WSRV_API uint32_t wsrv_abi_version(void);
 
 typedef enum wsrv_status {
