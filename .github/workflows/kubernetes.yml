@@ -39,14 +39,15 @@ jobs:
           kind create cluster --wait 180s
           kind load docker-image wsrvd:ci
           kubectl get nodes
-      - name: Apply the reference manifest (this image, a stand-in worker, a random token)
+      - name: Apply the reference manifest (this image, a stand-in worker, a generated token)
         run: |
-          token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          # The way a user makes it (ADR-0039): the daemon's own generator, from the image built above.
+          docker run --rm -u "$(id -u)" -v "$RUNNER_TEMP:/out" wsrvd:ci --generate-token=/out/token
+          token="$(cat "$RUNNER_TEMP/token")"
           echo "::add-mask::$token"
-          echo "$token" > "$RUNNER_TEMP/token"
           # Only the values a user replaces are replaced: the images, the worker command, the token.
           sed -e 's|ghcr.io/dimathjayasinghe/wsrvd:[^ ]*|wsrvd:ci|g' \
-              -e "s|REPLACE-WITH-64-RANDOM-HEX-CHARACTERS-REPLACE-WITH-64-RANDOM-HEX-CHARS|$token|" \
+              -e "s|REPLACE-WITH-THE-CONTENTS-OF-A-FILE-MADE-BY-wsrvd---generate-token|$token|" \
               -e 's|image: registry.example.com/your-app-worker:latest.*|image: wsrvd:ci\n          command: ["sleep", "infinity"]|' \
               deploy/kubernetes/wsrv.yaml > "$RUNNER_TEMP/wsrv.yaml"
           grep -c 'wsrvd:ci' "$RUNNER_TEMP/wsrv.yaml"

@@ -213,7 +213,8 @@ constexpr std::string_view kBuiltInSocket{};
 
 /// The IPC token and the publish token, each read from its file with the permission checks of
 /// read_token_file. The publish token goes straight into the embedded config, never through the key
-/// table, and has the length floor of set_publish_token().
+/// table; it must be a generated one (ADR-0039) and keeps the length floor of set_publish_token()
+/// as the last defence.
 Result<void> read_secrets(Startup& startup, ISyscalls& sys) {
     if (!startup.config.token_file().empty()) {
         Result<std::string> token = read_token_file(sys, startup.config.token_file());
@@ -234,6 +235,15 @@ Result<void> read_secrets(Startup& startup, ISyscalls& sys) {
         Result<std::string> token = read_token_file(sys, startup.config.publish_token_file());
         if (!token) {
             return std::unexpected{token.error()};
+        }
+        // The endpoint is plain HTTP and its token the only authentication, so a long token somebody
+        // chose is as unsafe here as over TCP IPC (ADR-0039). The rule is new in 1.1 and the message
+        // says so, because it can stop a 1.0 configuration that worked. It never echoes the token.
+        if (!is_generated_token(*token)) {
+            return fail(ErrorCode::InvalidConfig,
+                        "config: from wsrv 1.1 the publish token must be one made by `wsrvd "
+                        "--generate-token=FILE` (a token you chose, however long, can be guessed); "
+                        "make a new one and give it to your publishers");
         }
         return startup.config.set_publish_token(std::move(*token));
     }
@@ -274,9 +284,10 @@ constexpr std::string_view kUsageText =
            "  --publish-port=PORT  --publish-host=ADDR (127.0.0.1)  --publish-token-file=FILE\n"
            "                             accept `POST /publish?topic=T` from other processes and\n"
            "                             send the body to the subscribers of T (needs\n"
-           "                             --broker=true); FILE holds a token of at least 32 bytes,\n"
-           "                             mode 0600; plain HTTP: keep it on loopback or a private\n"
-           "                             network, or put TLS in front\n"
+           "                             --broker=true); FILE holds a token made by\n"
+           "                             --generate-token (required from 1.1), mode 0600; plain\n"
+           "                             HTTP: keep it on loopback or a private network, or put\n"
+           "                             TLS in front\n"
            "  --max-connections-per-ip=N (100)  --max-new-connections-per-ip-per-second=N (50)\n"
            "                             per client address (IPv6: per /64); over a limit the\n"
            "                             client gets 429; 0 = no limit (behind a proxy every user\n"

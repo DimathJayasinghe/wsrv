@@ -27,8 +27,9 @@ namespace wsrv::wsrvd {
 ///                        At most one of ipc_socket and ipc_port; with neither, a build-time default
 ///                        socket (the official image's) if there is one, otherwise an error.
 ///   ipc_token_file       file holding the shared token; must be readable by its owner only
-///   publish_token_file   file holding the publish token (ADR-0028), same rules, at least 32 bytes;
-///                        required with publish_port, and there is no publish_token key
+///   publish_token_file   file holding the publish token (ADR-0028), same file rules; the token must
+///                        be one `wsrvd --generate-token` made (ADR-0039); required with
+///                        publish_port, and there is no publish_token key
 ///   ipc_max_frame        largest IPC frame after HELLO; default max_message_size + 64 KiB
 ///   ipc_hello_timeout_ms how long a new connection may take to say HELLO (default 5000)
 ///   ipc_stall_ms         how long the application may leave our output unread before we close

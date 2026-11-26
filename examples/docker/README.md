@@ -29,7 +29,7 @@ docker compose run --rm worker php /app/publish.php room.1 "hello from outside"
 subscribers=1 accepted=1 refused=0
 ```
 
-The first terminal prints `hello from outside`. Publishing needs the token in `/run/wsrv/publish.token`, which the one-shot `token-init` service creates in the shared volume; port 9200 is `expose:`d to the other containers and never published to your host. To publish from your own app container, give it that volume and `WSRV_PUBLISH_URL=http://wsrvd:9200`, then use `Wsrv\Publisher` (see [docs/LARAVEL.md](../../docs/LARAVEL.md)).
+The first terminal prints `hello from outside`. Publishing needs the token in `/run/wsrv/publish.token`, which the one-shot `token-init` service makes in the shared volume with `wsrvd --generate-token` (wsrv 1.1 accepts no other publish token, ADR-0039; a token a 1.0 run left in your volume is replaced the next time you `docker compose up`, and the publishers read the file on every call, so nothing else changes); port 9200 is `expose:`d to the other containers and never published to your host. To publish from your own app container, give it that volume and `WSRV_PUBLISH_URL=http://wsrvd:9200`, then use `Wsrv\Publisher` (see [docs/LARAVEL.md](../../docs/LARAVEL.md)).
 
 ## What you are looking at
 - `compose.yaml`: if port 8080 is busy, run `WSRV_PORT=18080 docker compose up --build`. Both services share the volume `/run/wsrv`, the daemon's private IPC socket directory.
