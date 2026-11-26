@@ -69,6 +69,29 @@ function pusher_read($ws): array
     return $f;
 }
 
+/**
+ * Like pusher_read(), but runs the worker while it waits for the frame: one the worker has yet to
+ * produce is waited for (up to $seconds), not missed because a fixed sleep was too short on a slow
+ * sanitizer build. stream_select() does not see the bytes PHP has already buffered, hence unread_bytes.
+ *
+ * @param resource $ws
+ */
+function pusher_read_when_ready($ws, Worker $worker, float $seconds = 10.0): array
+{
+    $deadline = microtime(true) + $seconds;
+    while (stream_get_meta_data($ws)['unread_bytes'] === 0) {
+        $read = [$ws];
+        $write = null;
+        $except = null;
+        if (stream_select($read, $write, $except, 0, 0) > 0) {
+            break;
+        }
+        assertTrue(microtime(true) < $deadline, "no frame within $seconds seconds");
+        $worker->step(0.02);
+    }
+    return pusher_read($ws);
+}
+
 /** @param resource $ws */
 function pusher_send($ws, string $event, array $data, ?string $channel = null): void
 {
@@ -284,7 +307,7 @@ $check('check_app_key: the right key (with the query pusher-js adds) is let in, 
 
 // ---- a page that joins all the channels it may in one burst, with the default limits --------------------
 
-$check('the defaults carry a page that subscribes to 64 channels at once, and the 65th is refused', function () use ($strict, $strictSettle) {
+$check('the defaults carry a page that subscribes to 64 channels at once, and the 65th is refused', function () use ($strict, $strictSettle, $strictWorker) {
     // pusher-js sends every subscribe back to back on load and after each reconnect, before the daemon
     // has answered one. This is that, against a real daemon, with a GatewayConfig left at its defaults
     // (quota 64, which is also the daemon's default broker_max_topics_per_connection).
@@ -298,22 +321,19 @@ $check('the defaults carry a page that subscribes to 64 channels at once, and th
     for ($i = 0; $i < 64; $i++) {
         pusher_send($ws, 'pusher:subscribe', ['channel' => "burst.$i"]);
     }
-    $strictSettle(1.0);
     $joined = [];
     for ($i = 0; $i < 64; $i++) {
-        $f = pusher_read($ws);
+        $f = pusher_read_when_ready($ws, $strictWorker);
         assertSame('pusher_internal:subscription_succeeded', $f['event'], "answer $i: " . json_encode($f));
         $joined[$f['channel']] = true;
     }
     assertSame(64, count($joined), 'every one of the 64 channels was answered once');
     pusher_send($ws, 'pusher:subscribe', ['channel' => 'burst.64']);
-    $strictSettle();
-    $f = pusher_read($ws);
+    $f = pusher_read_when_ready($ws, $strictWorker);
     assertSame('pusher:subscription_error', $f['event']);
     assertSame('LimitReached', $f['data']['type']);
     pusher_send($ws, 'pusher:ping', []);
-    $strictSettle();
-    assertSame('pusher:pong', pusher_read($ws)['event'], 'the connection is still open and served');
+    assertSame('pusher:pong', pusher_read_when_ready($ws, $strictWorker)['event'], 'the connection is still open and served');
     fclose($ws);
 });
 

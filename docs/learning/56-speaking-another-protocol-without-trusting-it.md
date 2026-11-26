@@ -48,4 +48,4 @@ The daemon answers a subscribe *later* (a STATUS with the request id). So the ga
 4. Write the test that would catch `JSON_THROW_ON_ERROR` being removed from `Frame::encode` for a hostile whisper.
 5. The gateway answers `pusher:signin` with 4200. Why is that safer than ignoring it, and what does a legitimate Echo user lose?
 6. `message_burst` cannot be smaller than `max_channels_per_connection` + 16. What does a page with all its channels see if you remove that rule and set the burst to 30? Which test fails, and which line of `GatewayConfig` is it?
-7. A client sends 50 whispers in a second on a private channel with the default limits. How many are relayed, how many errors come back, and is the connection still open after 100 seconds of that? Which two limits decide it?
+7. A client sends 50 whispers a second, every second, on a private channel with the default limits. How many a second are relayed and how many errors come back? Is the connection still open after 100 seconds, and if not, when does it close (work it out from the burst, the refill rate and `max_strikes`)? Which two limits decide it?
