@@ -198,7 +198,9 @@ private:
     template <class Call>
     void guarded(Call&& call);
 
-    void log(LogLevel level, std::string_view message) const;
+    void log(LogLevel level, std::string_view event, std::string_view message) const;
+    /// `conn_close` at debug level, with the close code in the text (no allocation).
+    void log_closed(CloseCode code) const;
     void count(Metric metric, std::uint64_t amount = 1) const noexcept;
 
     ConnectionId id_;

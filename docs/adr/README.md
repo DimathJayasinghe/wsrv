@@ -32,5 +32,14 @@ One decision per file, immutable once *Accepted* (supersede with a new ADR). Use
 | [0026](0026-php-package-and-native-library-distribution.md) | Composer package and distribution of `libwsrv.so` | Proposed |
 | [0027](0027-broker-through-the-c-abi.md) | Topics and rooms through the C ABI (ABI 0.5) | Proposed |
 | [0028](0028-publish-from-anywhere.md) | Publish from anywhere: rooms and an HTTP publish endpoint for `wsrvd` | Proposed |
+| [0029](0029-client-address-behind-a-proxy.md) | The client address behind a reverse proxy | Accepted |
+| [0030](0030-container-configuration-and-healthcheck.md) | Environment configuration and a built-in healthcheck for containers | Accepted |
+| [0031](0031-browser-and-node-client.md) | A small JavaScript client with reconnect (browser and Node) | Accepted |
+| [0032](0032-pending-send-byte-budget.md) | A byte budget for sends waiting for a loop | Accepted |
+| [0033](0033-release-supply-chain.md) | The release supply chain: scan, sign, attest, SBOM, a second registry | Accepted |
+| [0034](0034-bulk-fan-out-in-chunks.md) | Work for many connections is posted in chunks, and refused closes are retried | Accepted |
+| [0035](0035-wake-the-host-once-per-loop-iteration.md) | The host's wake-up is paid once per loop iteration, not once per message | Accepted |
+| [0036](0036-two-fewer-system-calls-per-message.md) | Two fewer system calls per message: no read that only blocks, no getpid per call | Accepted |
+| [0037](0037-runtime-logging.md) | Runtime logging: one structured line per event, to stderr, bounded and rate-limited | Accepted |
 
 Statuses: Proposed → Accepted → (Deprecated | Superseded by ADR-NNNN). The project owner moves Proposed → Accepted.

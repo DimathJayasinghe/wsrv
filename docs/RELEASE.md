@@ -26,6 +26,7 @@ A C++23 RFC 6455 WebSocket server core: sans-I/O protocol, multi-loop server on 
 | Security reviewed | Three independent read-only reviews: M9 slices (PR #42), the second review (PR #43), the M10 slices (PR #50); findings fixed or recorded with a decision | section 3, the ADR amendments |
 | The C ABI is stable and checked | Exported symbols list enforced by the linker, header matches symbols, a C99-only consumer test, all in `ctest` | `capi_abi_symbols`, `capi_header_matches_symbols`, `capi_consumer` |
 | Observable | `/metrics`, `/healthz`, `/readyz` on a separate listener, closed set of counters | `docs/OPERATIONS.md` section 3 |
+| Logs say what happened | One structured line per event on stderr (about 40 named events), levels, no client address unless asked, nothing a client sent, a limit per event, a stuck destination drops lines instead of stalling a loop; read from a running daemon in the container smoke test | ADR-0037, `docs/OPERATIONS.md` section 2, `StreamLogger*`, `EmbeddedServerLogging.*`, CI job "container" |
 
 ## 3. Known limitations (stated, not hidden)
 

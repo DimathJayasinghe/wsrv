@@ -2,6 +2,7 @@
 #pragma once
 
 #include "base/error.hpp"
+#include "base/logger.hpp"
 #include "server/broker.hpp"
 #include "server/config.hpp"
 #include "server/server_builder.hpp"
@@ -53,6 +54,7 @@ namespace detail {
 /// EventQueue::create() validate once, so the rules live in one place each.
 ///
 /// Keys: listen_host, listen_port, threads, allow_origin (repeatable), allow_missing_origin,
+/// log_level (error, warn, info, debug; default info) and log_peer (default false; ADR-0037),
 /// max_message_size, max_connections, max_connections_per_ip (default 100) and
 /// max_new_connections_per_ip_per_second (default 50), both 0 = no limit (ADR-0021),
 /// trusted_proxy (repeatable address or CIDR, at most 64) and client_ip_header (default
@@ -100,6 +102,11 @@ public:
     }
     [[nodiscard]] std::uint16_t port() const noexcept {
         return port_;
+    }
+    /// The least severe level that is written (`log_level`: error, warn, info or debug; default
+    /// info).
+    [[nodiscard]] LogLevel log_level() const noexcept {
+        return log_level_;
     }
     /// The admin listener (ADR-0023): on only once a port was given.
     [[nodiscard]] bool admin_requested() const noexcept {
@@ -195,13 +202,15 @@ public:
     void apply_to(ServerBuilder& builder) const;
 
 private:
-    [[nodiscard]] std::optional<Result<void>> set_broker_key(std::string_view key,
-                                                             std::string_view value);
+    [[nodiscard]] std::optional<Result<void>> set_more_key(std::string_view key,
+                                                           std::string_view value);
     [[nodiscard]] Result<void> set_listen_host(std::string_view value);
     [[nodiscard]] Result<void> set_listen_port(std::string_view value);
     [[nodiscard]] Result<void> set_threads(std::string_view value);
     [[nodiscard]] Result<void> add_allow_origin(std::string_view value);
     [[nodiscard]] Result<void> set_allow_missing_origin(std::string_view value);
+    [[nodiscard]] Result<void> set_log_level(std::string_view value);
+    [[nodiscard]] Result<void> set_log_peer(std::string_view value);
     [[nodiscard]] Result<void> set_max_message_size(std::string_view value);
     [[nodiscard]] Result<void> set_max_frame_payload(std::string_view value);
     [[nodiscard]] Result<void> set_max_fragments(std::string_view value);
@@ -242,6 +251,7 @@ private:
     // Ordered by size, largest first, so the padding analyzer is satisfied (ServerConfig and the
     // strings first, the small integers and flags last).
     ServerConfig server_;
+    LogLevel log_level_ = LogLevel::Info;  ///< ADR-0037: the logger's filter, not the server's
     BrokerConfig broker_;
     EventQueueConfig queue_;
     std::vector<TlsSniSetting> tls_sni_;

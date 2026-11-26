@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "base/clock.hpp"
 #include "base/error.hpp"
+#include "base/logger.hpp"
+#include "net/fd.hpp"
+#include "net/stream_logger.hpp"
 #include "net/syscalls.hpp"
 #include "server/server.hpp"
 
@@ -127,6 +131,12 @@ public:
     /// the new files are unusable; tls_detail() then says which file and why.
     [[nodiscard]] Result<void> reload_tls();
 
+    /// The server's logger (stderr, `log_level`), for the host process's own lifecycle lines. The
+    /// caller must not use it after the server is destroyed.
+    [[nodiscard]] ILogger& logger() noexcept {
+        return logger_;
+    }
+
     /// The reason the last TLS load or reload failed, for people and logs; empty if none.
     [[nodiscard]] std::string tls_detail() const;
 
@@ -151,11 +161,17 @@ private:
     [[nodiscard]] Result<void> prepare_tls();
     /// Check the publish settings and build its token and action (ADR-0028). Same timing as TLS.
     [[nodiscard]] Result<void> prepare_publish();
+    /// Log `listening` (ADR-0037); never fails.
+    void announce_listening(std::uint16_t port) noexcept;
 
     const pid_t owner_pid_;
     ForkGuard fork_guard_;
     const EmbeddedConfig config_;
     LinuxSyscalls sys_;
+    SteadyClock clock_;
+    SystemWallClock wall_;
+    Fd log_fd_;  ///< a private copy of stderr, taken in create(), before any socket exists
+    StreamLogger logger_;  ///< writes to log_fd_, level from the configuration (ADR-0037)
     std::unique_ptr<HostBridge> bridge_;
     std::unique_ptr<TlsState> tls_;  // null = plain TCP; set in start(), before the I/O thread
 

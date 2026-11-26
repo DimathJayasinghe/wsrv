@@ -2,6 +2,7 @@
 #pragma once
 
 #include "base/error.hpp"
+#include "base/logger.hpp"
 #include "net/event_loop.hpp"
 #include "net/syscalls.hpp"
 #include "net/unix_listener.hpp"
@@ -33,6 +34,9 @@ struct IpcServerConfig {
     /// requires protocol minor 2 in HELLO and keeps the backend's intake open only while an
     /// application is connected, so a browser never waits for an answer nobody can give.
     bool handshake_hook = false;
+    /// Where the daemon says who connected, who was refused and who left (ADR-0037). Null = silent.
+    /// Never given a token or any peer-supplied text.
+    ILogger* logger = nullptr;
 };
 
 /// The IPC side of the daemon (ADR-0017): a Unix socket that ONE application connects to.
@@ -124,6 +128,8 @@ private:
     /// Close every stale connection; those a loop refuses are tried again shortly (ADR-0034).
     void close_stale_connections(std::uint16_t code, std::string_view reason);
     void release(const Peer* peer) noexcept;
+    /// One log line; a logger that throws never fails the daemon.
+    void note(LogLevel level, std::string_view event, std::string_view message) const noexcept;
 
     EventLoop& loop_;
     ISyscalls& sys_;

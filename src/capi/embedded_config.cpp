@@ -9,6 +9,7 @@
 #include <new>
 #include <optional>
 #include <system_error>
+#include <utility>
 
 namespace wsrv {
 
@@ -123,18 +124,20 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
             return (this->*entry.setter)(value);
         }
     }
-    if (const std::optional<Result<void>> broker = set_broker_key(key, value)) {
-        return *broker;
+    if (const std::optional<Result<void>> more = set_more_key(key, value)) {
+        return *more;
     }
     return fail(ErrorCode::InvalidConfig, "config: unknown key");
 }
 
-/// The pub/sub keys (ADR-0027), in their own table so `set` stays within the size the linter
-/// allows.
-/// @return nothing when `key` is not a broker key.
-std::optional<Result<void>> EmbeddedConfig::set_broker_key(std::string_view key,
-                                                           std::string_view value) {
-    static constexpr std::array kBrokerKeys{
+/// The pub/sub keys (ADR-0027) and the logging keys (ADR-0037), in their own table so `set` stays
+/// within the size the linter allows.
+/// @return nothing when `key` is not one of them.
+std::optional<Result<void>> EmbeddedConfig::set_more_key(std::string_view key,
+                                                         std::string_view value) {
+    static constexpr std::array kMoreKeys{
+        KeyEntry{"log_level", &EmbeddedConfig::set_log_level},
+        KeyEntry{"log_peer", &EmbeddedConfig::set_log_peer},
         KeyEntry{"publish_host", &EmbeddedConfig::set_publish_host},
         KeyEntry{"publish_port", &EmbeddedConfig::set_publish_port},
         KeyEntry{"broker", &EmbeddedConfig::set_broker},
@@ -146,7 +149,7 @@ std::optional<Result<void>> EmbeddedConfig::set_broker_key(std::string_view key,
         KeyEntry{"broker_max_subscriptions", &EmbeddedConfig::set_broker_max_subscriptions},
         KeyEntry{"broker_max_payload_bytes", &EmbeddedConfig::set_broker_max_payload_bytes},
     };
-    for (const KeyEntry& entry : kBrokerKeys) {
+    for (const KeyEntry& entry : kMoreKeys) {
         if (entry.name == key) {
             return (this->*entry.setter)(value);
         }
@@ -240,6 +243,34 @@ Result<void> EmbeddedConfig::add_allow_origin(std::string_view value) {
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::ResourceExhausted, "config: out of memory");
     }
+    return {};
+}
+
+/// ADR-0037 section 3. Exact names: a typo must not silently mean another level, and "trace" is not
+/// offered.
+Result<void> EmbeddedConfig::set_log_level(std::string_view value) {
+    static constexpr std::array<std::pair<std::string_view, LogLevel>, 4> kLevels{{
+        {"error", LogLevel::Error},
+        {"warn", LogLevel::Warn},
+        {"info", LogLevel::Info},
+        {"debug", LogLevel::Debug},
+    }};
+    for (const auto& [name, level] : kLevels) {
+        if (value == name) {
+            log_level_ = level;
+            return {};
+        }
+    }
+    return fail(ErrorCode::InvalidConfig, "config: log_level is error, warn, info or debug");
+}
+
+/// ADR-0037 section 4: the client address in log lines is personal data, so it is opt-in.
+Result<void> EmbeddedConfig::set_log_peer(std::string_view value) {
+    const std::optional<bool> flag = parse_bool(value);
+    if (!flag) {
+        return fail(ErrorCode::InvalidConfig, "config: a boolean is true, false, 1 or 0");
+    }
+    server_.log_peer = *flag;
     return {};
 }
 

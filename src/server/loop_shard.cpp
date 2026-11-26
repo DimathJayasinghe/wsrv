@@ -89,7 +89,9 @@ void LoopShard::adopt(Fd client, const Endpoint& peer, ConnectionId id) {
             transport = shared_.wrapper->wrap(std::move(transport));
             if (!transport) {
                 give_back(peer);  // the socket was closed with the failed wrapper
-                shared_.logger.log(LogLevel::Error, "server: cannot wrap a connection's transport");
+                shared_.logger.log(LogLevel::Error,
+                                   "transport_failed",
+                                   "server: cannot wrap a connection's transport");
                 return;
             }
         }
@@ -97,7 +99,8 @@ void LoopShard::adopt(Fd client, const Endpoint& peer, ConnectionId id) {
             std::make_unique<Connection>(id, peer, std::move(transport), *context_));
     } catch (const std::exception&) {
         give_back(peer);  // never reached the table: nothing else will give the slots back
-        shared_.logger.log(LogLevel::Error, "server: out of memory accepting a connection");
+        shared_.logger.log(
+            LogLevel::Error, "out_of_memory", "server: out of memory accepting a connection");
         return;
     }
     bank_.add(Metric::ConnectionsAccepted);

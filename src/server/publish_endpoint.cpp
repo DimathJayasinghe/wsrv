@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <charconv>
 #include <cstdint>
 #include <cstring>
 #include <exception>
@@ -204,10 +205,34 @@ private:
         if (const std::optional<Metric> metric = publish_metric(status)) {
             owner_.metrics_.add(*metric);
         }
+        if (status >= 400) {
+            log_refusal(status);
+        }
         const std::string response = publish_response(status, body);
         static_cast<void>(owner_.sys_.send(
             fd_.get(), response.data(), response.size(), MSG_NOSIGNAL | MSG_DONTWAIT));
         finish_and_retire();
+    }
+
+    /// ADR-0037: what was refused and with which status, never who or with what credential. The
+    /// text is built on the stack from the three digits of the status.
+    void log_refusal(int status) const noexcept {
+        if (owner_.logger_ == nullptr || !owner_.logger_->enabled(LogLevel::Warn)) {
+            return;
+        }
+        constexpr std::string_view kPrefix = "publish request refused with status ";
+        std::array<char, 48> text{};
+        char* const end = std::ranges::copy(kPrefix, text.begin()).out;
+        const auto converted = std::to_chars(end, text.data() + text.size(), status);
+        try {
+            owner_.logger_->log(
+                LogLevel::Warn,
+                "publish_rejected",
+                std::string_view{text.data(),
+                                 static_cast<std::size_t>(converted.ptr - text.data())});
+            // NOLINTNEXTLINE(bugprone-empty-catch): logging never fails a request
+        } catch (const std::exception&) {
+        }
     }
 
     void finish_and_retire() noexcept {
@@ -270,7 +295,7 @@ Result<void> PublishEndpoint::open() {
 
 PublishEndpoint::PublishEndpoint(Key /*unused*/, PublishDeps deps, const PublishConfig& config)
     : loop_{deps.loop}, sys_{deps.sys}, config_{config}, sources_{deps.sources},
-      metrics_{deps.metrics}, accepting_{std::move(deps.accepting)} {}
+      metrics_{deps.metrics}, accepting_{std::move(deps.accepting)}, logger_{deps.logger} {}
 
 PublishEndpoint::~PublishEndpoint() {
     if (acceptor_) {

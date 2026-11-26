@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <string_view>
 
+#include <poll.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 
@@ -72,6 +73,9 @@ public:
     virtual SysResult accept4(int fd, sockaddr* peer, socklen_t* peer_len, int flags) = 0;
     virtual SysResult read(int fd, void* buf, std::size_t count) = 0;
     virtual SysResult write(int fd, const void* buf, std::size_t count) = 0;
+    /// poll(2). The logger asks with a zero timeout whether a descriptor can take a line
+    /// (ADR-0037).
+    virtual SysResult poll(pollfd* fds, nfds_t count, int timeout_ms) = 0;
     virtual SysResult send(int fd, const void* buf, std::size_t count, int flags) = 0;
     virtual SysResult shutdown(int fd, int how) = 0;
     virtual SysResult setsockopt(int fd, SockOpt option, const void* value, socklen_t len) = 0;
@@ -88,6 +92,9 @@ public:
     virtual SysResult peer_uid(int fd, std::uint32_t& uid) = 0;
     /// geteuid(2): cannot fail.
     virtual std::uint32_t effective_uid() noexcept = 0;
+    /// A copy of `fd` with close-on-exec, numbered `lowest` or above (fcntl F_DUPFD_CLOEXEC). The
+    /// logger keeps its own copy of stderr this way (ADR-0037).
+    virtual SysResult dup_cloexec(int fd, int lowest) = 0;
     virtual SysResult epoll_create1(int flags) = 0;
     virtual SysResult epoll_ctl(int epoll_fd, int op, int fd, epoll_event* event) = 0;
     virtual SysResult
@@ -118,6 +125,7 @@ public:
     SysResult accept4(int fd, sockaddr* peer, socklen_t* peer_len, int flags) override;
     SysResult read(int fd, void* buf, std::size_t count) override;
     SysResult write(int fd, const void* buf, std::size_t count) override;
+    SysResult poll(pollfd* fds, nfds_t count, int timeout_ms) override;
     SysResult send(int fd, const void* buf, std::size_t count, int flags) override;
     SysResult shutdown(int fd, int how) override;
     SysResult setsockopt(int fd, SockOpt option, const void* value, socklen_t len) override;
@@ -128,6 +136,7 @@ public:
     SysResult unlink_path(const char* path) override;
     SysResult peer_uid(int fd, std::uint32_t& uid) override;
     std::uint32_t effective_uid() noexcept override;
+    SysResult dup_cloexec(int fd, int lowest) override;
     SysResult epoll_create1(int flags) override;
     SysResult epoll_ctl(int epoll_fd, int op, int fd, epoll_event* event) override;
     SysResult

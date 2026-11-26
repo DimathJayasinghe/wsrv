@@ -43,6 +43,9 @@ struct ServerConfig {
     /// limit the client gets a 429. Behind a reverse proxy every user is one address: raise or
     /// switch off.
     std::size_t max_connections_per_ip = 100;
+    /// Put the client address in log lines (ADR-0037 section 4): off by default, an address is
+    /// personal data.
+    bool log_peer = false;
     std::uint32_t max_new_connections_per_ip_per_second = 50;
     /// Reverse proxies whose forwarded-address header is believed (ADR-0029). Empty = off: the TCP
     /// peer is always the client. A connection from one of these takes no per-IP slot at accept;

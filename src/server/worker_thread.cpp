@@ -52,7 +52,8 @@ void WorkerThread::body(const ShardShared& shared,
     shard_ = shard.get();
     ready.set_value({});
     if (const Result<void> ran = shard->loop().run(); !ran) {
-        shared.logger.log(LogLevel::Error, "server: a loop stopped with a poller failure");
+        shared.logger.log(
+            LogLevel::Error, "poller_failure", "server: a loop stopped with a poller failure");
     }
     released_.wait();  // the owner may still post to this loop until it releases us
 }  // the shard is destroyed here, on the thread that created it

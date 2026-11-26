@@ -30,8 +30,9 @@ int fail_with(std::string_view what, const wsrv::Error& error) {
     return 1;
 }
 
-wsrv::wsrvd::IpcServerConfig ipc_config(const wsrv::wsrvd::Startup& startup) {
+wsrv::wsrvd::IpcServerConfig ipc_config(const wsrv::wsrvd::Startup& startup, wsrv::ILogger& logger) {
     wsrv::wsrvd::IpcServerConfig ipc;
+    ipc.logger = &logger;
     ipc.socket_path = startup.config.socket_path();
     ipc.token = startup.token;
     ipc.max_frame = startup.config.max_frame();
@@ -53,29 +54,37 @@ int run_daemon(wsrv::EventLoop& loop,
     if (!embedded) {
         return fail_with("cannot create the WebSocket server", embedded.error());
     }
+    // One logger for the whole process (ADR-0037): the server's, on stderr, at the configured level.
+    wsrv::ILogger& log = (*embedded)->logger();
     wsrv::wsrvd::EmbeddedBackend backend{**embedded};
     reloadable = embedded->get();  // SIGHUP may reload TLS from now on (see serve())
+    if (startup.token.empty()) {
+        log.log(wsrv::LogLevel::Warn,
+                "ipc_no_token",
+                "wsrvd: no ipc_token_file; only the peer uid check protects the socket");
+    }
 
-    auto server = wsrv::wsrvd::IpcServer::create(loop, sys, backend, ipc_config(startup));
+    auto server = wsrv::wsrvd::IpcServer::create(loop, sys, backend, ipc_config(startup, log));
     if (!server) {
         return fail_with("cannot open the IPC socket", server.error());
     }
-    std::cerr << "wsrvd: ipc socket " << startup.config.socket_path() << " ready\n";
+    log.log(wsrv::LogLevel::Info,
+            "ipc_ready",
+            "wsrvd: ipc socket " + startup.config.socket_path() + " ready");
 
     // Only now spawn the WebSocket threads: the signal mask is already set (see serve()), the IPC
     // socket is listening, and an application can connect before the first browser does.
     if (const wsrv::Result<void> started = (*embedded)->start(); !started) {
-        std::cerr << "wsrvd: cannot start the WebSocket server: " << (*embedded)->start_error()
-                  << '\n';
+        log.log(wsrv::LogLevel::Error,
+                "start_failed",
+                "wsrvd: cannot start the WebSocket server: " + (*embedded)->start_error());
         server->reset();
         return 1;
     }
-    std::cerr << "wsrvd: websocket server listening on port " << (*embedded)->port() << '\n';
-    if ((*embedded)->publish_port() != 0) {
-        std::cerr << "wsrvd: publish endpoint listening on port " << (*embedded)->publish_port() << '\n';
-    }
+    // `listening` and `publish_listening` were logged by the server itself as each socket opened.
 
     const wsrv::Result<void> ran = loop.run();
+    log.log(wsrv::LogLevel::Info, "shutdown", "wsrvd: stopping");
     reloadable = nullptr;  // the signal handler must not touch a server that is being closed
     // Shutdown order matters: the IPC server uses the backend's descriptor and the loop, so it
     // goes first (and removes the socket file); then the WebSocket server drains and joins.
@@ -101,7 +110,12 @@ int serve(const wsrv::wsrvd::Startup& startup, wsrv::ISyscalls& sys) {
         wsrv::SignalWatcher::create(**loop, sys, signals, [&loop, &reloadable](int signo) {
             if (signo == SIGHUP) {
                 if (reloadable != nullptr) {
-                    std::cerr << wsrv::wsrvd::reload_tls_on_hangup(*reloadable).line << '\n';
+                    // A reload that worked or failed was logged by the TLS context, with the file
+                    // and the reason; only "TLS is off" is said here.
+                    const wsrv::wsrvd::ReloadOutcome outcome = wsrv::wsrvd::reload_tls_on_hangup(*reloadable);
+                    if (outcome.skipped) {
+                        reloadable->logger().log(wsrv::LogLevel::Info, "tls_reload_skipped", outcome.line);
+                    }
                 }
                 return;
             }
@@ -144,10 +158,6 @@ int run(const std::vector<std::string_view>& args, const std::vector<std::string
     }
     if (startup->healthcheck) {
         return health(*startup);
-    }
-    if (startup->token.empty()) {
-        std::cerr << "wsrvd: warning: no ipc_token_file; only the peer uid check protects the "
-                     "socket\n";
     }
     return serve(*startup, sys);
 }

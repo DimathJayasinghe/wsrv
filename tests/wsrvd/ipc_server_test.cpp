@@ -123,10 +123,51 @@ private:
     std::optional<ErrorCode> failure_;
 };
 
+/// A logger the loop thread writes and the test thread reads (the recording logger of the other
+/// tests is single-threaded).
+class SharedLogger final : public wsrv::ILogger {
+public:
+    using ILogger::log;
+    void log(const wsrv::LogRecord& record) override {
+        const std::lock_guard lock{mutex_};
+        lines_.push_back(std::string{record.event} + "|" +
+                         std::to_string(static_cast<int>(record.level)) + "|" +
+                         std::string{record.message});
+    }
+    /// Wait (the server runs on its own thread) until a line of `event` exists; returns it or "".
+    [[nodiscard]] std::string wait_for(std::string_view event) {
+        for (int attempt = 0; attempt < 300; ++attempt) {
+            {
+                const std::lock_guard lock{mutex_};
+                for (const std::string& line : lines_) {
+                    if (line.rfind(std::string{event} + "|", 0) == 0) {
+                        return line;
+                    }
+                }
+            }
+            std::this_thread::sleep_for(10ms);
+        }
+        return {};
+    }
+    [[nodiscard]] std::string everything() {
+        const std::lock_guard lock{mutex_};
+        std::string all;
+        for (const std::string& line : lines_) {
+            all += line + "\n";
+        }
+        return all;
+    }
+
+private:
+    std::mutex mutex_;
+    std::vector<std::string> lines_;
+};
+
 struct IpcServerTest : public ::testing::Test {
     FakeSyscalls sys;
     wsrv::testing::FakeBackend backend;
     TempDir dir;
+    SharedLogger logs;
 
     [[nodiscard]] IpcServerConfig config(std::string token = "") const {
         IpcServerConfig c;
@@ -134,6 +175,7 @@ struct IpcServerTest : public ::testing::Test {
         c.token = std::move(token);
         c.max_frame = kMaxFrame;
         c.hello_timeout = 5000ms;
+        c.logger = &const_cast<SharedLogger&>(logs);
         return c;
     }
     [[nodiscard]] std::string path() const {
@@ -266,6 +308,64 @@ TEST_F(IpcServerTest, TheSlotIsFreeAgainAfterTheApplicationDisconnects) {
         }
     }
     EXPECT_TRUE(accepted);
+}
+
+// ---- what the operator is told (ADR-0037) -----------------------------------------------------
+
+constexpr int kInfo = static_cast<int>(wsrv::LogLevel::Info);
+constexpr int kWarn = static_cast<int>(wsrv::LogLevel::Warn);
+
+TEST_F(IpcServerTest, AnApplicationConnectingAndLeavingIsLoggedAsInfo) {
+    const RunningServer server{sys, backend, config()};
+    {
+        Client client{path()};
+        client.send_hello();
+        ASSERT_EQ(client.receive()->kind, Reply::Kind::HelloOk);
+        EXPECT_TRUE(logs.wait_for("app_connected")
+                        .starts_with("app_connected|" + std::to_string(kInfo) + "|"));
+    }
+    EXPECT_TRUE(logs.wait_for("app_disconnected")
+                    .starts_with("app_disconnected|" + std::to_string(kInfo) + "|"));
+}
+
+TEST_F(IpcServerTest, AWrongTokenIsALoggedWarningThatNeverRepeatsTheToken) {
+    const RunningServer server{sys, backend, config("s3cret")};
+    Client client{path()};
+    client.send_hello("wrong-token-value");
+    ASSERT_TRUE(client.receive());
+    const std::string line = logs.wait_for("app_rejected");
+    EXPECT_TRUE(line.starts_with("app_rejected|" + std::to_string(kWarn) + "|")) << line;
+    const std::string all = logs.everything();
+    EXPECT_EQ(all.find("wrong-token-value"), std::string::npos)
+        << "a secret must never reach a log";
+    EXPECT_EQ(all.find("s3cret"), std::string::npos);
+}
+
+TEST_F(IpcServerTest, ASecondApplicationAndAStrangerAreLogged) {
+    const RunningServer server{sys, backend, config()};
+    Client first{path()};
+    first.send_hello();
+    ASSERT_EQ(first.receive()->kind, Reply::Kind::HelloOk);
+    Client second{path()};
+    ASSERT_TRUE(second.receive());
+    EXPECT_NE(logs.wait_for("app_rejected").find("second application"), std::string::npos);
+}
+
+TEST_F(IpcServerTest, APeerWithAnotherUidIsLogged) {
+    const RunningServer server{sys, backend, config()};
+    sys.succeed(Call::PeerUid, 4242);
+    const Client stranger{path()};
+    ASSERT_TRUE(stranger.connected());
+    EXPECT_NE(logs.wait_for("app_rejected").find("another user"), std::string::npos);
+}
+
+TEST_F(IpcServerTest, ASilentPeerIsLoggedWhenItsDeadlinePasses) {
+    IpcServerConfig c = config();
+    c.hello_timeout = 100ms;
+    const RunningServer server{sys, backend, c};
+    const Client silent{path()};
+    ASSERT_TRUE(silent.connected());
+    EXPECT_NE(logs.wait_for("app_rejected").find("no HELLO"), std::string::npos);
 }
 
 // ---- deadlines and bounds ---------------------------------------------------------------------
