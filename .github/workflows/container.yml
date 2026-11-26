@@ -95,6 +95,73 @@ jobs:
           assert good == 2 and bad == 9
           PY
           docker kill wsrvd-tcp >/dev/null
+      - name: The host-worker example works as documented (ADR-0038)
+        run: |
+          # The example names the published image; point it at the one built above (no pull, no rebuild).
+          docker tag wsrvd:ci ghcr.io/dimathjayasinghe/wsrvd:ci
+          cd examples/host-worker
+          export WSRV_VERSION=ci WSRV_PORT=18081 WSRV_IPC_PORT=19301
+          docker compose up -d --no-build
+          for i in $(seq 1 30); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q wsrvd)")" = healthy ] && break
+            sleep 2
+          done
+          docker compose logs wsrvd
+          [ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q wsrvd)")" = healthy ]
+          # The IPC port is published on loopback only, never on every interface.
+          [ "$(docker compose port wsrvd 9300)" = "127.0.0.1:19301" ]
+          # The token is read the way the README says.
+          token="$(docker compose run --rm --no-deps --entrypoint cat token-init /run/wsrv/ipc.token)"
+          echo "::add-mask::$token"
+          [ "${#token}" -ge 32 ]
+          # The worker the README tells you to run, on the runner, with the repository's PHP package.
+          mkdir -p vendor
+          cat > vendor/autoload.php <<'PHP'
+          <?php
+          spl_autoload_register(static function (string $class): void {
+              if (strncmp($class, 'Wsrv\\', 5) === 0) {
+                  $file = __DIR__ . '/../../../bindings/php/src/' . str_replace('\\', '/', substr($class, 5)) . '.php';
+                  if (is_file($file)) {
+                      require $file;
+                  }
+              }
+          });
+          PHP
+          WSRV_IPC=tcp://127.0.0.1:19301 WSRV_TOKEN="$token" php worker.php > "$RUNNER_TEMP/worker.log" 2>&1 &
+          worker=$!
+          # A browser-style client (no Origin header: the example allows that) gets its message echoed.
+          python3 - <<'PY'
+          import base64, os, socket, struct, time
+          def frame(payload: bytes) -> bytes:
+              mask = os.urandom(4)
+              body = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+              return bytes([0x81, 0x80 | len(payload)]) + mask + body
+          deadline = time.time() + 20
+          last = None
+          while time.time() < deadline:
+              try:
+                  s = socket.create_connection(("127.0.0.1", 18081), timeout=5)
+                  key = base64.b64encode(os.urandom(16)).decode()
+                  s.sendall(("GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                             f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+                  head = b""
+                  while b"\r\n\r\n" not in head:
+                      head += s.recv(1)
+                  assert head.startswith(b"HTTP/1.1 101"), head
+                  s.sendall(frame(b"hello host worker"))
+                  data = s.recv(64)
+                  assert data[0] == 0x81 and data[2:2 + data[1]] == b"hello host worker", data
+                  print("echoed through the host worker over TCP IPC")
+                  break
+              except (AssertionError, OSError) as e:   # the worker may still be connecting: retry
+                  last = e
+                  time.sleep(1)
+          else:
+              raise SystemExit(f"no echo within 20 s: {last!r}")
+          PY
+          kill "$worker" 2>/dev/null || true
+          cat "$RUNNER_TEMP/worker.log"
+          docker compose down -v
       - name: Both transports at once, or a TCP port without a token, stop the start
         run: |
           set +e
