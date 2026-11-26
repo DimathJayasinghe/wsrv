@@ -6,7 +6,9 @@ Known gaps are listed in [docs/RELEASE.md](docs/RELEASE.md). `0.1.0-rc.1` and `0
 
 ## [Unreleased]
 
-What the first stable release will contain. The owner decided (2026-11-23) that nothing is announced before the library is production-ready, so the first stable version is `1.0.0`, reached through `1.0.0-rc.N` pre-releases.
+## [1.0.0] - 2026-11-26
+
+The first stable release. The owner decided (2026-11-23) that nothing is announced before the library is production-ready, so it was reached through `1.0.0-rc.N` pre-releases (`rc.1`, `rc.2`); what changed since `rc.2` is the runtime logger (ADR-0037), the Kubernetes manifest fixes, macOS client checks and the corrected documentation.
 
 ### Added
 - **Runtime logging** (ADR-0037, NFR-O1 and NFR-O3): `wsrvd` and the embedded server write one structured `key=value` line per event to stderr (`ts level event conn peer suppressed dropped msg`), about 40 named events (`origin_refused`, `slow_consumer`, `ip_limit`, `app_connected`, `tls_reloaded`, `publish_rejected`, `conn_open`/`conn_close` at debug...). Settings `log_level` (`error`, `warn`, `info` default, `debug`) and `log_peer` (the client address in the lines, off by default because it is personal data), as flags, config keys and `WSRVD_LOG_LEVEL` / `WSRVD_LOG_PEER`. A peer cannot forge a line (everything it could influence is escaped; the messages carry nothing it sent), a flood of one event is held to a burst of 10 and then one line a second with `suppressed=N`, and a log destination that stops reading costs lines (`dropped=N`), never a stalled I/O loop. Event and field names are stable within 1.x. Before this the server counted problems on `/metrics` but never said which, when or why. See `docs/OPERATIONS.md` section 2.

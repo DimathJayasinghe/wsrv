@@ -17,7 +17,7 @@ Controller / job / listener --HTTP POST /publish--+                           (s
 ## 1. Install
 
 ```
-composer require wsrv/client:^1.0@rc     # a plain `composer require wsrv/client` works once 1.0.0 is out
+composer require wsrv/client
 ```
 
 Run the daemon (Docker is the easiest; the compose file in `examples/docker` shows the wiring, and `docs/OPERATIONS.md` section 3.1.1 lists every flag):

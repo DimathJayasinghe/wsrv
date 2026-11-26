@@ -4,47 +4,25 @@ How the server is configured, observed, run, and shut down.
 
 ## 1. Configuration
 
-Precedence (low→high): built-in secure defaults < config file (TOML) < environment (`WSRV_*`) < CLI flags. Config is parsed once into an **immutable validated snapshot**; invalid config ⇒ startup failure with all errors listed (non-zero exit). Reloadable subset (SIGHUP): TLS certs, log level, limits, origin list — applied by atomic snapshot swap.
+One list of keys, three ways to set it. `wsrvd` takes flags (`--listen-port=8080`), a file (`--config=FILE`, one `key = value` per line, `#` comments) and environment variables (`WSRVD_LISTEN_PORT=8080`; a repeatable key takes a comma list). The embedded server (PHP FFI, C API) takes the same keys as text (`new Server(['listen_port' => 8080])`, `wsrv_config_set`). There is no TOML or YAML file, no `WSRV_*` variable and no config directory.
 
-```toml
-[listen]
-address = "0.0.0.0"
-port = 8080
-backlog = 1024
-reuse_port = true
+Precedence, lowest to highest: built-in defaults, then the environment, then `--config` files and flags in the order given (later wins). The configuration is checked once at start: a wrong key or value stops the start with exit code 1 and names the setting (and, for the environment, the variable). A key is never ignored silently. Nothing is reloaded while the server runs except the TLS certificate and key (`SIGHUP`, section 7); to change a limit, restart.
 
-[threads]
-loops = 0                 # 0 = hardware_concurrency
+The defaults and the allowed range of every limit are in `docs/REQUIREMENTS.md` section 4 (checked against the code in `docs/LIMITS_AUDIT.md`); there is a hard ceiling on every one of them and no value means "unlimited" except the per-address limits (section 1.2). The keys, by what they do:
 
-[limits]                  # see REQUIREMENTS §4 for defaults
-max_connections = 10000
-max_message_bytes = 1048576
-max_handshake_bytes = 8192
-per_ip_connections = 100            # 0 = no limit (ADR-0021)
-per_ip_new_connections_per_s = 50   # 0 = no limit (ADR-0021)
-idle_timeout_s = 60
+| Area | Keys |
+|---|---|
+| Listening | `listen_host`, `listen_port`, `threads` (event loops: start at the number of cores you give it) |
+| Who may connect | `allow_origin` (repeatable), `allow_missing_origin`, `trusted_proxy` (repeatable), `client_ip_header` |
+| Limits | `max_connections`, `max_connections_per_ip`, `max_new_connections_per_ip_per_second`, `max_message_size`, `max_frame_payload`, `max_fragments`, `max_data_frames_per_second`, `max_pending_send_bytes`, `event_queue_events`, `event_queue_bytes`, `shutdown_grace_ms` |
+| Authenticating upgrades | `handshake_hook`, `handshake_forward_header` (repeatable), `handshake_decision_timeout_ms`, `max_pending_handshakes` |
+| TLS | `tls_cert`, `tls_key`, `tls_sni` (repeatable) |
+| Compression | `permessage_deflate`, `deflate_server_max_window_bits`, `deflate_server_no_context_takeover`, `deflate_level`, `deflate_min_size`, `deflate_max_ratio` (section 1.1) |
+| Observability | `admin_host`, `admin_port` (section 3.1), `log_level`, `log_peer` (section 2) |
+| Rooms and publishing | `broker`, `broker_max_topics`, `broker_max_subscribers_per_topic`, `broker_max_topics_per_connection`, `broker_max_subscriptions`, `broker_max_payload_bytes`, `publish_host`, `publish_port`, `publish_token_file` (sections 3.1.1, 3.2) |
+| `wsrvd` only | `ipc_socket` (required), `ipc_token_file`, `ipc_max_frame`, `ipc_hello_timeout_ms`, `ipc_stall_ms` (section 7) |
 
-[security]
-allowed_origins = ["https://app.example.com"]
-allow_missing_origin = false
-trusted_proxies = []                # addresses/CIDRs of your reverse proxies (ADR-0029); text key: trusted_proxy, repeatable
-client_ip_header = "X-Forwarded-For"  # text key: client_ip_header
-
-[tls]
-enabled = false
-cert = "/etc/wsrv/cert.pem"
-key  = "/etc/wsrv/key.pem"
-min_version = "1.2"
-
-[compression]
-permessage_deflate = false
-
-[log]
-level = "info"
-format = "json"           # json | text
-```
-
-Hard ceilings (compile-time) cap every limit to prevent dangerous values.
+The IPC and publish tokens are never keys: they would show in `ps` and `/proc`, so only a file (mode 0600, yours) can carry them.
 
 ### 1.1 Compression (permessage-deflate, RFC 7692, ADR-0020)
 
@@ -210,10 +188,10 @@ ADR-0023. Counters live in one bank per loop (relaxed atomics, no lock) and are 
 | `wsrv_tls_handshake_failures_total` | counter | done: TLS failures before the upgrade |
 | `wsrv_broker_publishes_total` | counter | done: validated publishes on the pub/sub broker (section 3.2); only once the application attaches the broker with `Broker::use_metrics(server.shared_metrics())` |
 | `wsrv_broker_deliveries_total{result}` | counter | done: `accepted` (the subscriber's loop took the message for delivery), `refused` (its task queue was full, out of memory, or the server is gone); every subscriber of a publish is one or the other |
-| `wsrv_handshake_seconds` | histogram | planned (ADR-0023 section 5) |
-| `wsrv_loop_lag_seconds{loop}` | histogram (detects blocking handlers) | planned |
-| `wsrv_outbound_queue_bytes` | histogram | planned |
-| `wsrv_config_reload_total{result}` | counter | planned (`wsrvd` reload) |
+| `wsrv_handshake_seconds` | histogram | not in 1.0, planned (ADR-0023 section 5) |
+| `wsrv_loop_lag_seconds{loop}` | histogram (detects blocking handlers) | not in 1.0, planned |
+| `wsrv_outbound_queue_bytes` | histogram | not in 1.0, planned |
+| `wsrv_config_reload_total{result}` | counter | not in 1.0, planned (`wsrvd` reload) |
 
 ### 3.1 Admin endpoint
 Off unless configured: embedded/`wsrvd` keys `admin_port` (setting it switches the listener on; 0 lets the kernel choose) and `admin_host` (default `127.0.0.1`); `wsrvd --admin-port=9100`. Plain HTTP, **no authentication**: keep it on loopback or behind a network policy (a non-loopback bind logs a warning at start). It serves exactly three pages:
@@ -272,7 +250,7 @@ What to watch: `wsrv_broker_deliveries_total{result="refused"}` rising means a l
 
 - **Start:** validate config → check `RLIMIT_NOFILE` ≥ `max_connections + 64 + 4 × threads` (ADR-0022: a lower soft limit is raised to exactly that when the hard limit allows, otherwise the start fails with `FdLimit` and a log line naming needed, soft and hard) → bind → (optionally drop privileges) → start loops → log `listening`.
 - **Embedded hosts (C API, PHP):** the same check runs in `wsrv_server_start` and a raise changes the soft limit of the *host* process (only upwards, only to what the configuration needs). A host that must keep a small limit lowers `max_connections`.
-- **Reload (SIGHUP):** reload snapshot; on failure keep old and increment `config_reload_total{result="error"}`.
+- **Reload (SIGHUP):** `wsrvd` re-reads the TLS certificate and key only (section 7); a failed reload keeps the certificate in use and logs why. Everything else needs a restart.
 - **Graceful stop (SIGTERM/SIGINT):** stop accepting (readyz fails) → send Close 1001 to all → wait up to `shutdown_grace` (default 10 s) → force close remaining → join threads → exit 0. A second signal is not special (see "Signals and exit codes"): use `SIGKILL` to stop at once.
 - **Crash policy:** invariant violation ⇒ abort with core dump (supervisor restarts); never continue in an unknown state.
 
@@ -280,12 +258,12 @@ What to watch: `wsrv_broker_deliveries_total{result="refused"}` rising means a l
 
 - Run as non-root; bind low ports via `CAP_NET_BIND_SERVICE` or reverse proxy.
 - systemd unit: `NoNewPrivileges=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`, `PrivateDevices=yes`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `SystemCallFilter=@system-service`, `LimitNOFILE=…`, `MemoryMax=…`, `Restart=on-failure`.
-- Container: distroless/minimal image, read-only rootfs, drop all capabilities, non-root user, no shell.
+- Container: the official image runs as uid 10001 with a built-in `HEALTHCHECK` and only the libraries the daemon links against. Run it with a read-only root filesystem and every capability dropped, as `deploy/kubernetes/wsrv.yaml` does.
 - Kernel tuning (documented, not applied by the server): `net.core.somaxconn`, `net.ipv4.tcp_max_syn_backlog`, `tcp_syncookies=1`, `fs.file-max`, ephemeral port range, `tcp_keepalive_*`.
-- Behind a reverse proxy: configure `trusted_proxies`, ensure proxy timeouts > heartbeat, forward `Upgrade/Connection`, pass the real client IP in `X-Forwarded-For` (or another single-address header) and list the proxies in `trusted_proxy` (section 1.2.1); the PROXY protocol is not implemented yet.
-- Capacity planning: memory/connection × max_connections + buffer pool headroom; documented in `docs/perf/`.
+- Behind a reverse proxy: configure `trusted_proxy`, ensure proxy timeouts > heartbeat, forward `Upgrade/Connection`, pass the real client IP in `X-Forwarded-For` (or another single-address header) and list the proxies in `trusted_proxy` (section 1.2.1); the PROXY protocol is not implemented yet.
+- Capacity planning: memory/connection × max_connections + buffer pool headroom; measured in `docs/PERFORMANCE.md` and `docs/BENCHMARKS.md`.
 
-## 6. Runbook (seed, expand in M10)
+## 6. Runbook
 
 | Symptom | Check | Likely cause |
 |---|---|---|
@@ -303,7 +281,7 @@ What to watch: `wsrv_broker_deliveries_total{result="refused"}` rising means a l
 
 Every setting below is also an environment variable, `WSRVD_` plus the key in upper case (`WSRVD_LISTEN_PORT`); the environment is the base layer and `--config` and flags override it. `wsrvd --healthcheck` probes a running daemon (exit 0 = healthy). An unknown `WSRVD_*` variable stops the start. Tokens are files, never variables (ADR-0030).
 
-What the daemon does today (ADR-0017, IPC protocol in `docs/IPC_PROTOCOL.md`). Metrics and an admin listener arrive with M10.
+What the daemon does (ADR-0017, IPC protocol in `docs/IPC_PROTOCOL.md`). Metrics and the admin listener are in section 3.
 
 ### Start-up
 ```sh
