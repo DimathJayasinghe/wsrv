@@ -59,6 +59,7 @@ test('laravel config: a token comes from a file (trimmed), and not from both pla
 });
 
 test('laravel config: the encryption key is validated when the connection is read', function () {
+    function_exists('sodium_crypto_secretbox') || skip('needs ext-sodium (not enabled on every Windows PHP)');
     $good = ConnectionConfig::fromArray(laravel_config(['encryption_master_key_base64' => base64_encode(random_bytes(32))]));
     assertTrue($good->encryption() !== null);
     assertThrows(InvalidArgumentException::class, fn () => ConnectionConfig::fromArray(laravel_config(['encryption_master_key_base64' => 'nope'])));

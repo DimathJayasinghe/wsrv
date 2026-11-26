@@ -209,6 +209,7 @@ test('pusher signature: the comparison is the constant-time one (a timing differ
 });
 
 test('pusher encrypted channels: the key scheme matches the one pusher-js derives, and a round trip works', function () {
+    function_exists('sodium_crypto_secretbox') || skip('needs ext-sodium (not enabled on every Windows PHP)');
     $raw = str_repeat("\x01\x02\x03\x04", 8);
     $enc = Wsrv\Pusher\EncryptedChannels::fromBase64(base64_encode($raw));
     $channel = 'private-encrypted-orders.1';
@@ -228,6 +229,7 @@ test('pusher encrypted channels: the key scheme matches the one pusher-js derive
 });
 
 test('pusher encrypted channels: a bad key, a plain channel and the secret in dumps are refused', function () {
+    function_exists('sodium_crypto_secretbox') || skip('needs ext-sodium (not enabled on every Windows PHP)');
     assertThrows(InvalidArgumentException::class, fn () => Wsrv\Pusher\EncryptedChannels::fromBase64('not base64!'));
     assertThrows(InvalidArgumentException::class, fn () => Wsrv\Pusher\EncryptedChannels::fromBase64(base64_encode('short')));
     $key = base64_encode(random_bytes(32));
