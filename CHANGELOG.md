@@ -9,6 +9,8 @@ Known gaps are listed in [docs/RELEASE.md](docs/RELEASE.md). `0.1.0-rc.1` and `0
 What the first stable release will contain. The owner decided (2026-11-23) that nothing is announced before the library is production-ready, so the first stable version is `1.0.0`, reached through `1.0.0-rc.N` pre-releases.
 
 ### Added
+- `tools/coverage.sh` and `tools/coverage_report.py`: measure the line and branch coverage of `src/` against NFR-M4 and fail below a threshold. Run on 2026-11-26: 92.3 % of the lines, 85.4 % of the branches, every module above its threshold (docs/RELEASE.md section 4).
+- `docs/LIMITS_AUDIT.md`: the 19 default limits of REQUIREMENTS section 4 checked against the code and the tests; three defaults that no test asserted are now asserted.
 - The release job starts each architecture's image and waits for it to become healthy before scanning and pushing it, so the arm64 image is run too (ADR-0033 A1).
 - The C ABI is **1.0** (`wsrv_abi_version()` was 0.4): no symbol changed; from here the major changes only with wsrv 2.0 and a minor only adds (ADR-0016 A4). The project and the PHP package are **1.0.0** in the sources; the tag decides release candidate or final.
 - JavaScript client option `connectTimeout` (default 15 s, `0` = off): an attempt that has not opened by then, ticket call included, is abandoned and retried, so the client cannot stay in `connecting` whatever the platform does.
@@ -34,6 +36,10 @@ What the first stable release will contain. The owner decided (2026-11-23) that 
 - PHP: `Connection::subscribe`/`unsubscribe`, `Worker::publish` (IPC 0.3) and `Wsrv\Publisher` for HTTP publishing (ADR-0028 slice 4); `wsrvd` reports the publish port.
 - HTTP publish endpoint (`POST /publish`, bearer token file, bounded, off by default; `publish_port`, `publish_host`, `publish_token_file`), `wsrv_publish_http_total{status}`, ADR-0028 slice 3.
 - IPC protocol 0.3: `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH` frames and the status `LIMIT`; the daemon drops a departed application's subscriptions at once (ADR-0028 slice 2).
+
+### Changed
+- REQUIREMENTS section 4, two rows reworded to say what the code does (the audit found the code on the safer side): over the global connection cap the connection is closed at accept with no answer (there is no 503); the inbound read buffer is 16 KiB per event loop, shared, and a connection holds only its unfinished frame.
+- The install lines in the README, the Laravel guide, the PHP README and `examples/docker` name `1.0.0-rc.1` until the final release (no `0.1.0` release was ever published); the Docker example's worker runs under `Wsrv\Supervisor`.
 
 ### Fixed
 - The JavaScript client stopped reconnecting after the first failed attempt on Node 22: its built-in WebSocket (undici 6.x, the official `node:22` images) fires `error` for a failed handshake and never `close`, and the client waited for the `close`. An error before the socket opens now ends the attempt and the client backs off and retries; `close()` called from a `close` listener no longer lets a retry through. Found by the soak test: all 50 clients were still stuck 5 minutes after one daemon restart (ADR-0031 A1).

@@ -119,7 +119,7 @@ Further savings when builds grow: cache ccache across runs (`actions/cache` keye
 3. **tsan** — threaded suites.
 4. **fuzz-smoke** — 60 s per target.
 5. **autobahn** — docker, quick subset on PR / full on main.
-6. **coverage** — upload, enforce thresholds.
+6. **coverage** — upload, enforce thresholds (today: `tools/coverage.sh`, run on demand inside the dev container).
 7. **nightly** — long fuzz, MSAN, cppcheck, `-fanalyzer`, benchmarks, soak (weekly).
 8. **release** — tag → build artifacts, SBOM (CycloneDX), checksums, signature, changelog.
 

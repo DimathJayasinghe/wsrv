@@ -75,7 +75,7 @@ Leak and fd-leak checks: integration tests assert open-fd count and RSS stabilit
 
 ## 8. Coverage
 
-`gcov/llvm-cov` via `coverage` preset. Thresholds enforced per module (REQUIREMENTS NFR-M4). Coverage is a floor, not a goal: mutation testing (`mull` or `dextool`) quarterly on `protocol/` to validate test strength.
+`gcov/llvm-cov` via `coverage` preset. Thresholds per module (REQUIREMENTS NFR-M4) are checked on demand with `tools/coverage.sh`, which prints the table and fails below a threshold; they are not a CI gate yet. Last measurement 2026-11-26: every module above its threshold (92.3 % of the lines and 85.4 % of the branches of `src/`; figures and caveats in [RELEASE.md](RELEASE.md) section 4). Coverage is a floor, not a goal: mutation testing (`mull` or `dextool`) quarterly on `protocol/` to validate test strength.
 
 ## 9. Performance testing
 
@@ -94,7 +94,7 @@ Leak and fd-leak checks: integration tests assert open-fd count and RSS stabilit
 | Integration | ✔ | ✔ | ✔ | ✔ |
 | Fuzz smoke (60 s) | ✔ | ✔ | long | long |
 | Autobahn | quick subset | full | full | full (+wss, deflate) |
-| Coverage thresholds | ✔ | ✔ | ✔ | ✔ |
+| Coverage thresholds | — | — | — | on demand: `tools/coverage.sh` |
 | MSAN, `-fanalyzer`, cppcheck | — | — | ✔ | ✔ |
 | Benchmarks / regression | — | — | ✔ | ✔ |
 | Soak 24 h | — | — | weekly | ✔ |

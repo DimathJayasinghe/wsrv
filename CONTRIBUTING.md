@@ -34,7 +34,7 @@ Open an issue before starting so nobody duplicates it.
 - [ ] Edge-case catalogue updated (new row or test reference)
 - [ ] ASAN/UBSAN (and TSAN if threaded) clean
 - [ ] Fuzz target/corpus updated if parsing changed; fuzz smoke passes
-- [ ] Coverage thresholds maintained
+- [ ] Coverage thresholds maintained (`tools/coverage.sh` in the dev container, for changes to `src/`)
 - [ ] No new `static` mutable state, no module dependency violations, no unbounded buffers
 - [ ] Public API / C ABI change? → docs, `CHANGELOG.md`, ABI check, semver impact stated
 - [ ] Security checklist ticked (see PR template) and SECURITY_DESIGN updated if threats/controls changed
