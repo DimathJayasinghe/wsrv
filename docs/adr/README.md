@@ -44,5 +44,6 @@ One decision per file, immutable once *Accepted* (supersede with a new ADR). Use
 | [0038](0038-tcp-transport-for-the-ipc-link.md) | A TCP transport for the IPC link: a worker on another host, or on macOS and Windows against a daemon in Docker | Accepted |
 | [0039](0039-generated-token-for-the-publish-endpoint.md) | The publish token must be one `wsrvd --generate-token` made (a hard requirement in 1.1) | Accepted |
 | [0040](0040-global-budget-for-buffered-bytes.md) | A global budget for the bytes connections buffer: shed new connections above `max_buffered_bytes` | Accepted |
+| [0041](0041-bearer-token-for-the-metrics-page.md) | An optional bearer token for the admin listener's `/metrics` page (`admin_token_file`); `/healthz` and `/readyz` stay open for probes | Proposed |
 
 Statuses: Proposed → Accepted → (Deprecated | Superseded by ADR-NNNN). The project owner moves Proposed → Accepted.
