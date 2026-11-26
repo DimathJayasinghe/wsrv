@@ -44,6 +44,7 @@ enum class Call : std::size_t {
     SignalFd,
     GetFdLimits,
     SetFdSoftLimit,
+    OpenFile,
     Close,
     Count
 };
@@ -64,6 +65,12 @@ public:
     void succeed(Call call, long value) {
         const std::lock_guard<std::mutex> lock{mutex_};
         script_[index(call)].push_back(SysResult{value, 0});
+    }
+    /// The next write(2) really writes at most `bytes` bytes of its buffer (a short write): the
+    /// caller must go on with the rest. Queue several to shorten several writes in a row.
+    void short_write(std::size_t bytes) {
+        const std::lock_guard<std::mutex> lock{mutex_};
+        short_writes_.push_back(bytes);
     }
     /// From now on getrlimit/setrlimit(RLIMIT_NOFILE) act on this in-memory pair, never on the
     /// real process: a test can describe any host limit, and raising the soft limit above `hard`
@@ -133,6 +140,13 @@ public:
         if (const auto injected = scripted(Call::Write)) {
             return *injected;
         }
+        const std::lock_guard<std::mutex> lock{mutex_};
+        if (!short_writes_.empty()) {
+            // A real write of at most the queued size: the kernel taking only part of the buffer.
+            const std::size_t limit = short_writes_.front();
+            short_writes_.pop_front();
+            return real_.write(fd, buf, n < limit ? n : limit);
+        }
         return real_.write(fd, buf, n);
     }
     SysResult poll(pollfd* fds, nfds_t count, int timeout_ms) override {
@@ -188,6 +202,12 @@ public:
             return *injected;
         }
         return real_.chmod_path(path, mode);
+    }
+    SysResult open_file(const char* path, int flags, std::uint32_t mode) override {
+        if (const auto injected = scripted(Call::OpenFile)) {
+            return *injected;
+        }
+        return real_.open_file(path, flags, mode);
     }
     SysResult unlink_path(const char* path) override {
         if (const auto injected = scripted(Call::UnlinkPath)) {
@@ -321,6 +341,7 @@ private:
     std::array<std::size_t, static_cast<std::size_t>(Call::Count)> count_{};
     std::vector<SockOptCall> sockopts_;
     std::optional<FdLimits> pretended_;
+    std::deque<std::size_t> short_writes_;
 };
 
 }  // namespace wsrv::test

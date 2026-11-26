@@ -23,6 +23,9 @@ struct Startup {
     bool help = false;  ///< --help was given: print usage() and exit, config is incomplete
     /// --healthcheck was given: probe the running daemon and exit; no token file is read.
     bool healthcheck = false;
+    /// --generate-token=FILE was given: write a new token to FILE and exit. No configuration, no
+    /// other argument, no secret is read (ADR-0038 section 3).
+    std::string generate_token;
 };
 
 /// Turn the environment and the command line into a Startup (ADR-0017, ADR-0030). The environment
@@ -32,6 +35,7 @@ struct Startup {
 /// override the environment:
 ///   --help                 print usage
 ///   --healthcheck          probe the running daemon (see healthcheck.hpp)
+///   --generate-token=FILE  write a new IPC token to FILE (mode 0600, never overwritten); alone
 ///   --config=FILE          read key = value lines from FILE
 ///   --key=value            any config key; dashes mean underscores
 /// The token is read from `ipc_token_file` (never from an argument), with the permission checks of

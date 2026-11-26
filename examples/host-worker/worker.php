@@ -1,7 +1,7 @@
 <?php
 // A PHP worker that runs on YOUR machine (macOS, Windows or Linux) and reaches wsrvd over TCP (wsrv 1.1, ADR-0038).
 //   WSRV_IPC     where the daemon's IPC port is   (default tcp://127.0.0.1:9300)
-//   WSRV_TOKEN   the shared secret, at least 32 bytes (see compose.yaml for how to read it)
+//   WSRV_TOKEN   the shared secret the daemon's `wsrvd --generate-token` made (see compose.yaml for how to read it)
 // Echoes every message; "join <room>" puts the connection in a room (needs WSRVD_BROKER=true on the daemon).
 require __DIR__ . '/vendor/autoload.php';
 
@@ -15,8 +15,8 @@ if (!method_exists(Wsrv\Client::class, 'isTcpEndpoint')) {
 
 $endpoint = getenv('WSRV_IPC') ?: 'tcp://127.0.0.1:9300';
 $token = getenv('WSRV_TOKEN') ?: '';
-if (strlen($token) < 32) {
-    fwrite(STDERR, "WSRV_TOKEN is missing or shorter than 32 bytes: see examples/host-worker/compose.yaml\n");
+if ($token === '') {
+    fwrite(STDERR, "WSRV_TOKEN is missing: see examples/host-worker/compose.yaml for how to read it\n");
     exit(2);
 }
 

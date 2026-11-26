@@ -150,7 +150,7 @@ public:
             {
                 const std::lock_guard lock{mutex_};
                 for (const std::string& line : lines_) {
-                    if (line.rfind(std::string{event} + "|", 0) == 0) {
+                    if (line.starts_with(std::string{event} + "|")) {
                         return line;
                     }
                 }
@@ -158,6 +158,36 @@ public:
             std::this_thread::sleep_for(10ms);
         }
         return {};
+    }
+    /// Wait until at least `count` lines of `event` exist: the way a test knows the server has
+    /// admitted that many connections before it sends the next byte.
+    [[nodiscard]] bool wait_for_count(std::string_view event, std::size_t count) {
+        for (int attempt = 0; attempt < 500; ++attempt) {
+            {
+                const std::lock_guard lock{mutex_};
+                std::size_t seen = 0;
+                for (const std::string& line : lines_) {
+                    if (line.starts_with(std::string{event} + "|")) {
+                        ++seen;
+                    }
+                }
+                if (seen >= count) {
+                    return true;
+                }
+            }
+            std::this_thread::sleep_for(10ms);
+        }
+        return false;
+    }
+    [[nodiscard]] std::size_t count_of(std::string_view event) {
+        const std::lock_guard lock{mutex_};
+        std::size_t seen = 0;
+        for (const std::string& line : lines_) {
+            if (line.starts_with(std::string{event} + "|")) {
+                ++seen;
+            }
+        }
+        return seen;
     }
     [[nodiscard]] std::string everything() {
         const std::lock_guard lock{mutex_};
@@ -1048,6 +1078,12 @@ TEST_F(EndToEnd, ABrowserThatConnectsBeforeAnyApplicationIsHeldNotLost) {
 
 // ---- the TCP transport (ADR-0038) --------------------------------------------------------------
 
+// ADR-0038 section 5 and docs/SECURITY_DESIGN.md T23 state the size of the waiting room: an
+// attacker needs MORE than this many connections inside the worker's connect-to-HELLO window. The
+// tests below are written in terms of the constant; this pins its value, so changing it means
+// changing the documents too (and thinking about what it buys).
+static_assert(IpcServer::kMaxPendingHello == 8, "the ADR and the security design say 8");
+
 /// A TCP server on a port the kernel chose, with a token of the length the daemon insists on.
 struct TcpIpcTest : public IpcServerTest {
     static inline const std::string kToken = std::string(32, 't');
@@ -1062,7 +1098,6 @@ struct TcpIpcTest : public IpcServerTest {
     static std::unique_ptr<Client> connect(const RunningServer& server) {
         const std::optional<wsrv::Endpoint> bound = server.endpoint();
         EXPECT_TRUE(bound.has_value());
-        const std::string host = bound ? wsrv::format_endpoint(*bound) : "127.0.0.1:0";
         return std::make_unique<Client>(Client::Tcp{},
                                         bound && bound->v6 ? "::1" : "127.0.0.1",
                                         bound ? bound->port : std::uint16_t{0});
@@ -1148,26 +1183,102 @@ TEST_F(TcpIpcTest, ASecondAuthenticatedApplicationIsToldTheSlotIsTakenAndTheFirs
     EXPECT_EQ(first->receive()->kind, Reply::Kind::Pong);
 }
 
-// The rule that keeps a stranger who can reach the port from locking the application out: a
-// connection that has not said HELLO holds nothing, so a newcomer replaces it.
-TEST_F(TcpIpcTest, AConnectionThatHasNotSaidHelloDoesNotHoldTheSlotAgainstANewcomer) {
+// The first rule that keeps a stranger who can reach the port from locking the application out: a
+// connection that has not said HELLO waits in a room of its own and does not hold the application's
+// place. It is told BACKPRESSURE when the application is accepted.
+TEST_F(TcpIpcTest, ASilentConnectionDoesNotKeepTheApplicationOut) {
     const RunningServer server{sys, backend, tcp_config()};
     const auto idle = connect(server);  // says nothing, for ipc_hello_timeout_ms (5 s here)
     ASSERT_TRUE(idle->connected());
+    ASSERT_TRUE(logs.wait_for_count("app_waiting", 1));
 
     const auto application = connect(server);
     application->send_hello(kToken);
     const auto reply = application->receive();
     ASSERT_TRUE(reply);
-    EXPECT_EQ(reply->kind, Reply::Kind::HelloOk) << "the idle connection kept the slot";
-    // The replaced connection is told why, like any application the daemon turns away.
+    EXPECT_EQ(reply->kind, Reply::Kind::HelloOk) << "the idle connection kept the place";
+    // The one left waiting is told why, like any application the daemon turns away.
     const auto told = idle->receive();
     ASSERT_TRUE(told);
     EXPECT_EQ(told->status, kBackpressure);
-    // And it leaves a trace an operator can see (a warning).
-    const std::string line = logs.wait_for("app_replaced");
-    EXPECT_FALSE(line.empty());
-    EXPECT_NE(line.find("|3|"), std::string::npos) << line;
+    EXPECT_EQ(logs.count_of("app_replaced"), 0U)
+        << "nobody had to be evicted: the room was not full";
+}
+
+// ADR-0038 section 5, the waiting room. Up to kMaxPendingHello connections wait at once, so a flood
+// has to be larger than the room to push the real application out. This is the test that fails on
+// the first design (a newcomer replaced the one waiting connection): there the application, oldest
+// of the lot, was gone at the first newcomer and its HELLO answered with BACKPRESSURE.
+TEST_F(TcpIpcTest, TheApplicationKeepsItsPlaceThroughAsManyOtherConnectionsAsTheRoomHolds) {
+    constexpr std::size_t kRoom = IpcServer::kMaxPendingHello;
+    const RunningServer server{sys, backend, tcp_config()};
+    const auto application = connect(server);  // the oldest waiting connection, silent so far
+    std::vector<std::unique_ptr<Client>> strangers;
+    for (std::size_t i = 0; i + 1 < kRoom; ++i) {
+        strangers.push_back(connect(server));
+    }
+    // The room is exactly full. Wait until the server has admitted all of them: only then is the
+    // HELLO below a test of the room and not a race the application wins by being early.
+    ASSERT_TRUE(logs.wait_for_count("app_waiting", kRoom));
+
+    application->send_hello(kToken);
+    const auto reply = application->receive();
+    ASSERT_TRUE(reply);
+    EXPECT_EQ(reply->kind, Reply::Kind::HelloOk) << "the flood pushed the application out";
+    for (const auto& stranger : strangers) {
+        const auto told = stranger->receive();
+        ASSERT_TRUE(told);
+        EXPECT_EQ(told->status, kBackpressure);  // told, not cut off in silence
+    }
+    EXPECT_EQ(logs.count_of("app_replaced"), 0U);
+}
+
+TEST_F(TcpIpcTest, OneConnectionTooManyEvictsTheOldestAndTellsItWhy) {
+    constexpr std::size_t kRoom = IpcServer::kMaxPendingHello;
+    const RunningServer server{sys, backend, tcp_config()};
+    const auto oldest = connect(server);
+    std::vector<std::unique_ptr<Client>> others;
+    for (std::size_t i = 0; i < kRoom; ++i) {  // kRoom others: one more than fits beside the oldest
+        others.push_back(connect(server));
+    }
+    ASSERT_TRUE(logs.wait_for_count("app_waiting", kRoom + 1));
+
+    // The oldest is the one that went: its HELLO gets the refusal, never HELLO_OK.
+    oldest->send_hello(kToken);
+    const auto told = oldest->receive();
+    ASSERT_TRUE(told);
+    EXPECT_EQ(told->kind, Reply::Kind::Status);
+    EXPECT_EQ(told->status, kBackpressure);
+    EXPECT_EQ(logs.count_of("app_replaced"), 1U);
+    EXPECT_NE(logs.wait_for("app_replaced").find("|3|"), std::string::npos);  // a warning
+
+    // The newest, which stayed, still gets in: eviction takes from the old end only.
+    others.back()->send_hello(kToken);
+    const auto reply = others.back()->receive();
+    ASSERT_TRUE(reply);
+    EXPECT_EQ(reply->kind, Reply::Kind::HelloOk);
+}
+
+// The deadline belongs to each waiting connection, and a place that times out is free again: after
+// the whole room has gone silent and timed out, a full room's worth of new connections evicts
+// nobody.
+TEST_F(TcpIpcTest, EveryWaitingConnectionHasItsOwnDeadlineAndFreesItsPlace) {
+    constexpr std::size_t kRoom = IpcServer::kMaxPendingHello;
+    IpcServerConfig c = tcp_config();
+    c.hello_timeout = 200ms;
+    const RunningServer server{sys, backend, c};
+    std::vector<std::unique_ptr<Client>> silent;
+    for (std::size_t i = 0; i < kRoom; ++i) {
+        silent.push_back(connect(server));
+    }
+    ASSERT_TRUE(logs.wait_for_count("app_rejected", kRoom));  // "no HELLO in time", once each
+
+    std::vector<std::unique_ptr<Client>> second_wave;
+    for (std::size_t i = 0; i < kRoom; ++i) {
+        second_wave.push_back(connect(server));
+    }
+    ASSERT_TRUE(logs.wait_for_count("app_waiting", 2 * kRoom));
+    EXPECT_EQ(logs.count_of("app_replaced"), 0U) << "timed-out connections still held their places";
 }
 
 TEST_F(TcpIpcTest, AHelloThatAlreadyArrivedIsProcessedBeforeAnyDisplacement) {
@@ -1292,7 +1403,7 @@ TEST_F(TcpIpcTest, MoreRefusalsThanTheLingerCapAreAllAnsweredAndTheApplicationIs
 TEST_F(IpcServerTest,
        OnAUnixSocketAConnectionThatHasNotSaidHelloStillHoldsTheSlot) {  // 1.0 behaviour
     const RunningServer server{sys, backend, config()};
-    Client idle{path()};
+    const Client idle{path()};
     ASSERT_TRUE(idle.connected());
     Client second{path()};
     second.send_hello();

@@ -20,9 +20,26 @@ $daemonPath = $argv[1] ?? fail('usage: php tests/tcp_interop.php /path/to/wsrvd'
 $dir = sys_get_temp_dir() . '/wsrv-php-tcp-' . bin2hex(random_bytes(4));
 mkdir($dir, 0700) || fail('mkdir');
 $tokenFile = $dir . '/ipc.token';
-$token = bin2hex(random_bytes(24));  // 48 characters: over the daemon's 32-byte floor for TCP
-file_put_contents($tokenFile, $token) !== false || fail('write the token');
-chmod($tokenFile, 0600);
+
+// The token comes from the real generator (ADR-0038 section 3): this exercises the CLI end to end.
+// Over TCP the daemon refuses any other token, however long.
+exec(escapeshellarg($daemonPath) . ' --generate-token=' . escapeshellarg($tokenFile) . ' 2>&1', $out, $code);
+$code === 0 || fail("--generate-token failed ($code): " . implode(' ', $out));
+$token = trim((string) file_get_contents($tokenFile));
+preg_match('/^wsrv1_[0-9a-f]{64}_[0-9a-f]{8}$/', $token) === 1 || fail('the generated token has an unexpected form');
+(fileperms($tokenFile) & 0777) === 0600 || fail('the generated token file is not mode 0600');
+exec(escapeshellarg($daemonPath) . ' --generate-token=' . escapeshellarg($tokenFile) . ' 2>&1', $again, $againCode);
+$againCode !== 0 || fail('--generate-token overwrote an existing token file');
+trim((string) file_get_contents($tokenFile)) === $token || fail('the existing token file was changed');
+
+// A long token somebody chose is refused at start, and the message says what to run.
+$weakFile = $dir . '/weak.token';
+file_put_contents($weakFile, 'MyCompanyWebsocketToken2026!!!!!') !== false || fail('write the weak token');
+chmod($weakFile, 0600);
+exec(escapeshellarg($daemonPath) . ' --ipc-port=0 --ipc-token-file=' . escapeshellarg($weakFile) . ' 2>&1', $weakOut, $weakCode);
+$weakCode !== 0 || fail('wsrvd started over TCP with a chosen token');
+str_contains(implode("\n", $weakOut), '--generate-token') || fail('the refusal does not name --generate-token');
+str_contains(implode("\n", $weakOut), 'MyCompanyWebsocketToken') && fail('the refusal echoed the token');
 
 $process = proc_open(
     [$daemonPath, '--ipc-port=0', "--ipc-token-file=$tokenFile", '--listen-port=0',

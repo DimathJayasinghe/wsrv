@@ -61,8 +61,10 @@ struct IpcServerConfig {
 /// What happens to a connection, in order:
 ///  1. accept. On a Unix socket the kernel's record of who connected (SO_PEERCRED) is read BEFORE any
 ///     byte: a peer whose uid is not the daemon's is dropped without a reply. Over TCP there is no
-///     such record; the token (mandatory) is the authentication, and a connection that has not
-///     yet said HELLO is replaced by a newcomer instead of holding the slot (ADR-0038).
+///     such record; the token (mandatory) is the authentication. A connection that has not said
+///     HELLO yet waits in a room of kMaxPendingHello places, not in the application's slot; the
+///     first to send an accepted HELLO becomes the application and the others are refused; when the
+///     room is full the oldest is evicted (ADR-0038 section 5).
 ///  2. If an application is already connected, the newcomer gets STATUS(request 0,
 ///     WSRV_ERR_BACKPRESSURE) and is closed: the single consumer slot is full (ADR-0017 4a).
 ///  3. HELLO must arrive within hello_timeout, in a frame no larger than the biggest legal HELLO.
@@ -111,8 +113,14 @@ public:
     /// Listener readiness: accept new connections.
     void on_event(PollEvents events) noexcept override;
 
-    /// True while an application is connected (accepted or not yet through HELLO).
+    /// True while an application is connected (on a Unix socket also while it has not yet said
+    /// HELLO; over TCP a connection that has not is waiting, not a consumer).
     [[nodiscard]] bool has_consumer() const noexcept;
+
+    /// How many TCP connections may wait for their HELLO at once (ADR-0038 section 5). To keep the
+    /// real application out an attacker must make more than this many connections inside the window
+    /// between its connect and its HELLO being read. Public so that the tests can say "a full room".
+    static constexpr std::size_t kMaxPendingHello = 8;
 
     /// The address the TCP transport is bound to (the real port when 0 was asked); nothing for a
     /// Unix socket.
@@ -153,6 +161,18 @@ private:
 
     void accept_burst() noexcept;
     void admit(Fd client) noexcept;
+    /// TCP: put a connection that has not said HELLO into the waiting room, evicting the oldest one
+    /// when it is full.
+    void admit_waiting(Fd client) noexcept;
+    /// A waiting connection's HELLO was accepted: make it THE application and refuse every other
+    /// waiting connection. False if it cannot (another one was accepted first).
+    [[nodiscard]] bool claim(Peer& peer) noexcept;
+    /// Tell every waiting connection BACKPRESSURE and let it go (an application was accepted).
+    void refuse_waiting() noexcept;
+    /// Take the waiting connection at `index` out of the room (the ones after it move up).
+    [[nodiscard]] std::unique_ptr<Peer> take_waiting(std::size_t index) noexcept;
+    /// Drop waiting connections that have closed themselves (timeout, EOF) and wait to be released.
+    void forget_closed_waiting() noexcept;
     [[nodiscard]] int listener_fd() const noexcept;
     [[nodiscard]] bool is_tcp() const noexcept;
     /// TCP_NODELAY and keepalive probes on an accepted TCP socket (ADR-0038 section 5).
@@ -186,7 +206,11 @@ private:
     std::optional<TimerHandle> retry_;
     std::optional<TimerHandle> grace_timer_;  ///< armed while stale connections await 1012
     std::optional<TimerHandle> close_retry_;  ///< armed while a loop has refused a stale close
-    std::unique_ptr<Peer> peer_;
+    std::unique_ptr<Peer> peer_;  ///< the application (on a Unix socket, also before its HELLO)
+    /// TCP only: connections that have not said HELLO, oldest first, `waiting_count_` of them.
+    /// Fixed slots: no allocation, and a flood cannot grow it.
+    std::array<std::unique_ptr<Peer>, kMaxPendingHello> waiting_;
+    std::size_t waiting_count_ = 0;
     std::array<std::unique_ptr<Lingering>, kMaxLingering> lingering_;  ///< fixed slots: no allocation
     /// Lifetime token for tasks handed to the loop: they hold a weak_ptr, so a task that outlives
     /// the server does nothing.

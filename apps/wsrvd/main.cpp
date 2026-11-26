@@ -6,6 +6,7 @@
 #include "net/event_loop.hpp"
 #include "net/signal_watcher.hpp"
 #include "net/syscalls.hpp"
+#include "net/system_random.hpp"
 
 #include <array>
 #include <chrono>
@@ -24,6 +25,7 @@
 #include "wsrvd/ipc_server.hpp"
 #include "wsrvd/reload.hpp"
 #include "wsrvd/startup.hpp"
+#include "wsrvd/token_file.hpp"
 
 namespace {
 
@@ -152,6 +154,19 @@ int health(const wsrv::wsrvd::Startup& startup) {
     return 0;
 }
 
+/// --generate-token=FILE (ADR-0038 section 3): a new random token in FILE, mode 0600. The token is
+/// never printed; the path is, so the operator sees what was done and where.
+int generate(const std::string& path, wsrv::ISyscalls& sys) {
+    wsrv::SystemRandom random;
+    const wsrv::Result<void> done = wsrv::wsrvd::generate_token_file(sys, random, path);
+    if (!done) {
+        std::cerr << "wsrvd: cannot create the token file " << path << ": " << done.error().context << '\n';
+        return 1;
+    }
+    std::cout << "wsrvd: wrote a new token to " << path << " (mode 0600)\n";
+    return 0;
+}
+
 int run(const std::vector<std::string_view>& args, const std::vector<std::string_view>& environment) {
     wsrv::LinuxSyscalls sys;
     std::string detail;
@@ -167,6 +182,9 @@ int run(const std::vector<std::string_view>& args, const std::vector<std::string
     if (startup->help) {
         std::cout << wsrv::wsrvd::usage();
         return 0;
+    }
+    if (!startup->generate_token.empty()) {
+        return generate(startup->generate_token, sys);
     }
     if (startup->healthcheck) {
         return health(*startup);
