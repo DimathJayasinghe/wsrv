@@ -104,7 +104,9 @@ The full API (events, authentication hook, rooms, supervisor): [bindings/php/REA
 
 [docs/LARAVEL.md](LARAVEL.md) is a complete guide: install, config, a **one-time ticket** so only logged-in users can connect, an Artisan worker that decides who may join which room, publishing from controllers and queued jobs, and the browser side.
 
-**Honest scope.** wsrv is not a Laravel Broadcasting driver. `broadcast(new Event)`, Laravel Echo and the Pusher protocol are not implemented; you call `Wsrv\Publisher` yourself. The wsrv calls in the guide are covered by the package's tests, including a run against a real daemon; the Laravel glue was tried by hand against Laravel 13 and is not in CI.
+**Two ways.** The guide above is for your own rooms and join messages: you call `Wsrv\Publisher` yourself. If you want `broadcast(new Event)`, `Broadcast::channel()` and Laravel Echo, use [docs/LARAVEL_ECHO.md](LARAVEL_ECHO.md) (the `wsrv` broadcasting driver and `php artisan wsrv:echo`, planned for 1.2); one daemon serves one of the two at a time.
+
+**Honest scope of the ticket guide.** The wsrv calls in the guide are covered by the package's tests, including a run against a real daemon; the Laravel glue was tried by hand against Laravel 13 and is not in CI.
 
 ## 4. Publish from anywhere
 

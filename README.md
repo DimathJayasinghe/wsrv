@@ -155,6 +155,7 @@ The documents below are the contract the code satisfies; read them before changi
 | [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md) | Test pyramid, fuzzing, Autobahn, sanitizers, perf | Writing tests |
 | [docs/BUILD_AND_TOOLING.md](docs/BUILD_AND_TOOLING.md) | CMake, presets, CI, linters, dependency policy | Setting up / changing build |
 | [docs/LARAVEL.md](docs/LARAVEL.md) | Rooms and publishing from a Laravel app | Using wsrv from Laravel |
+| [docs/LARAVEL_ECHO.md](docs/LARAVEL_ECHO.md) | Laravel Echo and `broadcast()` on wsrv (planned for 1.2) | Laravel Echo on wsrv |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Config, logging, metrics, shutdown, deployment hardening | Shipping / running |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Measured scaling, fan-out and soak numbers and their limits | Sizing or touching a hot path |
 | [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | wsrv against Workerman, Swoole and Reverb: numbers, noise, limits, how to rerun | Choosing a server, or quoting a number |

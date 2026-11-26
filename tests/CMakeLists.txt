@@ -147,7 +147,9 @@ if(WSRV_PHP)
         COMMAND ${WSRV_PHP} ${PROJECT_SOURCE_DIR}/bindings/php/tests/interop.php $<TARGET_FILE:wsrvd>)
     add_test(NAME php_tcp_interop
         COMMAND ${WSRV_PHP} ${PROJECT_SOURCE_DIR}/bindings/php/tests/tcp_interop.php $<TARGET_FILE:wsrvd>)
-    set_tests_properties(php_unit php_interop php_tcp_interop PROPERTIES
+    add_test(NAME php_pusher_interop
+        COMMAND ${WSRV_PHP} ${PROJECT_SOURCE_DIR}/bindings/php/tests/pusher_interop.php $<TARGET_FILE:wsrvd>)
+    set_tests_properties(php_unit php_interop php_tcp_interop php_pusher_interop PROPERTIES
         LABELS php TIMEOUT 120 ENVIRONMENT "WSRV_PHP_NO_SKIP=1")
 else()
     message(STATUS "php not found: the PHP binding tests are not registered")

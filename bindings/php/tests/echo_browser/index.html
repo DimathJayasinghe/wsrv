@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="csrf-token" content="__CSRF__">
+<title>wsrv: real Laravel Echo against the gateway</title>
+<style>body{font:14px/1.5 system-ui,sans-serif;margin:2rem}li.ok{color:#0a6b2d}li.fail{color:#b00020;font-weight:600}</style>
+</head>
+<body>
+<h1>wsrv: real <code>pusher-js</code> and <code>laravel-echo</code> against the gateway</h1>
+<p id="status">running...</p>
+<ul id="log"></ul>
+<script src="/vendor/pusher.js"></script>
+<script src="/vendor/echo.js"></script>
+<script>
+// Test harness (tests/echo_browser/run.php): drives two real Echo instances (Ada and Bob).
+window.Pusher = Pusher;
+const KEY = '__KEY__';
+const WS_PORT = __WS_PORT__;
+const results = [];
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const within = (promise, ms, what) => Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error('timed out: ' + what)), ms))]);
+const same = (a, b, what) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(what + ': expected ' + JSON.stringify(b) + ' got ' + JSON.stringify(a)); };
+
+function mk(user) {
+    return new Echo.default({
+        broadcaster: 'reverb', key: KEY, wsHost: '127.0.0.1', wsPort: WS_PORT, wssPort: WS_PORT,
+        forceTLS: false, enabledTransports: ['ws'], authEndpoint: '/broadcasting/auth',
+        auth: { headers: { 'X-User': user } },
+    });
+}
+
+/** Resolves when the channel's subscription succeeded. */
+function ready(channel) {
+    const sub = channel.subscription;
+    if (sub.subscribed) return Promise.resolve();
+    return within(new Promise((resolve, reject) => {
+        sub.bind('pusher:subscription_succeeded', () => resolve());
+        sub.bind('pusher:subscription_error', (e) => reject(new Error('subscription_error ' + JSON.stringify(e))));
+    }), 5000, 'subscription of ' + sub.name);
+}
+
+/** The next time `channel` hears `event` (raw name, leading dot). */
+function next(channel, event, ms = 5000) {
+    return within(new Promise((resolve) => channel.listen(event, resolve)), ms, event);
+}
+
+// A page that uses many channels subscribes to all of them in one burst when it connects, and again after every
+// reconnect, before the daemon has answered a single one. The default limits must carry that: 30 public and
+// 30 private channels are 60 of the 64 a connection may hold.
+const BULK = 30;
+function subscribeMany(echo) {
+    const channels = [];
+    for (let i = 0; i < BULK; i++) {
+        channels.push(echo.channel('bulk.' + i));
+        channels.push(echo.private('chat.' + (100 + i)));
+    }
+    return channels;
+}
+const allSubscribed = (channels) => channels.every((c) => c.subscription.subscribed);
+
+// POSTs to the application: JSON, with the CSRF token a Laravel page carries in its head.
+const csrf = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+function post(path, body, headers = {}) {
+    return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-CSRF-TOKEN': csrf, ...headers }, body: JSON.stringify(body) });
+}
+
+/**
+ * Publish an event the way broadcast(...)->toOthers() does; `socket` is the sender's socket id, which
+ * Laravel reads from the X-Socket-ID header. Returns the subscriber count when the server reports one
+ * (the stand-in router does; Laravel's broadcast() does not), else null.
+ */
+async function emit(channel, event, data, socket) {
+    const r = await post('/emit', { channel, event, data, socket }, socket ? { 'X-Socket-ID': socket } : {});
+    if (!r.ok) throw new Error('emit failed with HTTP ' + r.status);
+    const body = await r.json();
+    return typeof body.subscribers === 'number' ? body.subscribers : null;
+}
+const subscribers = (got, expected, what) => { if (got !== null) same(got, expected, what); };
+
+async function check(name, body) {
+    const li = document.createElement('li');
+    try { await body(); results.push({ name, ok: true }); li.className = 'ok'; li.textContent = 'ok   ' + name; }
+    catch (e) { results.push({ name, ok: false, error: String(e && e.message || e) }); li.className = 'fail'; li.textContent = 'FAIL ' + name + ': ' + (e && e.message || e); }
+    document.getElementById('log').appendChild(li);
+}
+
+(async () => {
+    const A = mk('ada');
+    const B = mk('bob');
+
+    await check('both connect and get a socket id of the form digits.digits', async () => {
+        await within((async () => { while (!A.socketId() || !B.socketId()) await sleep(50); })(), 5000, 'connect');
+        if (!/^\d+\.\d+$/.test(A.socketId()) || !/^\d+\.\d+$/.test(B.socketId())) throw new Error(A.socketId() + ' ' + B.socketId());
+    });
+
+    await check('public channel: a server event reaches the listener', async () => {
+        const ch = A.channel('orders');
+        const got = next(ch, '.OrderShipped');
+        await ready(ch);
+        subscribers(await emit('orders', 'OrderShipped', { id: 7 }), 1, 'subscribers');
+        same(await got, { id: 7 }, 'payload');
+    });
+
+    await check('private channel: auth through /broadcasting/auth, then events arrive', async () => {
+        const ch = A.private('chat.7');
+        const got = next(ch, '.Msg');
+        await ready(ch);
+        await emit('private-chat.7', 'Msg', { text: 'hi' });
+        same(await got, { text: 'hi' }, 'payload');
+    });
+
+    await check('private channel the app refuses: the subscription fails, nothing is joined', async () => {
+        const ch = A.private('forbidden.1');
+        const err = await within(new Promise((resolve) => ch.subscription.bind('pusher:subscription_error', resolve)), 5000, 'subscription_error');
+        if (ch.subscription.subscribed) throw new Error('joined a channel the app refused');
+        subscribers(await emit('private-forbidden.1', 'Msg', { n: 0 }), 0, 'subscribers of the refused channel');
+        if (!err) throw new Error('no error');
+    });
+
+    await check('presence: here, joining and leaving', async () => {
+        const events = [];
+        const a = A.join('room.1');
+        a.here((users) => events.push(['here-a', users])).joining((u) => events.push(['joining', u])).leaving((u) => events.push(['leaving', u]));
+        await ready(a);
+        await sleep(200);
+        same(events[0], ['here-a', [{ name: 'Ada' }]], 'A sees itself');
+        const b = B.join('room.1');
+        let bHere = null;
+        b.here((users) => { bHere = users; });
+        await ready(b);
+        await sleep(300);
+        same(events.find((e) => e[0] === 'joining'), ['joining', { name: 'Bob' }], 'A hears Bob join');
+        same(bHere.map((u) => u.name).sort(), ['Ada', 'Bob'], 'B sees both');
+        B.leave('room.1');
+        await sleep(400);
+        same(events.find((e) => e[0] === 'leaving'), ['leaving', { name: 'Bob' }], 'A hears Bob leave');
+    });
+
+    await check('whisper: a member of a private channel reaches the other member', async () => {
+        const b = B.private('chat.7');
+        await ready(b);
+        const got = next(A.private('chat.7'), '.client-typing');
+        b.whisper('typing', { who: 'bob' });
+        same(await got, { who: 'bob' }, 'whisper');
+    });
+
+    await check('toOthers(): the sender is left out, the other member gets it', async () => {
+        const seenByA = [];
+        const seenByB = [];
+        A.private('chat.7').listen('.Others', (e) => seenByA.push(e));
+        B.private('chat.7').listen('.Others', (e) => seenByB.push(e));
+        await emit('private-chat.7', 'Others', { n: 1 }, A.socketId());
+        await sleep(600);
+        same(seenByB, [{ n: 1 }], 'B');
+        same(seenByA, [], 'A (the sender)');
+    });
+
+    await check('encrypted channel: the browser decrypts what the daemon only carried as ciphertext', async () => {
+        const ch = A.encryptedPrivate('secret.1');
+        const got = next(ch, '.Secret');
+        await ready(ch);
+        await emit('private-encrypted-secret.1', 'Secret', { note: 'confidential' });
+        same(await got, { note: 'confidential' }, 'decrypted payload');
+    });
+
+    await check('join then leave at once (a route change): the library subscribes first and leaves on the answer; the others see a join, then a leave, and no ghost remains', async () => {
+        // pusher-js sends pusher:subscribe even for a cancelled join, and pusher:unsubscribe only when
+        // the success arrives, so a join followed by a leave is what the others must see, in order.
+        const watcher = B.join('room.2');
+        const seen = [];
+        watcher.joining((u) => seen.push(['joining', u.name])).leaving((u) => seen.push(['leaving', u.name]));
+        await ready(watcher);
+        await sleep(200);
+        A.join('room.2');
+        A.leave('room.2');
+        await sleep(1000);
+        same(seen, [['joining', 'Ada'], ['leaving', 'Ada']], 'what B saw');
+        same(watcher.subscription.members.count, 1, 'members left in the room');
+    });
+
+    await check('a clean disconnect is seen by the others as a leave', async () => {
+        const watcher = B.join('room.3');
+        const left = [];
+        watcher.leaving((u) => left.push(u));
+        await ready(watcher);
+        const a = A.join('room.3');
+        await ready(a);
+        await sleep(300);
+        A.disconnect();
+        await sleep(800);
+        same(left, [{ name: 'Ada' }], 'leaving');
+    });
+
+    await check('many channels at once: a page that joins 60 channels in one burst gets every one, with the default limits', async () => {
+        const M = mk('ada');
+        const channels = subscribeMany(M);   // in one tick, before the socket is even open
+        await Promise.all(channels.map(ready));
+        same(M.connectionStatus(), 'connected', 'the connection is still open');
+        same(allSubscribed(channels), true, 'every channel subscribed');
+        const first = next(channels[0], '.Bulk');                    // public bulk.0
+        const last = next(channels[channels.length - 1], '.Bulk');   // private chat.129
+        subscribers(await emit('bulk.0', 'Bulk', { i: 0 }), 1, 'subscribers of bulk.0');
+        subscribers(await emit('private-chat.129', 'Bulk', { i: 129 }), 1, 'subscribers of private-chat.129');
+        same(await first, { i: 0 }, 'public payload');
+        same(await last, { i: 129 }, 'private payload');
+        M.disconnect();
+    });
+
+    await check('the daemon and the worker restart under connected browsers: Echo reconnects, re-authorizes and resubscribes', async () => {
+        const C = mk('ada');
+        const D = mk('bob');
+        const M = mk('ada');
+        const many = subscribeMany(M);   // 60 channels that must all come back in one burst
+        await within((async () => { while (!C.socketId() || !D.socketId()) await sleep(50); })(), 5000, 'connect');
+        const pc = C.private('chat.9');
+        const pd = D.private('chat.9');
+        const roomD = D.join('room.4');
+        const roomC = C.join('room.4');
+        await Promise.all([ready(pc), ready(pd), ready(roomD), ready(roomC), ...many.map(ready)]);
+        await sleep(300);
+        same(roomD.subscription.members.count, 2, 'members before the restart');
+        const before = C.socketId();
+        const got = [];
+        pd.listen('.After', (e) => got.push(e));
+        await post('/restart', {});
+        await within((async () => { while (!(await (await fetch('/restarted')).json()).done) await sleep(100); })(), 40000, 'the restart');
+        await within((async () => {
+            while (!(C.connectionStatus() === 'connected' && D.connectionStatus() === 'connected' && C.socketId() !== before
+                && pc.subscription.subscribed && pd.subscription.subscribed && roomD.subscription.subscribed && roomC.subscription.subscribed
+                && M.connectionStatus() === 'connected' && allSubscribed(many))) await sleep(100);
+        })(), 40000, 'both browsers reconnected and resubscribed');
+        await sleep(300);
+        same(roomD.subscription.members.count, 2, 'members after the restart');
+        subscribers(await emit('private-chat.9', 'After', { n: 2 }), 2, 'subscribers after the restart');
+        await sleep(300);
+        same(got, [{ n: 2 }], 'event after the restart');
+        const afterM = next(many[many.length - 1], '.After');        // the last private channel of the many
+        subscribers(await emit('private-chat.129', 'After', { n: 3 }), 1, 'subscribers of private-chat.129 after the restart');
+        same(await afterM, { n: 3 }, 'event on a page with 60 channels after the restart');
+        M.disconnect();
+    });
+
+    document.getElementById('status').textContent = results.every((r) => r.ok) ? 'ALL OK' : 'FAILED';
+    await post('/result', results);
+})();
+</script>
+</body>
+</html>
