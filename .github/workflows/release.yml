@@ -98,6 +98,19 @@ jobs:
             --build-arg "VERSION=$version" --build-arg "REVISION=$GITHUB_SHA" \
             -t "$repo:$version-${{ matrix.arch }}" .
           echo "ref=$repo:$version-${{ matrix.arch }}" >> "$GITHUB_OUTPUT"
+      - name: The image starts and becomes healthy (natively, on this architecture)
+        # container.yml runs the same check on every push, on x86-64 only; this one runs on the arm64
+        # runner too, so an image that builds but does not start is never pushed.
+        run: |
+          docker run -d --name wsrvd-smoke "${{ steps.build.outputs.ref }}"
+          for i in $(seq 1 30); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' wsrvd-smoke)
+            [ "$status" = healthy ] && break
+            sleep 2
+          done
+          echo "health after wait: $status"
+          docker logs wsrvd-smoke
+          [ "$status" = healthy ]
       - name: Scan the image, fixable HIGH and CRITICAL findings stop the release
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:

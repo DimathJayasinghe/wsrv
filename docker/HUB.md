@@ -40,6 +40,8 @@ Behind a reverse proxy, set `WSRVD_TRUSTED_PROXY` to your proxy so limits and lo
 
 Images are scanned before they are pushed, signed with cosign (keyless) and carry build provenance; each release has an SBOM.
 
+Use cosign **3 or newer**: it signs and reads signatures in the Sigstore bundle format, and cosign 2.x answers `no signatures found` for these images.
+
 ```sh
 cosign verify dimathjayasinghe/wsrvd:X.Y.Z \
   --certificate-identity-regexp 'https://github.com/DimathJayasinghe/wsrv/\.github/workflows/release\.yml@refs/tags/v.*' \

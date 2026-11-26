@@ -9,6 +9,7 @@ Known gaps are listed in [docs/RELEASE.md](docs/RELEASE.md). `0.1.0-rc.1` and `0
 What the first stable release will contain. The owner decided (2026-11-23) that nothing is announced before the library is production-ready, so the first stable version is `1.0.0`, reached through `1.0.0-rc.N` pre-releases.
 
 ### Added
+- The release job starts each architecture's image and waits for it to become healthy before scanning and pushing it, so the arm64 image is run too (ADR-0033 A1).
 - The C ABI is **1.0** (`wsrv_abi_version()` was 0.4): no symbol changed; from here the major changes only with wsrv 2.0 and a minor only adds (ADR-0016 A4). The project and the PHP package are **1.0.0** in the sources; the tag decides release candidate or final.
 - JavaScript client option `connectTimeout` (default 15 s, `0` = off): an attempt that has not opened by then, ticket call included, is abandoned and retried, so the client cannot stay in `connecting` whatever the platform does.
 - `docs/BENCHMARKS.md` and `bench/compare/`: wsrv against Workerman 5, Swoole and Laravel Reverb (echo, idle memory, broadcast), with a four-CPU and a one-CPU run, the raw results, and a harness you can run yourself. Ahead with several cores (echo about 1.5 to 1.9 times, broadcast about 2 times), behind per core on echo (11 to 25 percent fewer messages per second on one CPU, after two fixes the benchmark prompted), equal on idle memory. Found three bugs and a performance problem in wsrv itself, all fixed (ADR-0016 A2, ADR-0034, ADR-0035, ADR-0036).
