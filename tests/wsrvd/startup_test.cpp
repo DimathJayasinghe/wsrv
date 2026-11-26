@@ -557,6 +557,25 @@ TEST_F(EnvironmentTest, HealthcheckIsAModeAndNeedsTheSameConfiguration) {
     EXPECT_FALSE(run_with({"--healthcheck"}, {}).has_value()) << "no socket path: nothing to check";
 }
 
+// ADR-0041: the container's HEALTHCHECK runs with the daemon's environment, so it sees
+// WSRVD_ADMIN_TOKEN_FILE too. It must neither need that file (a probe that fails because a secret
+// is unreadable would restart a healthy pod) nor send a credential.
+TEST_F(EnvironmentTest, HealthcheckWithAnAdminTokenFileDoesNotReadTheFile) {
+    const auto startup = run_with({"--healthcheck"},
+                                  {"WSRVD_IPC_SOCKET=/run/a.sock",
+                                   "WSRVD_ADMIN_PORT=9100",
+                                   "WSRVD_ADMIN_TOKEN_FILE=/run/secrets/does-not-exist"});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_TRUE(startup->healthcheck);
+    EXPECT_TRUE(startup->config.embedded().admin_token().empty()) << "no token file is read";
+    const auto daemon = run_with({},
+                                 {"WSRVD_IPC_SOCKET=/run/a.sock",
+                                  "WSRVD_ADMIN_PORT=9100",
+                                  "WSRVD_ADMIN_TOKEN_FILE=/run/secrets/does-not-exist"});
+    EXPECT_FALSE(daemon.has_value())
+        << "the daemon itself does read it, and a missing file stops it";
+}
+
 TEST(Usage, NamesTheEnvironmentAndHealthcheckAndSaysTokensAreNeverEnvironment) {  // ADR-0030
     const std::string_view text = wsrv::wsrvd::usage();
     EXPECT_NE(text.find("--healthcheck"), std::string_view::npos);

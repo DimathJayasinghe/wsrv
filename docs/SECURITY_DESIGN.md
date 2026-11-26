@@ -80,7 +80,7 @@ Each connection has **budgets**: bytes buffered, messages/sec, control frames/se
 
 ## 7. Security testing
 
-- **Fuzzing** (libFuzzer + ASAN/UBSAN): `fuzz_http_request`, `fuzz_frame_parser`, `fuzz_protocol_session`, `fuzz_utf8`, `fuzz_base64`, `fuzz_deflate_session`. Structure-aware mutators for frames. Corpus in repo; 60 s per PR, ≥ 1 h nightly; crashes become regression tests.
+- **Fuzzing** (libFuzzer + ASAN/UBSAN): `fuzz_http_request`, `fuzz_publish_request`, `fuzz_admin_http` (the metrics page is never rendered without the token, ADR-0041), `fuzz_frame_parser`, `fuzz_protocol_session`, `fuzz_utf8`, `fuzz_base64`, `fuzz_deflate_session`. Structure-aware mutators for frames. Corpus in repo; 60 s per PR, ≥ 1 h nightly; crashes become regression tests.
 - **Autobahn** full suite (ws and wss) every PR to main.
 - **Adversarial integration tests**: slowloris, slow reader, fragment flood, ping flood, connection churn, bomb.
 - **Static analysis** (clang-tidy, cppcheck, `-fanalyzer`, CodeQL optional).
