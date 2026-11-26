@@ -70,7 +70,7 @@ spec:
           command:
             - sh
             - -c
-            - mkdir -p -m 0700 /run/wsrv/ipc && cp /etc/wsrv-secret/publish-token /run/wsrv/ipc/publish.token
+            - mkdir -p -m 0700 /run/wsrv/ipc && install -m 0600 /etc/wsrv-secret/publish-token /run/wsrv/ipc/publish.token
           volumeMounts:
             - {name: ipc, mountPath: /run/wsrv}
             - {name: secret, mountPath: /etc/wsrv-secret, readOnly: true}
