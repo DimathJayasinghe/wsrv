@@ -49,7 +49,7 @@ Tick only with evidence. "Owner" items need a decision that is not the assistant
 
 Engineering
 - [x] All CI jobs green on main (gcc dev and release with LTO, clang with libc++ and TSan and fuzz, clang-tidy)
-- [x] Autobahn: 0 FAILED (517 cases), plain and wss
+- [x] Autobahn: 0 FAILED (517 cases), plain and wss; re-run on the 1.0.0 sources through the C++ server, the C consumer and PHP, plain and wss (2026-11-26, `tests/autobahn/EXCLUDED.md`)
 - [x] Fuzzers run clean in CI; corpus committed
 - [x] Soak run of one hour passes (`wsrv_load --churn`)
 - [x] Chaos soak of two hours passes: restarts, `kill -9` and network cuts under 200 reconnecting clients, release image of `c460f79` (2026-11-25; `tests/soak/README.md`)
