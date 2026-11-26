@@ -290,6 +290,14 @@ final class Gateway
         if ($info !== null && !is_array($info)) {
             return null;
         }
+        // 1e999 decodes to INF, which cannot be sent back out to the other members.
+        if ($info !== null) {
+            try {
+                json_encode($info, JSON_THROW_ON_ERROR);
+            } catch (\JsonException) {
+                return null;
+            }
+        }
         return [$id, $info];
     }
 

@@ -8,7 +8,9 @@
     },
     "suggest": {
         "ext-ffi": "Needed only for the embedded server, Wsrv\\Embedded\\Server (PHP CLI); the sidecar client does not use it",
-        "ext-pcntl": "Needed only for signal handling in worker scripts (see the echo example in bindings/php/examples)"
+        "ext-pcntl": "Needed only for signal handling in worker scripts (see the echo example in bindings/php/examples)",
+        "laravel/framework": "Laravel 11 or newer: the `wsrv` broadcasting driver and `php artisan wsrv:work` serve Laravel Echo through wsrvd (docs/LARAVEL.md)",
+        "ext-sodium": "Needed only for private-encrypted-* channels"
     },
     "autoload": {
         "psr-4": {
@@ -17,5 +19,12 @@
     },
     "bin": [
         "bindings/php/bin/wsrv-install-lib"
-    ]
+    ],
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Wsrv\\Laravel\\WsrvServiceProvider"
+            ]
+        }
+    }
 }

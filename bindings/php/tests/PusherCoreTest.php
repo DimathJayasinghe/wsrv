@@ -207,3 +207,33 @@ test('pusher signature: the comparison is the constant-time one (a timing differ
     assertTrue(str_contains($source, 'hash_equals('), 'Signature::verify must compare with hash_equals');
     assertTrue(!str_contains($source, '=== $auth') && !str_contains($source, '== $auth'), 'no plain comparison of the signature');
 });
+
+test('pusher encrypted channels: the key scheme matches the one pusher-js derives, and a round trip works', function () {
+    $raw = str_repeat("\x01\x02\x03\x04", 8);
+    $enc = Wsrv\Pusher\EncryptedChannels::fromBase64(base64_encode($raw));
+    $channel = 'private-encrypted-orders.1';
+    // pusher-js: shared secret = SHA-256(channel name . master key), the auth answer carries it as base64
+    assertSame(base64_encode(hash('sha256', $channel . $raw, true)), $enc->sharedSecretBase64($channel));
+    $data = $enc->encrypt($channel, '{"id":7}');
+    assertSame(['nonce', 'ciphertext'], array_keys($data));
+    assertSame(24, strlen(base64_decode($data['nonce'], true)));
+    assertSame('{"id":7}', $enc->decrypt($channel, $data['nonce'], $data['ciphertext']));
+    // another channel's key cannot open it, and a fresh nonce is used each time
+    assertSame(null, $enc->decrypt('private-encrypted-other', $data['nonce'], $data['ciphertext']));
+    assertTrue($enc->encrypt($channel, '{"id":7}')['nonce'] !== $data['nonce'], 'nonce reused');
+    // a flipped bit does not authenticate
+    $bad = base64_decode($data['ciphertext'], true);
+    $bad[0] = chr(ord($bad[0]) ^ 1);
+    assertSame(null, $enc->decrypt($channel, $data['nonce'], base64_encode($bad)));
+});
+
+test('pusher encrypted channels: a bad key, a plain channel and the secret in dumps are refused', function () {
+    assertThrows(InvalidArgumentException::class, fn () => Wsrv\Pusher\EncryptedChannels::fromBase64('not base64!'));
+    assertThrows(InvalidArgumentException::class, fn () => Wsrv\Pusher\EncryptedChannels::fromBase64(base64_encode('short')));
+    $key = base64_encode(random_bytes(32));
+    $enc = Wsrv\Pusher\EncryptedChannels::fromBase64($key);
+    assertThrows(InvalidArgumentException::class, fn () => $enc->encrypt('private-orders', '{}'));
+    assertThrows(InvalidArgumentException::class, fn () => $enc->sharedSecretBase64('presence-x'));
+    assertTrue(!str_contains(print_r($enc, true), $key) && !str_contains(print_r($enc, true), base64_decode($key)), 'print_r');
+    assertThrows(LogicException::class, fn () => serialize($enc));
+});

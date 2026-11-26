@@ -82,7 +82,17 @@ final class Frame
         if (is_string($data) && $data !== '' && ($data[0] === '{' || $data[0] === '[')) {
             $data = json_decode($data, false, self::MAX_DEPTH);
         }
-        return (is_object($data) || is_array($data)) ? $data : null;
+        if (!is_object($data) && !is_array($data)) {
+            return null;
+        }
+        // A number such as 1e999 decodes to INF, which JSON cannot carry back out. Found here, it is a
+        // bad frame; found in relay(), it would be an exception thrown at a browser's input.
+        try {
+            json_encode($data, self::FLAGS);
+        } catch (\JsonException) {
+            return null;
+        }
+        return $data;
     }
 
     /**

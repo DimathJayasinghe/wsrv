@@ -681,3 +681,33 @@ test('pusher gateway: the app key in the URL can be checked at the handshake', f
     assertTrue(!$gw->acceptsPath('/'));
     assertTrue(!$gw->acceptsPath(''));
 });
+
+// ---- values that decode but cannot be encoded again (found by the commit security review) --------------
+
+test('pusher gateway: a whisper with a number JSON cannot re-encode (1e999 decodes to INF) is a bad frame, not an exception', function () {
+    [$gw, $link] = gateway(['maxStrikes' => 100]);
+    $s1 = open_conn($gw, $link, 1);
+    join_channel($gw, $link, 1, $s1, 'private-a');
+    $link->published = [];
+    foreach ([
+        '{"event":"client-x","channel":"private-a","data":{"n":1e999}}',
+        '{"event":"client-x","channel":"private-a","data":"{\"n\":1e999}"}',
+        '{"event":"client-x","channel":"private-a","data":{"deep":{"n":[-1e999]}}}',
+    ] as $text) {
+        $gw->received(1, $text);
+        assertSame(4200, $link->lastFrame(1)['data']['code'], $text);
+    }
+    assertSame([], $link->published);
+});
+
+test('pusher gateway: presence user_info that cannot be encoded again is refused when the member is read', function () {
+    [$gw, $link] = gateway();
+    $s1 = open_conn($gw, $link, 1);
+    $data = '{"user_id":"1","user_info":{"score":1e999}}';
+    $gw->received(1, frame_text('pusher:subscribe', [
+        'channel' => 'presence-room', 'channel_data' => $data,
+        'auth' => Signature::authorize(GW_KEY, GW_SECRET, $s1, 'presence-room', $data),
+    ]));
+    assertSame(4200, $link->lastFrame(1)['data']['code']);
+    assertSame([], $link->subscribed);
+});
