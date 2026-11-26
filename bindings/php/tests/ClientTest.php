@@ -89,6 +89,12 @@ test('client: a refusal sent by a daemon that hangs up at once is still reported
     // wsrvd answers a second application with one STATUS and closes without reading our HELLO. If
     // the close wins the race, our HELLO write fails (broken pipe), but the STATUS is already in
     // our receive buffer and says why: it must not be thrown away as "connection closed".
+    if (PHP_OS_FAMILY === 'Windows') {
+        // Not a client bug: on Windows the socket pair is TCP, and a peer that closes while our HELLO is
+        // still unread makes the OS send RST, which Windows answers by discarding what we had already
+        // received. The Supervisor retries a hung-up daemon and BACKPRESSURE alike (ADR-0038 section 7).
+        skip('Windows drops received data when a TCP peer resets the connection');
+    }
     [$app, $daemon] = socket_pair();
     fwrite($daemon, status_frame(0, StatusCode::BACKPRESSURE));
     fclose($daemon);
