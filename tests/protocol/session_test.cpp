@@ -186,17 +186,56 @@ TEST(Session, BufferedInputBytesCountsAPartialMessageAndForgetsItOnceDelivered) 
 // already framed in the wire buffer (a message moves there as soon as the transport asks for
 // output, and a client that reads nothing keeps it there).
 TEST(Session, BufferedOutputBytesCountsAMessageUntilItIsWrittenAndNotAfter) {
+    // RFC 6455 section 5.2: a server frame (unmasked) with a payload of 126..65535 bytes has a
+    // 4-byte header. Exact numbers, not bounds: a bound cannot tell "counted once" from "twice".
+    constexpr std::size_t kPayload = 3000;
+    constexpr std::size_t kHeader = 4;
     Rig rig;
     EXPECT_EQ(rig.session().buffered_output_bytes(), 0U);
-    ASSERT_TRUE(rig.session().send_text(std::string(3000, 'x')).has_value());
-    EXPECT_GE(rig.session().buffered_output_bytes(), 3000U) << "queued";
+    ASSERT_TRUE(rig.session().send_text(std::string(kPayload, 'x')).has_value());
+    EXPECT_EQ(rig.session().buffered_output_bytes(), kPayload + wsrv::kMessageOverhead) << "queued";
     const wsrv::ByteView framed = rig.session().pending_output();  // the transport asks for output
-    ASSERT_FALSE(framed.empty());
-    EXPECT_GE(rig.session().buffered_output_bytes(), 3000U) << "framed, still unwritten";
-    rig.session().consume_output(framed.size() / 2);
-    EXPECT_GE(rig.session().buffered_output_bytes(), framed.size() - framed.size() / 2);
-    rig.session().consume_output(framed.size() - framed.size() / 2);
+    ASSERT_EQ(framed.size(), kPayload + kHeader);
+    EXPECT_EQ(rig.session().buffered_output_bytes(), kPayload + kHeader)
+        << "framed and unwritten: moved from the queue to the wire buffer, not counted in both";
+    rig.session().consume_output(1000);
+    EXPECT_EQ(rig.session().buffered_output_bytes(), kPayload + kHeader - 1000);
+    rig.session().consume_output(kPayload + kHeader - 1000);
     EXPECT_EQ(rig.session().buffered_output_bytes(), 0U) << "written";
+}
+
+// A message longer than max_frame_payload leaves the queue one frame at a time. At every step what
+// is still queued plus what is framed must be exactly the bytes the peer has not taken, with the
+// per-message overhead counted once and released with the last frame.
+TEST(Session, BufferedOutputBytesIsExactWhileAMessageIsFramedInSeveralFrames) {
+    constexpr std::size_t kFrame = 1000;
+    constexpr std::size_t kPayload = 2500;  // frames of 1000, 1000 and 500
+    constexpr std::size_t kHeader = 4;      // RFC 6455 section 5.2, payload 126..65535
+    SessionConfig config;
+    config.outbound.max_frame_payload = kFrame;
+    Rig rig{config};
+    ASSERT_TRUE(
+        rig.session().send_binary(std::vector<std::byte>(kPayload, std::byte{0x61})).has_value());
+    EXPECT_EQ(rig.session().buffered_output_bytes(), kPayload + wsrv::kMessageOverhead);
+
+    ASSERT_EQ(rig.session().pending_output().size(), kFrame + kHeader);  // frame 1 of 3
+    EXPECT_EQ(rig.session().buffered_output_bytes(), kPayload + wsrv::kMessageOverhead + kHeader)
+        << "the whole message still waits, plus one header: nothing is counted twice";
+    rig.session().consume_output(kFrame + kHeader);
+    EXPECT_EQ(rig.session().buffered_output_bytes(), kPayload - kFrame + wsrv::kMessageOverhead);
+
+    ASSERT_EQ(rig.session().pending_output().size(), kFrame + kHeader);  // frame 2 of 3
+    EXPECT_EQ(rig.session().buffered_output_bytes(),
+              kPayload - kFrame + wsrv::kMessageOverhead + kHeader);
+    rig.session().consume_output(kFrame + kHeader);
+    EXPECT_EQ(rig.session().buffered_output_bytes(),
+              kPayload - 2 * kFrame + wsrv::kMessageOverhead);
+
+    ASSERT_EQ(rig.session().pending_output().size(), 500 + kHeader);  // the last frame
+    EXPECT_EQ(rig.session().buffered_output_bytes(), 500 + kHeader)
+        << "the overhead is released with the last frame";
+    rig.session().consume_output(500 + kHeader);
+    EXPECT_EQ(rig.session().buffered_output_bytes(), 0U);
 }
 
 TEST(Session, ASingleFrameMessageThatFitsInOneReadIsNeverCharged) {

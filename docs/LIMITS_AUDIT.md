@@ -35,6 +35,7 @@ and three defaults had no test (rows 7 and 16, now asserted). Nothing was found 
 | 17 | Close handshake, 5 s | `SessionConfig::close_timeout` | `session.cpp` (force close) | `ConnectionTest.APeerThatNeverAnswersOurCloseIsDroppedAtTheCloseTimeout` |
 | 18 | Control frames per second, 100 | `SessionConfig::max_control_frames_per_second` | `session.cpp` (1008) | `SessionRates.TooManyControlFramesInOneWindowCloseWith1008` |
 | 19 | Inflate ratio, 100 : 1 | `DeflateOptions::max_inflate_ratio = 100` (`SessionDeflate` too) | `session.cpp` (1009) | `ServerDeflate.ADecompressionBombIsRefusedWith1009AndTheServerCarriesOn` |
+| 20 | Bytes buffered by all connections together, 1 GiB (added for 1.1, ADR-0040; not part of the 1.0 audit) | `ServerConfig::max_buffered_bytes = kDefaultMaxBufferedBytes` | `Server::on_accept` (503 + `Retry-After: 1`, before a per-IP slot) | `BufferBudgetServer.AServerOverItsBudgetShedsNewConnectionsAndLeavesTheOnesItHas`; the default and both range edges: `ServerConfig.TheBufferedBytesBudgetHasABoundedDefaultAndIsRangeChecked` |
 
 ## Findings
 

@@ -22,7 +22,7 @@ The output side counts the queue **and** what is already framed in the wire buff
 
 Not counted, and why:
 - **permessage-deflate state**: bounded per connection, allocated on first use, and a function of the number of connections (OPERATIONS section 1.1 gives the figure, about 96 KiB each at the defaults), which `max_connections` already bounds.
-- The shared per-loop read buffer (one per loop, not per connection), the handshake head (at most 8 KiB, `http.max_total_bytes`), the bytes behind an upgrade waiting for the application (at most one read each, at most `max_pending_handshakes` of them), control frames (one slot each) and TLS records in flight (one record).
+- The shared per-loop read buffer (one per loop, not per connection), the handshake head (at most 8 KiB, `http.max_total_bytes`), the bytes behind an upgrade waiting for the application (at most one read each, at most `max_pending_handshakes` of them), control frames waiting in their slots (a Ping, a Pong, a Close: at most 125 bytes of payload each; one that is already framed in the wire buffer is counted with the rest of it) and TLS records in flight (one record).
 - Direct sends waiting for a loop: they have their own budget (ADR-0032).
 
 ### 2. How it is counted: charge by difference, refund by lifetime
@@ -58,6 +58,7 @@ The default protects a host with several GiB of memory. A smaller one must set t
 5. **A hard cap that also closes connections.** Left as a follow-up.
 
 ## Consequences
+- **The C ABI becomes 1.1** (`WSRV_ABI_VERSION`): a configuration key is an addition, and ADR-0016 A4 says a minor adds keys. No symbol changes. The PHP binding keeps requiring 1.0 (it works on a 1.0 library; only a host that sets the new key needs 1.1, and a 1.0 library answers that key with the usual unknown-key error).
 + SECURITY_DESIGN section 6 and RELEASE.md section 3(b) become true, and the operator has a gauge and a counter to alert on.
 + A server under a buffering attack, or under a slow-consumer storm, refuses new work with a clear 503 and keeps serving the connections it has, instead of being killed.
 - A new refusal path in a minor version (only above 1 GiB buffered at the defaults), and a key every operator with a memory limit below about 2 GiB should set.

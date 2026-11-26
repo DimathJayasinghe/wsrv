@@ -311,10 +311,14 @@ TEST_F(EnvironmentTest, TheBufferedBytesBudgetIsAVariableAndAFlagAndABadOneIsRef
     for (const char* bad : {"WSRVD_MAX_BUFFERED_BYTES=0",
                             "WSRVD_MAX_BUFFERED_BYTES=-1",
                             "WSRVD_MAX_BUFFERED_BYTES=lots",
-                            "WSRVD_MAX_BUFFERED_BYTES=2199023255553"}) {
+                            "WSRVD_MAX_BUFFERED_BYTES=1099511627777"}) {
         EXPECT_FALSE(run_with({}, {"WSRVD_IPC_SOCKET=/run/a.sock", bad}).has_value())
             << bad << " (0, a sign, text and one byte over 1 TiB are all refused)";
     }
+    const auto top =
+        run_with({}, {"WSRVD_IPC_SOCKET=/run/a.sock", "WSRVD_MAX_BUFFERED_BYTES=1099511627776"});
+    ASSERT_TRUE(top.has_value()) << "exactly 1 TiB is the largest value";
+    EXPECT_EQ(top->config.embedded().server().max_buffered_bytes, std::size_t{1} << 40);
 }
 
 TEST_F(EnvironmentTest, TheLogSettingsAreFlagsAndVariablesLikeAnyOther) {  // ADR-0037
