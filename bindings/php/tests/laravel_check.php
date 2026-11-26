@@ -100,9 +100,9 @@ $check('the wsrv driver is built through BroadcastManager', function () use (&$b
     assertTrue($broadcaster instanceof WsrvBroadcaster, 'not built');
 });
 
-$check('php artisan wsrv:work is registered', function () use ($app) {
+$check('php artisan wsrv:echo is registered', function () use ($app) {
     $commands = $app->make(Kernel::class)->all();
-    assertTrue(isset($commands['wsrv:work']), 'wsrv:work is not an artisan command');
+    assertTrue(isset($commands['wsrv:echo']), 'wsrv:echo is not an artisan command');
 });
 
 $check('private channel: the callback decides, the answer is the signature the gateway verifies', function () use ($auth, $sock) {

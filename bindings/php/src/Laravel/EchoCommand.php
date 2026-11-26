@@ -11,14 +11,14 @@ use Wsrv\Worker;
 use Wsrv\Pusher\Gateway;
 
 /**
- * `php artisan wsrv:work`: the long-running process that speaks the Pusher protocol to the browsers
+ * `php artisan wsrv:echo`: the long-running process that speaks the Pusher protocol to the browsers
  * through wsrvd (ADR-0042). Run one per daemon, under systemd, Supervisor or a container restart
  * policy. It reconnects by itself when the daemon restarts; the browsers' sockets are closed by the
  * daemon in that moment and Echo reconnects and resubscribes.
  */
-final class WorkCommand extends Command
+final class EchoCommand extends Command
 {
-    protected $signature = 'wsrv:work {--connection=wsrv : the name of the broadcasting connection to serve}';
+    protected $signature = 'wsrv:echo {--connection=wsrv : the name of the broadcasting connection to serve}';
 
     protected $description = 'Serve the Pusher protocol for Laravel Echo through wsrvd';
 
@@ -40,7 +40,7 @@ final class WorkCommand extends Command
             return self::FAILURE;
         }
         $supervisor->installSignalHandlers();
-        $this->components->info('wsrv:work serving "' . $name . '" through ' . $connection->ipcEndpoint());
+        $this->components->info('wsrv:echo serving "' . $name . '" through ' . $connection->ipcEndpoint());
         // A new Gateway for every connection to the daemon: when the daemon restarts it closes every
         // browser, so no presence state may outlive the link.
         $supervisor->run(static function (Worker $worker) use ($gatewayConfig, $checkAppKey): void {

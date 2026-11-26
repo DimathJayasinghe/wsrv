@@ -66,7 +66,7 @@ A `members` table per presence channel, keyed by user id, with a reference count
 - Origin checks, TLS, per-IP limits, the buffer budget and every other daemon control apply unchanged; the Gateway sits behind them.
 
 ### 6. Packaging, version, dependencies
-- Code in `wsrv/client`: `Wsrv\Pusher\*` (framework-free: frames, signature, presence table, the Gateway) and `Wsrv\Laravel\*` (the Broadcaster, a service provider, the `wsrv:work` Artisan command). Laravel is a `suggest`, not a `require`: a plain PHP user pays nothing.
+- Code in `wsrv/client`: `Wsrv\Pusher\*` (framework-free: frames, signature, presence table, the Gateway) and `Wsrv\Laravel\*` (the Broadcaster, a service provider, the `wsrv:echo` Artisan command). Laravel is a `suggest`, not a `require`: a plain PHP user pays nothing.
 - **No runtime dependency is added** (PHP `hash_hmac`, `json_decode`, `random_bytes`). The pure core is tested without Laravel installed. The Laravel glue is a thin layer and is tested the way the existing guide is: by hand against a real Laravel app, then in CI only if a development dependency on `illuminate/broadcasting` is approved separately (it is a download and an ADR-level dependency decision).
 - **Version: 1.2.0** (a new feature in the PHP package; the daemon and the IPC protocol are unchanged, the C ABI stays 1.1).
 
@@ -75,14 +75,16 @@ A `members` table per presence channel, keyed by user id, with a reference count
 2. A test against a real `wsrvd` with a hand-written WebSocket client (the PHP package's tests already do this for the sidecar).
 3. **An interoperability run with the real `pusher-js` and Laravel Echo** (npm, a few MB) is the gate before any document says "works with Laravel Echo". It needs a download, so it needs the owner's yes first (metered connection). Until it passes, the docs say "implemented to the Pusher protocol, not yet verified against `pusher-js`".
 
-## Facts to verify before Accepted
-This ADR was written from the repository plus recall of Pusher and Laravel. The following are **not** verified and must be checked against Pusher's protocol document, Laravel's broadcasting source or the interop run, not assumed:
+## Facts that were checked before the code, and what is still open
+The first draft was written from recall. Before implementing, these were checked against sources that were on hand (Laravel Reverb's server and the `pusher-php-server` SDK, read from a local image; read only, nothing copied) and against the signature vectors Pusher publishes:
 
-- The exact field names and nesting of the frames (`event`, `channel`, `data` as a JSON-encoded *string* for server events), the `socket_id` format (digits, a dot, digits) and the `activity_timeout` semantics.
-- The signature string: `app_key:` plus HMAC-SHA256 over `socket_id:channel` (presence: `socket_id:channel:channel_data`).
-- The `pusher:error` codes for an invalid signature, a refused channel and a bad frame.
-- The abstract methods of `Illuminate\Broadcasting\Broadcasters\Broadcaster`, how Laravel passes `socket` to `broadcast()`, and which `Echo` options (`wsHost`, `wsPort`, `forceTLS`, `enabledTransports`, `cluster`) a non-Pusher host needs.
-- Whether `pusher-js` accepts a `socket_id` the gateway builds from a connection id.
+- Frame shape: `event`, `channel`, and `data` as a JSON-encoded *string* for server events; `socket_id` is `digits.digits`; `activity_timeout` is the number of seconds after which the client pings.
+- Signatures: `key:` plus HMAC-SHA256 over `socket_id:channel` (presence: `socket_id:channel:channel_data`). The test suite carries the published vectors.
+- Error codes and messages (4001, 4009, 4200, 4301, subscription error 4300) as Reverb sends them.
+- Laravel's `Broadcaster` contract, `UsePusherChannelConventions`, the `socket` key of the payload and `BroadcastManager::extend`. Verified by running the glue against a real Laravel 13 application (`tests/laravel_check.php`).
+- Encrypted channels: `shared_secret = base64(SHA-256(channel . master key))`, payloads as libsodium secretbox, as in the SDK.
+
+Still open, and the reason the words "works with Laravel Echo" are not used until it is run: **the real `pusher-js` and `laravel-echo` against this gateway** (the interop gate in section 7). Everything above was checked against servers and SDKs, not against the browser library.
 
 ## Alternatives considered
 1. **The daemon speaks Pusher (option A1).** Rejected. It needs JSON parsing of wire data, HMAC-SHA256 and MD5 in C++ (`src/crypto` has neither), presence state in the event loop, new config keys, new fuzz targets and an ABI decision, all on the code that holds every socket. The only gain is that a worker is not on the subscribe path; the benchmarks do not show that path as a bottleneck. Revisit only if a measured need appears.
@@ -100,3 +102,16 @@ ADR-0028 section 4 said a Broadcaster driver would be built "only if the guide s
 - − `client-*` whispers, encrypted channels and the Pusher HTTP API are not there in 1.2.0.
 - − One more thing the PHP worker does: per-subscribe signature checks cost a little CPU in the single worker (a subscribe, not a message, so it is bounded by connect rate).
 - − Until the interop run passes, the claim is "implemented to the protocol", not "works".
+
+## Amendment A1 (2026-11-27): decisions taken while implementing
+
+The owner accepted this ADR and asked for a completed production release first, not a reduced first cut. These points were open or left out of the first text and are now decided:
+
+1. **Client events (whispers) are in the first release.** Echo's `.whisper()` and `listenForWhisper()` send `client-*` events. They are on by default, only for a connection that is a member of a *private or presence* channel (never public), at most `client_events_per_second` (10) per connection, only with an object or array as data, and the relayed frame is built by the server: the event name, the channel and the *signed* user id (presence) are the server's, so a browser cannot forge another member's id or add fields. They can be switched off (`client_events => false`), which answers with Pusher's 4301.
+2. **Encrypted channels (`private-encrypted-*`) are in the first release.** The broadcaster derives the shared secret and encrypts payloads with libsodium (`ext-sodium`, in PHP since 7.2). If the master key is not configured, broadcasting to such a channel is an error: the payload is never sent in the clear to a channel the browser expects to be encrypted.
+3. **One daemon.** `toOthers()` leaves a connection out by the daemon's connection number inside the socket id, and presence is held per worker. Both are only correct with one daemon, so the broadcaster takes a `Wsrv\Publisher`, not a `ClusterPublisher`. Running several daemons with the Pusher protocol is not supported in 1.2 (a shared presence store would be a later ADR).
+4. **Values JSON cannot carry back out.** A browser can send a number such as `1e999`, which decodes to infinity and cannot be re-encoded. The gateway treats it as a bad frame (4200, one strike); found by the commit security review, with tests.
+5. **Limits are configuration, validated at start.** Every bound (frame size, channels per connection, pending joins, presence members, channel data size, message and whisper rates, strikes) has a default for a public site and a range check; an unknown option name is an error.
+6. **Optional strict app key.** With `check_app_key` (daemon `handshake_hook`), a URL that does not end in `/app/<key>` is refused with 404 at the handshake. Off by default because the key is public and the signature is what protects private channels.
+7. **User authentication (`pusher:signin`, Echo's `user()` and watchlist) is not supported.** It is a separate Pusher feature that Laravel's `resolveAuthenticatedUser` serves; the gateway answers a `pusher:signin` frame with 4200. Listed as a limit in the docs, not hidden.
+

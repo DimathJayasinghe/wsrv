@@ -17,6 +17,7 @@ Reading order for newcomers: **PROJECT_PLAN → REQUIREMENTS → ARCHITECTURE �
 | [BUILD_AND_TOOLING.md](BUILD_AND_TOOLING.md) | CMake, presets, CI, dependency policy |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Docker, Compose, systemd, Kubernetes, reverse proxies, tuning, go-live checklist 
 | [LARAVEL.md](LARAVEL.md) | Rooms and publishing from a Laravel app (ticket auth, Artisan worker, queued publish) |
+| [LARAVEL_ECHO.md](LARAVEL_ECHO.md) | Laravel Echo and `broadcast()` on wsrv (the `wsrv` driver and `php artisan wsrv:echo`; planned for 1.2, ADR-0042) |
 | [OPERATIONS.md](OPERATIONS.md) | Config, logging, metrics, lifecycle, hardening |
 | [BENCHMARKS.md](BENCHMARKS.md) | wsrv against Workerman, Swoole and Reverb: numbers, noise, limits, how to rerun |
 | [adr/](adr/) | Architecture decision records |

@@ -11,7 +11,7 @@ use Wsrv\Pusher\GatewayConfig;
 
 /**
  * The `wsrv` entry of config/broadcasting.php, checked and turned into the objects the broadcaster
- * and the `wsrv:work` command need. Plain PHP: it does not need Laravel, so it is tested without it.
+ * and the `wsrv:echo` command need. Plain PHP: it does not need Laravel, so it is tested without it.
  *
  *     'wsrv' => [
  *         'driver' => 'wsrv',

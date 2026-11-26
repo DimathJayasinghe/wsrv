@@ -10,7 +10,7 @@ use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
 
 /**
- * Registers the `wsrv` broadcasting driver and the `wsrv:work` command. Laravel finds this class
+ * Registers the `wsrv` broadcasting driver and the `wsrv:echo` command. Laravel finds this class
  * through composer's package discovery (the `extra.laravel` key of wsrv/client); with discovery
  * turned off, add `Wsrv\Laravel\WsrvServiceProvider::class` to bootstrap/providers.php.
  */
@@ -29,7 +29,7 @@ final class WsrvServiceProvider extends ServiceProvider
     public function boot(): void
     {
         if ($this->app->runningInConsole()) {
-            $this->commands([WorkCommand::class]);
+            $this->commands([EchoCommand::class]);
         }
     }
 }
