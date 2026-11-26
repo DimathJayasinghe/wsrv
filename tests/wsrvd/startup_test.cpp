@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "wsrvd/startup.hpp"
 
+#include "net/endpoint.hpp"
 #include "support/fake_syscalls.hpp"
 
 #include <gtest/gtest.h>
@@ -92,6 +93,35 @@ TEST_F(StartupTest, TheTokenIsReadFromItsFile) {
 TEST_F(StartupTest, AnUnsafeTokenFileStopsTheStartup) {
     const std::string token = write("token", "s3cret\n", 0644);
     const auto startup = run({"--ipc-socket=/run/x.sock", "--ipc-token-file=" + token});
+    ASSERT_FALSE(startup.has_value());
+    EXPECT_EQ(startup.error().code, ErrorCode::InvalidConfig);
+}
+
+// ADR-0038: the TCP transport. The token is the only authentication, so it must be long.
+TEST_F(StartupTest, TheTcpTransportNeedsATokenOfAtLeast32Bytes) {
+    const std::string shorty = write("short", std::string(31, 't') + "\n");
+    const auto too_short = run({"--ipc-port=9300", "--ipc-token-file=" + shorty});
+    ASSERT_FALSE(too_short.has_value());
+    EXPECT_EQ(too_short.error().code, ErrorCode::InvalidConfig);
+
+    const std::string enough = write("enough", std::string(32, 't') + "\n");
+    const auto startup = run({"--ipc-port=9300", "--ipc-token-file=" + enough});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_TRUE(startup->config.tcp());
+    EXPECT_EQ(startup->token, std::string(32, 't'));
+}
+
+TEST_F(StartupTest, ASocketTokenKeepsItsOldRulesWhateverItsLength) {  // 1.0 behaviour is unchanged
+    const std::string token = write("token", "s3cret\n");
+    const auto startup = run({"--ipc-socket=/run/x.sock", "--ipc-token-file=" + token});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_FALSE(startup->config.tcp());
+}
+
+TEST_F(StartupTest, ANamedBinaryHasNoDefaultSocketUnlessItWasBuiltWithOne) {
+    // Tests are built without WSRVD_DEFAULT_IPC_SOCKET, like the release binaries: neither key is
+    // an error, not a guessed path.
+    const auto startup = run({"--listen-port=9000"});
     ASSERT_FALSE(startup.has_value());
     EXPECT_EQ(startup.error().code, ErrorCode::InvalidConfig);
 }
@@ -329,6 +359,16 @@ TEST(Usage, NamesTheAdminFlagsAndWarnsThatThePortIsNotAuthenticated) {  // ADR-0
     EXPECT_NE(text.find("--admin-port"), std::string_view::npos);
     EXPECT_NE(text.find("--admin-host"), std::string_view::npos);
     EXPECT_NE(text.find("no authentication"), std::string_view::npos);
+}
+
+TEST_F(EnvironmentTest,
+       TheTcpTransportCanBeChosenByTheEnvironmentAlone) {  // docker run -e WSRVD_IPC_PORT=...
+    const std::string token = write("token", std::string(40, 'k') + "\n");
+    const auto startup = run_with(
+        {}, {"WSRVD_IPC_PORT=9300", "WSRVD_IPC_HOST=0.0.0.0", "WSRVD_IPC_TOKEN_FILE=" + token});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_TRUE(startup->config.tcp());
+    EXPECT_EQ(wsrv::format_endpoint(startup->config.ipc_endpoint()), "0.0.0.0:9300");
 }
 
 }  // namespace

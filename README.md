@@ -7,7 +7,7 @@ no Asio, no third-party WebSocket library. Open source under the [Apache License
 > Status: **1.0.0**, stable. The 1.0 line freezes the IPC protocol, the C ABI and the PHP API (see
 > [Stability](#stability)); what was checked before release, and what is known and accepted, is in
 > [docs/RELEASE.md](docs/RELEASE.md), and changes are in [CHANGELOG.md](CHANGELOG.md). The server is Linux only
-> (x86-64 and aarch64); on macOS and Windows develop with Docker or WSL2 ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) section 11). A native macOS server and TCP IPC are planned for a future 1.x release.
+> (x86-64 and aarch64); on macOS and Windows develop with Docker or WSL2 ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) section 11). A native macOS server is planned for a future 1.x release; since 1.1 a worker on macOS or Windows can reach a daemon in Docker over [TCP IPC](examples/host-worker).
 
 ## What you get
 

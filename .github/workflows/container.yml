@@ -55,6 +55,128 @@ jobs:
           docker exec wsrvd-env /usr/local/bin/wsrvd --healthcheck
           docker kill wsrvd-env
           ! docker run --rm -e WSRVD_IPC_SOCKET=/nonexistent/ipc.sock wsrvd:ci --healthcheck
+      - name: The TCP IPC transport (ADR-0038) is chosen by the environment alone and needs its token
+        run: |
+          token="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"   # 48 hex characters
+          echo "::add-mask::$token"
+          docker volume create wsrv-ci-secret >/dev/null
+          # The token file keeps its rules (mode 0600, owned by the daemon's uid 10001): the volume is
+          # prepared as root, the way the Kubernetes manifest's init container does it.
+          docker run --rm --user 0 --entrypoint sh -v wsrv-ci-secret:/s -e T="$token" wsrvd:ci -c \
+            'printf %s "$T" > /s/ipc.token && chown 10001:10001 /s/ipc.token && chmod 0600 /s/ipc.token'
+          # Only the port is chosen: the image has no WSRVD_IPC_SOCKET set, so there is no "both" error.
+          docker run -d --name wsrvd-tcp -p 127.0.0.1:19300:9300 -v wsrv-ci-secret:/run/secrets:ro \
+            -e WSRVD_IPC_PORT=9300 -e WSRVD_IPC_HOST=0.0.0.0 \
+            -e WSRVD_IPC_TOKEN_FILE=/run/secrets/ipc.token wsrvd:ci
+          for i in $(seq 1 30); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' wsrvd-tcp)" = healthy ] && break
+            sleep 2
+          done
+          logs="$(docker logs wsrvd-tcp 2>&1)"
+          echo "$logs"
+          [ "$(docker inspect -f '{{.State.Health.Status}}' wsrvd-tcp)" = healthy ]
+          echo "$logs" | grep -Eq 'event=ipc_ready msg="wsrvd: ipc tcp 0\.0\.0\.0:9300 ready"'
+          echo "$logs" | grep -Eq 'level=warn event=ipc_plaintext '   # not loopback: said out loud
+          ! echo "$logs" | grep -q 'event=ipc_no_token'               # TCP always has a token
+          # From the host, through the published port: the right token is welcome, the wrong one is not.
+          python3 - "$token" <<'PY'
+          import socket, struct, sys
+          def hello(token):
+              body = struct.pack(">HHH", 0, 3, len(token)) + token
+              return struct.pack(">IBB", 2 + len(body), 1, 0) + body
+          def first_frame_type(token):
+              with socket.create_connection(("127.0.0.1", 19300), timeout=5) as s:
+                  s.sendall(hello(token))
+                  data = s.recv(64)
+                  return struct.unpack(">IBB", data[:6])[1]
+          good = first_frame_type(sys.argv[1].encode())
+          bad = first_frame_type(b"x" * 48)
+          print("right token: frame type", good, "(2 = HELLO_OK); wrong token: frame type", bad, "(9 = STATUS)")
+          assert good == 2 and bad == 9
+          PY
+          docker kill wsrvd-tcp >/dev/null
+      - name: The host-worker example works as documented (ADR-0038)
+        run: |
+          # The example names the published image; point it at the one built above (no pull, no rebuild).
+          docker tag wsrvd:ci ghcr.io/dimathjayasinghe/wsrvd:ci
+          cd examples/host-worker
+          export WSRV_VERSION=ci WSRV_PORT=18081 WSRV_IPC_PORT=19301
+          docker compose up -d --no-build
+          for i in $(seq 1 30); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q wsrvd)")" = healthy ] && break
+            sleep 2
+          done
+          docker compose logs wsrvd
+          [ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q wsrvd)")" = healthy ]
+          # The IPC port is published on loopback only, never on every interface.
+          [ "$(docker compose port wsrvd 9300)" = "127.0.0.1:19301" ]
+          # The token is read the way the README says.
+          token="$(docker compose run --rm --no-deps --entrypoint cat token-init /run/wsrv/ipc.token)"
+          echo "::add-mask::$token"
+          [ "${#token}" -ge 32 ]
+          # The worker the README tells you to run, on the runner, with the repository's PHP package.
+          mkdir -p vendor
+          cat > vendor/autoload.php <<'PHP'
+          <?php
+          spl_autoload_register(static function (string $class): void {
+              if (strncmp($class, 'Wsrv\\', 5) === 0) {
+                  $file = __DIR__ . '/../../../bindings/php/src/' . str_replace('\\', '/', substr($class, 5)) . '.php';
+                  if (is_file($file)) {
+                      require $file;
+                  }
+              }
+          });
+          PHP
+          WSRV_IPC=tcp://127.0.0.1:19301 WSRV_TOKEN="$token" php worker.php > "$RUNNER_TEMP/worker.log" 2>&1 &
+          worker=$!
+          # A browser-style client (no Origin header: the example allows that) gets its message echoed.
+          python3 - <<'PY'
+          import base64, os, socket, struct, time
+          def frame(payload: bytes) -> bytes:
+              mask = os.urandom(4)
+              body = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+              return bytes([0x81, 0x80 | len(payload)]) + mask + body
+          deadline = time.time() + 20
+          last = None
+          while time.time() < deadline:
+              try:
+                  s = socket.create_connection(("127.0.0.1", 18081), timeout=5)
+                  key = base64.b64encode(os.urandom(16)).decode()
+                  s.sendall(("GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                             f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+                  head = b""
+                  while b"\r\n\r\n" not in head:
+                      head += s.recv(1)
+                  assert head.startswith(b"HTTP/1.1 101"), head
+                  s.sendall(frame(b"hello host worker"))
+                  data = s.recv(64)
+                  assert data[0] == 0x81 and data[2:2 + data[1]] == b"hello host worker", data
+                  print("echoed through the host worker over TCP IPC")
+                  break
+              except (AssertionError, OSError) as e:   # the worker may still be connecting: retry
+                  last = e
+                  time.sleep(1)
+          else:
+              raise SystemExit(f"no echo within 20 s: {last!r}")
+          PY
+          kill "$worker" 2>/dev/null || true
+          cat "$RUNNER_TEMP/worker.log"
+          docker compose down -v
+      - name: Both transports at once, or a TCP port without a token, stop the start
+        run: |
+          set +e
+          out=$(docker run --rm -e WSRVD_IPC_PORT=9300 -e WSRVD_IPC_SOCKET=/run/wsrv/ipc.sock \
+                  -e WSRVD_IPC_TOKEN_FILE=/nonexistent wsrvd:ci 2>&1)
+          code=$?
+          echo "$out" | head -3
+          [ "$code" -ne 0 ] || exit 1
+          echo "$out" | grep -q ipc_socket || exit 1
+          echo "$out" | grep -q ipc_port || exit 1
+          out=$(docker run --rm -e WSRVD_IPC_PORT=9300 wsrvd:ci 2>&1)
+          code=$?
+          echo "$out" | head -3
+          [ "$code" -ne 0 ] || exit 1
+          echo "$out" | grep -q ipc_token_file
       - name: The log level is honoured and a misspelled one stops the start
         run: |
           docker run -d --name wsrvd-quiet -e WSRVD_LOG_LEVEL=warn wsrvd:ci

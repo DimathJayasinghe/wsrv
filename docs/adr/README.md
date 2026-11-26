@@ -41,5 +41,6 @@ One decision per file, immutable once *Accepted* (supersede with a new ADR). Use
 | [0035](0035-wake-the-host-once-per-loop-iteration.md) | The host's wake-up is paid once per loop iteration, not once per message | Accepted |
 | [0036](0036-two-fewer-system-calls-per-message.md) | Two fewer system calls per message: no read that only blocks, no getpid per call | Accepted |
 | [0037](0037-runtime-logging.md) | Runtime logging: one structured line per event, to stderr, bounded and rate-limited | Accepted |
+| [0038](0038-tcp-transport-for-the-ipc-link.md) | A TCP transport for the IPC link: a worker on another host, or on macOS and Windows against a daemon in Docker | Proposed |
 
 Statuses: Proposed → Accepted → (Deprecated | Superseded by ADR-NNNN). The project owner moves Proposed → Accepted.

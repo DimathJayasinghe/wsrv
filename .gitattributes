@@ -1,3 +1,10 @@
+# Line endings: LF in the working tree on every platform. A Windows checkout otherwise converts to CRLF
+# (core.autocrlf=true is the default there), which breaks shebang scripts, the committed cdef (compared byte
+# for byte with its generator's output) and this very file (parsed line by line by PackageTest).
+* text=auto eol=lf
+# The fuzz corpus holds raw wire bytes (HTTP requests with CRLF on purpose): never convert it.
+/tests/fuzz/corpus/** -text
+
 # What `composer require` downloads (git archive): the PHP package (ADR-0026 section 1), not the C++ tree.
 # A test (bindings/php/tests/PackageTest.php) fails when a top-level entry is neither listed here nor part
 # of the package.

@@ -1,0 +1,4 @@
+# what `composer require` leaves next to worker.php
+vendor/
+composer.json
+composer.lock

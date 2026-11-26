@@ -12,7 +12,7 @@ kind: ConfigMap
 metadata:
   name: wsrv-config
 data:
-  # Every setting is WSRVD_<KEY> (ADR-0030). The image already sets the socket, 0.0.0.0:8080 and admin port 9101.
+  # Every setting is WSRVD_<KEY> (ADR-0030). The image has a built-in default IPC socket and sets 0.0.0.0:8080 and admin port 9101.
   WSRVD_ALLOW_ORIGIN: "https://app.example.com"
   # The ingress controller's pod network, so per-IP limits count real clients (ADR-0029). Adjust to your cluster.
   WSRVD_TRUSTED_PROXY: "10.0.0.0/8"

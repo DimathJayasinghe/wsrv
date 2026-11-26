@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdlib>
@@ -27,6 +28,8 @@
 #include <variant>
 #include <vector>
 
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -82,6 +85,7 @@ public:
                 {
                     const std::lock_guard<std::mutex> lock{mutex_};
                     loop_ = loop->get();
+                    endpoint_ = (*server)->tcp_endpoint();
                 }
                 started.set_value(std::nullopt);
                 const wsrv::Result<void> ran = (*loop)->run();
@@ -115,11 +119,17 @@ public:
     [[nodiscard]] const std::optional<ErrorCode>& failure() const {
         return failure_;
     }
+    /// The TCP address actually bound (the real port when 0 was asked); nothing for a Unix socket.
+    [[nodiscard]] std::optional<wsrv::Endpoint> endpoint() const {
+        const std::lock_guard<std::mutex> lock{mutex_};
+        return endpoint_;
+    }
 
 private:
     std::thread thread_;
-    std::mutex mutex_;
-    EventLoop* loop_ = nullptr;  // guarded by mutex_
+    mutable std::mutex mutex_;
+    EventLoop* loop_ = nullptr;               // guarded by mutex_
+    std::optional<wsrv::Endpoint> endpoint_;  // guarded by mutex_
     std::optional<ErrorCode> failure_;
 };
 
@@ -1035,6 +1045,310 @@ TEST_F(EndToEnd, ABrowserThatConnectsBeforeAnyApplicationIsHeldNotLost) {
 }
 
 // ---- lifecycle --------------------------------------------------------------------------------
+
+// ---- the TCP transport (ADR-0038) --------------------------------------------------------------
+
+/// A TCP server on a port the kernel chose, with a token of the length the daemon insists on.
+struct TcpIpcTest : public IpcServerTest {
+    static inline const std::string kToken = std::string(32, 't');
+
+    [[nodiscard]] IpcServerConfig tcp_config(std::string_view host = "127.0.0.1") const {
+        IpcServerConfig c = config(kToken);
+        c.socket_path.clear();
+        c.tcp = wsrv::parse_endpoint(host, 0).value();
+        return c;
+    }
+    /// A connected client for the server's bound endpoint.
+    static std::unique_ptr<Client> connect(const RunningServer& server) {
+        const std::optional<wsrv::Endpoint> bound = server.endpoint();
+        EXPECT_TRUE(bound.has_value());
+        const std::string host = bound ? wsrv::format_endpoint(*bound) : "127.0.0.1:0";
+        return std::make_unique<Client>(Client::Tcp{},
+                                        bound && bound->v6 ? "::1" : "127.0.0.1",
+                                        bound ? bound->port : std::uint16_t{0});
+    }
+};
+
+TEST_F(TcpIpcTest, TheKernelChosenPortIsReportedSoTheTestsAndTheLogCanUseIt) {
+    const RunningServer server{sys, backend, tcp_config()};
+    ASSERT_FALSE(server.failure());
+    ASSERT_TRUE(server.endpoint().has_value());
+    EXPECT_NE(server.endpoint()->port, 0);
+}
+
+TEST_F(TcpIpcTest, HelloWithTheTokenIsAnsweredWithHelloOk) {
+    const RunningServer server{sys, backend, tcp_config()};
+    ASSERT_FALSE(server.failure());
+    const auto client = connect(server);
+    ASSERT_TRUE(client->connected());
+    client->send_hello(kToken);
+    const auto reply = client->receive();
+    ASSERT_TRUE(reply);
+    EXPECT_EQ(reply->kind, Reply::Kind::HelloOk);
+    EXPECT_EQ(reply->max_frame, kMaxFrame);
+    client->send_message(ipc::Ping{});
+    EXPECT_EQ(client->receive()->kind, Reply::Kind::Pong);
+}
+
+TEST_F(TcpIpcTest, AWrongTokenGetsTheSameSingleStatusAndNothingAboutTheTokenIsLogged) {
+    const RunningServer server{sys, backend, tcp_config()};
+    const auto client = connect(server);
+    client->send_hello(std::string(32, 'x'));
+    const auto reply = client->receive();
+    ASSERT_TRUE(reply);
+    EXPECT_EQ(reply->kind, Reply::Kind::Status);
+    EXPECT_EQ(reply->request, 0U);
+    EXPECT_EQ(reply->status, kInvalidArgument);
+    EXPECT_TRUE(client->closed_by_server());
+    const std::string everything = logs.everything();
+    EXPECT_EQ(everything.find(kToken), std::string::npos);
+    EXPECT_EQ(everything.find(std::string(32, 'x')), std::string::npos);
+}
+
+TEST_F(TcpIpcTest, NoPeerUidIsAskedForOverTcpTheTokenIsTheAuthentication) {
+    const RunningServer server{sys, backend, tcp_config()};
+    sys.succeed(Call::PeerUid, 4242);  // would drop a Unix peer; there is no uid to read on TCP
+    const auto client = connect(server);
+    client->send_hello(kToken);
+    EXPECT_EQ(client->receive()->kind, Reply::Kind::HelloOk);
+    EXPECT_EQ(sys.pending_script(Call::PeerUid), 1U) << "peer_uid must not even be called";
+}
+
+TEST_F(TcpIpcTest, AnAcceptedSocketGetsNoDelayAndKeepaliveSoAVanishedHostFreesTheSlot) {
+    const RunningServer server{sys, backend, tcp_config()};
+    const auto client = connect(server);
+    client->send_hello(kToken);
+    ASSERT_EQ(client->receive()->kind, Reply::Kind::HelloOk);
+    using Option = FakeSyscalls::SockOptCall;
+    const std::vector<Option> calls = sys.sockopt_calls();
+    const auto has = [&calls](Option wanted) {
+        return std::ranges::find(calls, wanted) != calls.end();
+    };
+    EXPECT_TRUE(has({IPPROTO_TCP, TCP_NODELAY, 1}));
+    EXPECT_TRUE(has({SOL_SOCKET, SO_KEEPALIVE, 1}));
+    EXPECT_TRUE(has({IPPROTO_TCP, TCP_KEEPIDLE, 30}));
+    EXPECT_TRUE(has({IPPROTO_TCP, TCP_KEEPINTVL, 10}));
+    EXPECT_TRUE(has({IPPROTO_TCP, TCP_KEEPCNT, 3}));
+}
+
+TEST_F(TcpIpcTest, ASecondAuthenticatedApplicationIsToldTheSlotIsTakenAndTheFirstIsUndisturbed) {
+    const RunningServer server{sys, backend, tcp_config()};
+    const auto first = connect(server);
+    first->send_hello(kToken);
+    ASSERT_EQ(first->receive()->kind, Reply::Kind::HelloOk);
+
+    const auto second = connect(server);
+    second->send_hello(kToken);
+    const auto reply = second->receive();
+    ASSERT_TRUE(reply);
+    EXPECT_EQ(reply->status, kBackpressure);
+    EXPECT_TRUE(second->closed_by_server());
+
+    first->send_message(ipc::Ping{});  // an authenticated application is never displaced
+    EXPECT_EQ(first->receive()->kind, Reply::Kind::Pong);
+}
+
+// The rule that keeps a stranger who can reach the port from locking the application out: a
+// connection that has not said HELLO holds nothing, so a newcomer replaces it.
+TEST_F(TcpIpcTest, AConnectionThatHasNotSaidHelloDoesNotHoldTheSlotAgainstANewcomer) {
+    const RunningServer server{sys, backend, tcp_config()};
+    const auto idle = connect(server);  // says nothing, for ipc_hello_timeout_ms (5 s here)
+    ASSERT_TRUE(idle->connected());
+
+    const auto application = connect(server);
+    application->send_hello(kToken);
+    const auto reply = application->receive();
+    ASSERT_TRUE(reply);
+    EXPECT_EQ(reply->kind, Reply::Kind::HelloOk) << "the idle connection kept the slot";
+    // The replaced connection is told why, like any application the daemon turns away.
+    const auto told = idle->receive();
+    ASSERT_TRUE(told);
+    EXPECT_EQ(told->status, kBackpressure);
+    // And it leaves a trace an operator can see (a warning).
+    const std::string line = logs.wait_for("app_replaced");
+    EXPECT_FALSE(line.empty());
+    EXPECT_NE(line.find("|3|"), std::string::npos) << line;
+}
+
+TEST_F(TcpIpcTest, AHelloThatAlreadyArrivedIsProcessedBeforeAnyDisplacement) {
+    const RunningServer server{sys, backend, tcp_config()};
+    const auto first = connect(server);
+    first->send_hello(kToken);  // in the kernel's buffer before the second connects
+    const auto second = connect(server);
+    second->send_hello(kToken);
+
+    ASSERT_EQ(first->receive()->kind, Reply::Kind::HelloOk) << "a real HELLO was thrown away";
+    const auto refused = second->receive();
+    ASSERT_TRUE(refused);
+    EXPECT_EQ(refused->status, kBackpressure);
+}
+
+TEST_F(TcpIpcTest, ManySilentConnectionsCostOneAtATimeAndTheApplicationStillGetsIn) {
+    const RunningServer server{sys, backend, tcp_config()};
+    std::vector<std::unique_ptr<Client>> strangers;
+    for (int i = 0; i < 64; ++i) {
+        strangers.push_back(connect(server));
+        ASSERT_TRUE(strangers.back()->connected());
+    }
+    const auto application = connect(server);
+    application->send_hello(kToken);
+    EXPECT_EQ(application->receive()->kind, Reply::Kind::HelloOk);
+}
+
+// Why the daemon lingers (ADR-0038 section 5). Closing a TCP socket that holds unread data, or that
+// receives data after the close, makes the operating system send RST, and Windows (and possibly
+// macOS) then throws away what the peer had already received: the status the daemon just sent. So
+// after its last word the daemon sends FIN, keeps the socket, discards what arrives, and closes
+// when the peer does or after a short deadline. On Linux the status survives either way, so the
+// tests see the difference through what a write does afterwards (server_still_holds_connection).
+TEST_F(TcpIpcTest, ARefusedSecondApplicationCanStillWriteItsHelloWithoutAResetWipingTheStatus) {
+    const RunningServer server{sys, backend, tcp_config()};
+    const auto first = connect(server);
+    first->send_hello(kToken);
+    ASSERT_EQ(first->receive()->kind, Reply::Kind::HelloOk);
+
+    const auto second =
+        connect(server);  // reads before it writes: its HELLO comes after the refusal
+    const auto reply = second->receive();
+    ASSERT_TRUE(reply);
+    EXPECT_EQ(reply->status, kBackpressure);
+    EXPECT_TRUE(second->closed_by_server());  // FIN: the daemon said all it will say
+    EXPECT_TRUE(second->server_still_holds_connection())
+        << "the daemon closed with our HELLO coming";
+}
+
+TEST_F(TcpIpcTest, ARejectedHelloIsAlsoFollowedByALingeringCloseNotAReset) {
+    const RunningServer server{sys, backend, tcp_config()};
+    const auto client = connect(server);
+    client->send_hello(std::string(32, 'x'));
+    const auto reply = client->receive();
+    ASSERT_TRUE(reply);
+    EXPECT_EQ(reply->status, kInvalidArgument);
+    EXPECT_TRUE(client->closed_by_server());
+    EXPECT_TRUE(client->server_still_holds_connection());
+}
+
+TEST_F(TcpIpcTest, ALingeringSocketIsHeldUntilItsDeadlineAndThenClosedWhateverThePeerDoes) {
+    IpcServerConfig c = tcp_config();
+    c.linger_timeout = std::chrono::milliseconds{600};
+    const RunningServer server{sys, backend, c};
+    const auto first = connect(server);
+    first->send_hello(kToken);
+    ASSERT_EQ(first->receive()->kind, Reply::Kind::HelloOk);
+    const auto early = connect(server);
+    const auto late = connect(server);
+    ASSERT_TRUE(early->receive());
+    ASSERT_TRUE(late->receive());
+    ASSERT_TRUE(early->closed_by_server());
+    ASSERT_TRUE(late->closed_by_server());
+    // Well inside the deadline the daemon still holds the socket (this is what makes the test
+    // fail when lingering is switched off, not only when the deadline is missing)...
+    EXPECT_TRUE(early->server_still_holds_connection());
+    // ...and past it, with the peer silent the whole time, the descriptor is gone.
+    std::this_thread::sleep_for(std::chrono::milliseconds{900});
+    EXPECT_FALSE(late->server_still_holds_connection())
+        << "a silent peer held a descriptor for ever";
+}
+
+TEST_F(TcpIpcTest, ALingeringSocketEndsWhenThePeerClosesSoManyRefusalsInARowAreAllAnswered) {
+    const RunningServer server{sys, backend, tcp_config()};
+    const auto first = connect(server);
+    first->send_hello(kToken);
+    ASSERT_EQ(first->receive()->kind, Reply::Kind::HelloOk);
+    // Each refused connection closes at once, so the daemon lets go of it at once (EOF, not the 2 s
+    // deadline). Far more refusals than the cap allows at a time, one after the other, all
+    // answered.
+    for (int i = 0; i < 100; ++i) {
+        const auto extra = connect(server);
+        const auto answer = extra->receive();
+        ASSERT_TRUE(answer) << "refusal " << i;
+        ASSERT_EQ(answer->status, kBackpressure) << "refusal " << i;
+    }
+    // Each peer closed at once, so each lingering socket ended at EOF: the cap was never reached.
+    // (If the daemon waited for the deadline instead, 100 refusals in a row would fill it.)
+    EXPECT_EQ(logs.everything().find("ipc_linger_full"), std::string::npos);
+    first->send_message(ipc::Ping{});
+    EXPECT_EQ(first->receive()->kind, Reply::Kind::Pong);
+}
+
+TEST_F(TcpIpcTest, MoreRefusalsThanTheLingerCapAreAllAnsweredAndTheApplicationIsUnharmed) {
+    const RunningServer server{sys, backend, tcp_config()};
+    const auto first = connect(server);
+    first->send_hello(kToken);
+    ASSERT_EQ(first->receive()->kind, Reply::Kind::HelloOk);
+    std::vector<std::unique_ptr<Client>> held;  // none of them closes: all would linger
+    for (int i = 0; i < 80; ++i) {
+        held.push_back(connect(server));
+        const auto answer = held.back()->receive();
+        ASSERT_TRUE(answer) << "refusal " << i;
+        ASSERT_EQ(answer->status, kBackpressure) << "refusal " << i;
+    }
+    EXPECT_FALSE(logs.wait_for("ipc_linger_full").empty())
+        << "the cap was never reached, or is not enforced";
+    first->send_message(ipc::Ping{});
+    EXPECT_EQ(first->receive()->kind, Reply::Kind::Pong);
+}
+
+TEST_F(IpcServerTest,
+       OnAUnixSocketAConnectionThatHasNotSaidHelloStillHoldsTheSlot) {  // 1.0 behaviour
+    const RunningServer server{sys, backend, config()};
+    Client idle{path()};
+    ASSERT_TRUE(idle.connected());
+    Client second{path()};
+    second.send_hello();
+    const auto reply = second.receive();
+    ASSERT_TRUE(reply);
+    EXPECT_EQ(reply->status, kBackpressure);
+}
+
+TEST_F(TcpIpcTest, ABindThatIsNotLoopbackIsLoggedAsAPlaintextWarning) {
+    const RunningServer wide{sys, backend, tcp_config("0.0.0.0")};
+    ASSERT_FALSE(wide.failure());
+    const std::string line = logs.wait_for("ipc_plaintext");
+    EXPECT_FALSE(line.empty());
+    EXPECT_NE(line.find("|3|"), std::string::npos) << "it is a warning: " << line;
+}
+
+TEST_F(TcpIpcTest, ALoopbackBindSaysNothingAboutPlaintext) {
+    const RunningServer narrow{sys, backend, tcp_config("127.0.0.1")};
+    ASSERT_FALSE(narrow.failure());
+    EXPECT_EQ(logs.everything().find("ipc_plaintext"), std::string::npos);
+}
+
+TEST_F(TcpIpcTest, ExactlyOneTransportMustBeConfigured) {
+    IpcServerConfig both = tcp_config();
+    both.socket_path = path();
+    const RunningServer with_both{sys, backend, both};
+    ASSERT_TRUE(with_both.failure());
+    EXPECT_EQ(*with_both.failure(), ErrorCode::InvalidConfig);
+
+    IpcServerConfig neither = tcp_config();
+    neither.tcp.reset();
+    const RunningServer with_neither{sys, backend, neither};
+    ASSERT_TRUE(with_neither.failure());
+    EXPECT_EQ(*with_neither.failure(), ErrorCode::InvalidConfig);
+}
+
+TEST_F(TcpIpcTest,
+       ATcpServerRefusesToRunWithoutAToken) {  // defence in depth: finish() already does
+    IpcServerConfig c = tcp_config();
+    c.token.clear();
+    const RunningServer server{sys, backend, c};
+    ASSERT_TRUE(server.failure());
+    EXPECT_EQ(*server.failure(), ErrorCode::InvalidConfig);
+}
+
+TEST_F(TcpIpcTest, ThePortIsReleasedWhenTheServerStops) {
+    std::uint16_t port = 0;
+    {
+        const RunningServer server{sys, backend, tcp_config()};
+        port = server.endpoint().value().port;
+    }
+    IpcServerConfig again = tcp_config();
+    again.tcp->port = port;  // the same port, straight away: the listener was closed
+    const RunningServer second{sys, backend, again};
+    EXPECT_FALSE(second.failure());
+}
 
 TEST_F(IpcServerTest, TheSocketFileIsRemovedWhenTheServerStops) {
     {

@@ -3,16 +3,20 @@
 
 #include "base/error.hpp"
 #include "base/logger.hpp"
+#include "net/endpoint.hpp"
 #include "net/event_loop.hpp"
 #include "net/syscalls.hpp"
+#include "net/tcp_listener.hpp"
 #include "net/unix_listener.hpp"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string_view>
 #include <string>
+#include <variant>
 
 #include "wsrvd/backend.hpp"
 #include "wsrvd/handshake.hpp"
@@ -20,11 +24,24 @@
 
 namespace wsrv::wsrvd {
 
+/// The listening socket of either transport (ADR-0038).
+using IpcListener = std::variant<UnixListener, TcpListener>;
+
 struct IpcServerConfig {
+    /// EXACTLY ONE of these is set. A Unix socket path (the peer's uid is checked)...
     std::string socket_path;
-    std::string token;            ///< empty = no token required (the uid check still applies)
+    /// ...or a TCP address to bind (port 0 = the kernel chooses; see IpcServer::tcp_endpoint()).
+    /// Over TCP there is no peer uid, so the token is mandatory and a connection that has not said
+    /// HELLO does not hold the single application slot (ADR-0038 section 5).
+    std::optional<Endpoint> tcp;
+    std::string token;            ///< empty = no token required on a Unix socket (never over TCP)
     std::uint32_t max_frame = 0;  ///< largest frame after HELLO; also the outbound buffer's unit
     std::chrono::milliseconds hello_timeout{5000};
+    /// Over TCP, after the daemon's last word to a peer it turned away (a busy refusal, a rejected
+    /// HELLO): how long it keeps the half-closed socket, discarding input, so that a reset cannot
+    /// wipe the status the peer has not read yet (Windows drops received data on RST). It ends
+    /// sooner when the peer closes. ADR-0038 section 5.
+    std::chrono::milliseconds linger_timeout{2000};
     /// How long the application may leave our output unread before the link is closed.
     std::chrono::milliseconds stall_timeout{10000};
     /// After an application disconnects, how long its connections may wait for a replacement
@@ -42,8 +59,10 @@ struct IpcServerConfig {
 /// The IPC side of the daemon (ADR-0017): a Unix socket that ONE application connects to.
 ///
 /// What happens to a connection, in order:
-///  1. accept. The kernel's record of who connected (SO_PEERCRED) is read BEFORE any byte: a peer
-///     whose uid is not the daemon's is dropped without a reply.
+///  1. accept. On a Unix socket the kernel's record of who connected (SO_PEERCRED) is read BEFORE any
+///     byte: a peer whose uid is not the daemon's is dropped without a reply. Over TCP there is no
+///     such record; the token (mandatory) is the authentication, and a connection that has not
+///     yet said HELLO is replaced by a newcomer instead of holding the slot (ADR-0038).
 ///  2. If an application is already connected, the newcomer gets STATUS(request 0,
 ///     WSRV_ERR_BACKPRESSURE) and is closed: the single consumer slot is full (ADR-0017 4a).
 ///  3. HELLO must arrive within hello_timeout, in a frame no larger than the biggest legal HELLO.
@@ -67,7 +86,9 @@ struct IpcServerConfig {
 /// Thread-affinity: loop-thread-only; create() must run on the loop's thread.
 class IpcServer final : public IEventHandler {
 public:
-    /// @return Error from UnixListener::open (unsafe path, socket in use...) or from the loop.
+    /// @return Error{InvalidConfig} unless exactly one transport is configured, or for a TCP
+    /// transport without a token; the listener's error (unsafe path, address in use...) or the
+    /// loop's otherwise.
     [[nodiscard]] static Result<std::unique_ptr<IpcServer>>
     create(EventLoop& loop, ISyscalls& sys, IBackend& backend, IpcServerConfig config);
 
@@ -80,7 +101,7 @@ public:
               ISyscalls& sys,
               IBackend& backend,
               IpcServerConfig config,
-              UnixListener listener);
+              IpcListener listener);
     IpcServer(const IpcServer&) = delete;
     IpcServer& operator=(const IpcServer&) = delete;
     IpcServer(IpcServer&&) = delete;
@@ -93,8 +114,17 @@ public:
     /// True while an application is connected (accepted or not yet through HELLO).
     [[nodiscard]] bool has_consumer() const noexcept;
 
+    /// The address the TCP transport is bound to (the real port when 0 was asked); nothing for a
+    /// Unix socket.
+    [[nodiscard]] std::optional<Endpoint> tcp_endpoint() const noexcept;
+
 private:
     class Peer;
+    class Lingering;
+    /// Sockets kept open after our last word (linger()). Each is a descriptor and a small object
+    /// for at most `linger_timeout`; a flood of refused connections can fill this, and the rest are
+    /// then closed at once (the status was sent; only a Windows peer may lose it to a reset).
+    static constexpr std::size_t kMaxLingering = 32;
 
     /// The backend's event_fd became readable: events are waiting.
     class EventSource final : public IEventHandler {
@@ -123,7 +153,19 @@ private:
 
     void accept_burst() noexcept;
     void admit(Fd client) noexcept;
+    [[nodiscard]] int listener_fd() const noexcept;
+    [[nodiscard]] bool is_tcp() const noexcept;
+    /// TCP_NODELAY and keepalive probes on an accepted TCP socket (ADR-0038 section 5).
+    void tune_tcp(const Fd& client) noexcept;
+    /// Answer BACKPRESSURE to a connection we cannot take, then linger() it.
     void reject_busy(Fd client) noexcept;
+    /// Over TCP, keep a socket we have finished talking to (FIN already sent) until its peer closes
+    /// or `linger_timeout` passes, discarding what arrives, so that closing it cannot make the
+    /// operating system send RST and wipe the last status from a peer that has not read it yet
+    /// (Windows does). At most kMaxLingering at a time; beyond that the socket is closed at once.
+    /// A Unix socket has no such problem: this does nothing for one (the Fd closes).
+    void linger(Fd fd) noexcept;
+    void release_lingering(const Lingering* entry) noexcept;
     void schedule_retry() noexcept;
     /// Close every stale connection; those a loop refuses are tried again shortly (ADR-0034).
     void close_stale_connections(std::uint16_t code, std::string_view reason);
@@ -137,7 +179,7 @@ private:
     IpcServerConfig config_;
     Handshake handshake_;
     Relay relay_;
-    UnixListener listener_;
+    IpcListener listener_;
     EventSource event_source_{*this};
     std::optional<WatchHandle> watch_;
     std::optional<WatchHandle> events_watch_;
@@ -145,6 +187,7 @@ private:
     std::optional<TimerHandle> grace_timer_;  ///< armed while stale connections await 1012
     std::optional<TimerHandle> close_retry_;  ///< armed while a loop has refused a stale close
     std::unique_ptr<Peer> peer_;
+    std::array<std::unique_ptr<Lingering>, kMaxLingering> lingering_;  ///< fixed slots: no allocation
     /// Lifetime token for tasks handed to the loop: they hold a weak_ptr, so a task that outlives
     /// the server does nothing.
     std::shared_ptr<char> epoch_ = std::make_shared<char>();

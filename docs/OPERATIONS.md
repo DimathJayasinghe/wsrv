@@ -20,7 +20,7 @@ The defaults and the allowed range of every limit are in `docs/REQUIREMENTS.md` 
 | Compression | `permessage_deflate`, `deflate_server_max_window_bits`, `deflate_server_no_context_takeover`, `deflate_level`, `deflate_min_size`, `deflate_max_ratio` (section 1.1) |
 | Observability | `admin_host`, `admin_port` (section 3.1), `log_level`, `log_peer` (section 2) |
 | Rooms and publishing | `broker`, `broker_max_topics`, `broker_max_subscribers_per_topic`, `broker_max_topics_per_connection`, `broker_max_subscriptions`, `broker_max_payload_bytes`, `publish_host`, `publish_port`, `publish_token_file` (sections 3.1.1, 3.2) |
-| `wsrvd` only | `ipc_socket` (required), `ipc_token_file`, `ipc_max_frame`, `ipc_hello_timeout_ms`, `ipc_stall_ms` (section 7) |
+| `wsrvd` only | `ipc_socket` or `ipc_port` and `ipc_host` (one of the two transports, section 7), `ipc_token_file`, `ipc_max_frame`, `ipc_hello_timeout_ms`, `ipc_stall_ms` (section 7) |
 
 The IPC and publish tokens are never keys: they would show in `ps` and `/proc`, so only a file (mode 0600, yours) can carry them.
 
@@ -143,8 +143,12 @@ Never logged at any level: tokens and credentials, cookies and other headers, me
 | `listening` | info | the WebSocket port is open (`msg` has the port) |
 | `publish_listening`, `admin_listening` | info | the publish / admin endpoint is open (`msg` has the address) |
 | `publish_exposed`, `admin_exposed` | warn | that endpoint is not on loopback: keep it on a private network (sections 3.1 and 3.1.1) |
-| `ipc_ready` | info | `wsrvd` is ready for the application on its socket |
-| `ipc_no_token` | warn | no `ipc_token_file`: only the peer uid check protects the socket |
+| `ipc_ready` | info | `wsrvd` is ready for the application, on its Unix socket or (ADR-0038) on its TCP address, with the port actually bound |
+| `ipc_no_token` | warn | no `ipc_token_file`: only the peer uid check protects the socket (never said over TCP, where a token is required) |
+| `ipc_plaintext` | warn | the TCP IPC link is bound to an address that is not loopback; it is not encrypted (ADR-0038). Expected in a container whose port you publish on the host's loopback; a warning anywhere else |
+| `ipc_keepalive` | warn | TCP keepalive could not be set on the application's socket: a host that vanishes may keep the application slot for a long time |
+| `ipc_linger_full` | debug | over TCP, more than 32 refused connections were waiting to close at once; the extra ones were closed immediately (a flood of refused connections; the status was still sent) |
+| `app_replaced` | warn | over TCP, a connection that had not said HELLO was replaced by a newcomer (ADR-0038 section 5) and told `BACKPRESSURE`. Occasional: a probe or a port scan. Repeated: something keeps connecting ahead of your worker, so it keeps being refused; check what else reaches the IPC port |
 | `app_connected`, `app_disconnected` | info (warn if cut off for not reading) | the application's link came and went: connections it knew are closed with 1012 after `shutdown_grace_ms` unless a new one connects |
 | `app_rejected` | warn | an application was refused: another user, a second one, a wrong token or version, no HELLO in time. Many of these: a misconfigured worker (compare tokens and the socket path) |
 | `tls_reloaded` | info | SIGHUP picked up a new certificate |
@@ -290,6 +294,7 @@ install -m 600 /dev/null /etc/wsrv/ipc.token  # then put a long random token in 
 wsrvd --ipc-socket=/run/wsrv/ipc.sock --ipc-token-file=/etc/wsrv/ipc.token \
       --listen-host=0.0.0.0 --listen-port=8080 --allow-origin=https://app.example.com
 ```
+- **TCP instead of the Unix socket** (ADR-0038): `--ipc-port=9300 --ipc-token-file=FILE` (and `--ipc-host=ADDR`, default `127.0.0.1`) for a worker on another host, or on macOS or Windows against a daemon in Docker. Set exactly one of `ipc_socket` and `ipc_port`. The token is **mandatory** and at least 32 bytes (there is no peer uid to check over TCP, so the token is the only authentication), and the link is **plaintext**: keep it on loopback, a private network, a VPN or an SSH tunnel. In a container, bind `0.0.0.0` inside and publish the port on the host's loopback only (`-p 127.0.0.1:9300:9300`); the daemon then logs the `ipc_plaintext` warning, which is expected there. The official image has a built-in default socket path that applies only when neither key is set, so `-e WSRVD_IPC_PORT=9300` alone selects TCP. The container health check does not probe the TCP port. `ipc_port=0` lets the kernel choose; `ipc_ready` logs the port.
 - The socket directory must not be group- or world-writable and must belong to the service user or root. The daemon creates the socket with mode `0600` and refuses to follow a symlink at that path.
 - The token file must be mode `0600` and owned by the service user. There is **no** command-line or config-file value for the token (it would show in `ps` and `/proc`). Without a token only the peer-uid check protects the socket, and the daemon warns at start-up.
 - `--config=FILE` reads `key = value` lines; later arguments override earlier ones. Keys: `ipc_socket`, `ipc_token_file`, `ipc_max_frame`, `ipc_hello_timeout_ms`, `ipc_stall_ms`, the handshake-hook keys below, plus every embedded-server key (`listen_host`, `listen_port`, `threads`, `tls_cert`, `tls_key`, `allow_origin`, `allow_missing_origin`, `max_message_size`, `max_connections`, `shutdown_grace_ms`, ...).

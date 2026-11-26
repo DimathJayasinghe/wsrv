@@ -27,7 +27,7 @@ services:
     build:
       context: ../..
       dockerfile: docker/wsrvd.Dockerfile
-    # Every setting is WSRVD_<KEY> (ADR-0030); the image already sets the socket, the listen address and port 8080.
+    # Every setting is WSRVD_<KEY> (ADR-0030); the image has a built-in default IPC socket (/run/wsrv/ipc.sock) and sets the listen address and port 8080.
     environment:
       WSRVD_ALLOW_ORIGIN: http://localhost:8000      # the page below; browsers must come from here
       WSRVD_ALLOW_MISSING_ORIGIN: "true"             # command-line clients (wscat, websocat); remove in production

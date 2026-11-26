@@ -132,7 +132,10 @@ using Clock = std::chrono::steady_clock;
     if (!open_tcp(target.ws_host, target.ws_port, deadline).valid()) {
         return fail(ErrorCode::Io, "healthcheck: the websocket port does not accept connections");
     }
-    if (!open_unix(target.ipc_socket, deadline).valid()) {
+    // Empty for the TCP transport (ADR-0038 section 6): a probe of that port would be refused as a
+    // second application, and logged, whenever the application is connected. The daemon cannot
+    // start without its IPC listener, so an answering websocket port already proves it exists.
+    if (!target.ipc_socket.empty() && !open_unix(target.ipc_socket, deadline).valid()) {
         return fail(ErrorCode::Io, "healthcheck: the ipc socket does not accept connections");
     }
     return {};
@@ -145,7 +148,7 @@ HealthTarget health_target(const DaemonConfig& config) {
     HealthTarget target;
     target.ws_host = embedded.host();
     target.ws_port = embedded.port();
-    target.ipc_socket = config.socket_path();
+    target.ipc_socket = config.socket_path();  // empty for TCP: not probed
     target.admin_host = embedded.admin_host();
     target.admin_port = embedded.admin_port();
     return target;

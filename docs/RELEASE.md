@@ -32,7 +32,7 @@ A C++23 RFC 6455 WebSocket server core: sans-I/O protocol, multi-loop server on 
 
 Each is either a documented decision or a follow-up with an owner decision pending.
 
-- **Linux only** (epoll). On macOS and Windows develop with Docker Desktop or WSL2 and run the worker next to the daemon ([DEPLOYMENT.md](DEPLOYMENT.md) section 11). Planned for a future 1.x release, not 1.0: TCP IPC (a worker on the host talking to `wsrvd` in a container) and a native macOS server (kqueue), then Windows (M13). The PHP and JavaScript clients are tested on Apple Silicon macOS in CI.
+- **Linux only** (epoll). On macOS and Windows develop with Docker Desktop or WSL2 and run the worker next to the daemon ([DEPLOYMENT.md](DEPLOYMENT.md) section 11). Not in 1.0: TCP IPC (a worker on the host talking to `wsrvd` in a container), which arrives in 1.1 (ADR-0038), and a native macOS server (kqueue), then Windows (M13), planned for a later 1.x. The PHP and JavaScript clients are tested on Apple Silicon macOS in CI.
 - **Rooms from PHP work through the sidecar only.** `wsrvd` with `--broker=true` gives a PHP worker `Connection::subscribe` and `Worker::publish`, and any process can publish with `Wsrv\Publisher` over the HTTP endpoint (ADR-0028). The C ABI (`wsrv_publish` / `wsrv_subscribe`) and so the PHP-FFI embedded mode do not have rooms yet (ADR-0027 slice 2, planned as ABI 0.5).
 - **permessage-deflate multiplies broadcast cost** per subscriber (ADR-0024 A2). Leave compression off for broadcast-heavy deployments, or lower `max_payload_bytes`.
 - **Broker bounds are global**, not per user (ADR-0024 A4): an application serving strangers adds its own quota.

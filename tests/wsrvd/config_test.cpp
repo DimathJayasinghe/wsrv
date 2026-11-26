@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "wsrvd/config.hpp"
 
+#include "net/endpoint.hpp"
+
 #include <gtest/gtest.h>
 
 #include <string>
@@ -34,6 +36,134 @@ TEST(DaemonConfig, TheSocketPathIsRequired) {
     const auto done = config.finish();
     ASSERT_FALSE(done.has_value());
     EXPECT_EQ(done.error().code, ErrorCode::InvalidConfig);
+}
+
+// ---- the TCP transport (ADR-0038) ---------------------------------------------------------------
+
+DaemonConfig with_port(std::string_view port = "9300") {
+    DaemonConfig config;
+    EXPECT_TRUE(config.set("ipc_port", port).has_value());
+    EXPECT_TRUE(config.set("ipc_token_file", "/run/secrets/ipc.token").has_value());
+    return config;
+}
+
+TEST(DaemonConfigTcp, APortWithATokenFileSwitchesTheTcpTransportOn) {
+    DaemonConfig config = with_port();
+    ASSERT_TRUE(config.finish().has_value());
+    EXPECT_TRUE(config.tcp());
+    EXPECT_TRUE(config.socket_path().empty());
+    EXPECT_EQ(config.ipc_endpoint().port, 9300);
+    EXPECT_EQ(wsrv::format_endpoint(config.ipc_endpoint()),
+              "127.0.0.1:9300");  // loopback by default
+}
+
+TEST(DaemonConfigTcp, PortZeroLetsTheKernelChoose) {  // like admin_port and publish_port
+    DaemonConfig config = with_port("0");
+    ASSERT_TRUE(config.finish().has_value());
+    EXPECT_TRUE(config.tcp());
+    EXPECT_EQ(config.ipc_endpoint().port, 0);
+}
+
+TEST(DaemonConfigTcp, TheHostIsAnAddressLiteralIpv4OrIpv6) {
+    DaemonConfig v4 = with_port();
+    ASSERT_TRUE(v4.set("ipc_host", "0.0.0.0").has_value());
+    ASSERT_TRUE(v4.finish().has_value());
+    EXPECT_EQ(wsrv::format_endpoint(v4.ipc_endpoint()), "0.0.0.0:9300");
+    DaemonConfig v6 = with_port();
+    ASSERT_TRUE(v6.set("ipc_host", "::1").has_value());
+    ASSERT_TRUE(v6.finish().has_value());
+    EXPECT_TRUE(v6.ipc_endpoint().v6);
+}
+
+TEST(DaemonConfigTcp, AHostnameIsRefusedNoLookupOnTheLoopThread) {
+    DaemonConfig config = with_port();
+    ASSERT_TRUE(config.set("ipc_host", "localhost").has_value());  // checked once, in finish()
+    const auto done = config.finish();
+    ASSERT_FALSE(done.has_value());
+    EXPECT_EQ(done.error().code, ErrorCode::InvalidConfig);
+}
+
+TEST(DaemonConfigTcp, ThePortMustBeANumberFrom0To65535) {
+    for (const char* bad :
+         {"", "-1", "65536", "93x0", " 9300", "9300 ", "0x10", "99999999999999999999"}) {
+        DaemonConfig config;
+        const auto done = config.set("ipc_port", bad);
+        ASSERT_FALSE(done.has_value()) << bad;
+        EXPECT_EQ(done.error().code, ErrorCode::InvalidConfig);
+    }
+    DaemonConfig edge;
+    EXPECT_TRUE(edge.set("ipc_port", "65535").has_value());
+}
+
+TEST(DaemonConfigTcp, BothTransportsAtOnceIsAnErrorThatNamesBothKeys) {
+    DaemonConfig config = with_port();
+    ASSERT_TRUE(config.set("ipc_socket", "/run/wsrv/ipc.sock").has_value());
+    const auto done = config.finish();
+    ASSERT_FALSE(done.has_value());
+    EXPECT_EQ(done.error().code, ErrorCode::InvalidConfig);
+    const std::string message{done.error().context};
+    EXPECT_NE(message.find("ipc_socket"), std::string::npos);
+    EXPECT_NE(message.find("ipc_port"), std::string::npos);
+}
+
+TEST(DaemonConfigTcp,
+     WithoutATokenFileThereIsNoTcpTransport) {  // the token is the only authentication
+    DaemonConfig config;
+    ASSERT_TRUE(config.set("ipc_port", "9300").has_value());
+    const auto done = config.finish();
+    ASSERT_FALSE(done.has_value());
+    EXPECT_EQ(done.error().code, ErrorCode::InvalidConfig);
+    EXPECT_NE(std::string{done.error().context}.find("ipc_token_file"), std::string::npos);
+}
+
+TEST(DaemonConfigTcp, AHostWithoutAPortIsMostLikelyAMistypedKey) {
+    DaemonConfig config = with_socket();
+    ASSERT_TRUE(config.set("ipc_host", "0.0.0.0").has_value());
+    const auto done = config.finish();
+    ASSERT_FALSE(done.has_value());
+    EXPECT_NE(std::string{done.error().context}.find("ipc_port"), std::string::npos);
+}
+
+TEST(DaemonConfigTcp, NeitherTransportNamesBothKeysInTheError) {
+    DaemonConfig config;
+    const auto done = config.finish();
+    ASSERT_FALSE(done.has_value());
+    const std::string message{done.error().context};
+    EXPECT_NE(message.find("ipc_socket"), std::string::npos);
+    EXPECT_NE(message.find("ipc_port"), std::string::npos);
+}
+
+TEST(DaemonConfigTcp, ABuiltInDefaultSocketAppliesOnlyWhenNeitherKeyIsSet) {  // the official image
+    DaemonConfig neither;
+    neither.set_default_socket("/run/wsrv/ipc.sock");
+    ASSERT_TRUE(neither.finish().has_value());
+    EXPECT_FALSE(neither.tcp());
+    EXPECT_EQ(neither.socket_path(), "/run/wsrv/ipc.sock");
+
+    DaemonConfig port_only = with_port();  // `docker run -e WSRVD_IPC_PORT=9300 ...`
+    port_only.set_default_socket("/run/wsrv/ipc.sock");
+    ASSERT_TRUE(port_only.finish().has_value());
+    EXPECT_TRUE(port_only.tcp());
+    EXPECT_TRUE(port_only.socket_path().empty());
+
+    DaemonConfig socket_only = with_socket();
+    socket_only.set_default_socket("/run/wsrv/other.sock");
+    ASSERT_TRUE(socket_only.finish().has_value());
+    EXPECT_EQ(socket_only.socket_path(), "/run/wsrv/ipc.sock");  // the explicit key wins
+
+    DaemonConfig both = with_port();
+    ASSERT_TRUE(both.set("ipc_socket", "/run/wsrv/x.sock").has_value());
+    both.set_default_socket("/run/wsrv/ipc.sock");
+    EXPECT_FALSE(
+        both.finish().has_value());  // explicit both stays an error, the default is no excuse
+}
+
+TEST(DaemonConfigTcp, TheKeysComeInAsFlagsAndFileLinesLikeAnyOther) {
+    DaemonConfig config;
+    ASSERT_TRUE(config.apply_argument("--ipc-port=9300").has_value());
+    ASSERT_TRUE(config.apply_file_text("ipc_host = 10.0.0.5\nipc_token_file = /t\n").has_value());
+    ASSERT_TRUE(config.finish().has_value());
+    EXPECT_EQ(wsrv::format_endpoint(config.ipc_endpoint()), "10.0.0.5:9300");
 }
 
 TEST(DaemonConfig, OtherKeysGoToTheEmbeddedConfigWithItsRules) {

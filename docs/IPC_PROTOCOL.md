@@ -1,14 +1,24 @@
 # IPC protocol v0.3 (`wsrvd`)
 
-The wire contract between the `wsrvd` sidecar and ONE application (ADR-0017). Any language that can open a Unix socket can implement a client in a few hundred lines. The reference implementation of the codec is `src/ipc/` (sans-I/O, fuzzed); the behaviour described here is implemented in `apps/wsrvd/`.
+The wire contract between the `wsrvd` sidecar and ONE application (ADR-0017). Any language that can open a Unix socket (or, since 1.1, a TCP connection) can implement a client in a few hundred lines. The reference implementation of the codec is `src/ipc/` (sans-I/O, fuzzed); the behaviour described here is implemented in `apps/wsrvd/`.
 
 Terms: **daemon** = `wsrvd`; **application** = the program that connected to its Unix socket; **connection** = one WebSocket connection, identified by a `u64` id that is never reused.
 
 ## 1. Transport and security
+Two transports carry the same protocol (sections 2 to 9 are identical on both); the daemon serves one of them (ADR-0038).
+
+**Unix socket** (`ipc_socket`), the default:
 - A Unix domain stream socket at the path given by `ipc_socket`. The daemon creates it with mode `0600`.
 - After `accept`, the daemon reads the peer's uid from the kernel (`SO_PEERCRED`). A peer whose uid differs from the daemon's is dropped **without any reply**.
 - Optional shared token (`ipc_token_file`, a file of mode `0600`), sent in `HELLO`, compared in constant time. With no token configured, only the uid check protects the socket; the daemon warns at startup.
 - One application at a time. A second connection receives `STATUS(request 0, BACKPRESSURE)` and is closed.
+
+**TCP** (`ipc_port`, `ipc_host`, since 1.1), for a worker that cannot reach a Unix socket (macOS or Windows against a daemon in Docker, another machine):
+- A TCP listener on `ipc_host:ipc_port` (default `127.0.0.1`). There is no peer uid, so **the token is mandatory** (at least 32 bytes, constant-time comparison, the same single `STATUS(request 0, INVALID_ARGUMENT)` for every failure) and is the only authentication.
+- **The link is not encrypted.** The messages and the token cross it in clear: use loopback, a private network, a VPN or an SSH tunnel, never the open internet. Anyone who can reach the port can try to authenticate and can make connections that fail; treat it like a database port.
+- A connection that has not yet sent `HELLO` holds nothing: a newcomer replaces it, so an idle connection cannot lock the real application out. An authenticated application is never displaced; a second authenticated one still receives `BACKPRESSURE`.
+- The daemon enables `TCP_NODELAY` and keepalive probes (30 s idle, 10 s apart, 3 probes) on the accepted socket, so an application whose host vanished frees the slot in about a minute. A client should set `TCP_NODELAY` too.
+- After refusing a connection (`BACKPRESSURE`, a rejected `HELLO`) the daemon sends its status and FIN, then keeps the socket for up to 2 s, discarding what arrives, so that closing cannot make the operating system reset the connection and wipe the status before the peer has read it (Windows drops received data on a reset). A client that wants a clean end reads the status and closes.
 
 ## 2. Framing
 Every frame, both directions:
