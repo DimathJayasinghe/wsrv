@@ -89,7 +89,7 @@ Using Laravel? `docs/LARAVEL.md` has the ticket login, an Artisan worker and a q
 
 No daemon, but you need `libwsrv.so` and PHP with `ext-ffi` (the CLI default allows it).
 
-**Get the library.** On glibc Linux (x86_64 or aarch64, glibc 2.39 or newer, OpenSSL 3) a release has a prebuilt one. Install it on purpose, with a checksum check (Composer never downloads it for you, ADR-0026):
+**Get the library.** On glibc Linux (x86_64 or aarch64, glibc 2.39 or newer, OpenSSL 3) a release has a prebuilt one (on macOS and Windows there is none: the server is Linux only, so run the Docker image and your worker beside it, see docs/DEPLOYMENT.md section 11; the sidecar client itself works there). Install it on purpose, with a checksum check (Composer never downloads it for you, ADR-0026):
 
 ```sh
 composer require wsrv/client:^1.0@rc              # the PHP code (a plain `composer require wsrv/client` works once 1.0.0 is out)

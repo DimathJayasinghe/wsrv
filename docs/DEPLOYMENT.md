@@ -152,3 +152,20 @@ So **upgrade the daemon first, then the workers**.
 3. *Several nodes behind a load balancer*: drain and upgrade one node at a time; its clients reconnect to the others.
 
 **What 1.x does not promise:** the C++ headers under `src/` (only `include/wsrv/wsrv.h` is the stable C surface), the metric names marked experimental in OPERATIONS section 3, and anything in `bench/` or `tests/`.
+
+## 11. macOS and Windows
+
+The server (`wsrvd`, `libwsrv`) runs on **Linux only**: it is built on epoll. Your users' devices do not matter, because browsers on any system connect to it; only the machine that runs the server does. Production is therefore Linux, and on a Mac or a Windows PC you develop against a Linux `wsrvd`:
+
+- **Windows:** WSL2 (a real Linux kernel: install and run everything as on Linux) or Docker Desktop.
+- **macOS:** Docker Desktop. The image is multi-arch, so it runs natively on Apple Silicon.
+- **Run the worker next to the daemon.** The IPC link is a Unix socket, and a Unix socket cannot cross from the macOS or Windows host into Docker Desktop's Linux virtual machine. Put your worker in a container beside `wsrvd`, sharing a volume for the socket (as `examples/docker` does), or run both inside WSL2. Only the WebSocket port (and the publish port, if you use it) is published to the host.
+- **What runs natively on a Mac:** the PHP package's sidecar client and the JavaScript client (their tests run on Apple Silicon macOS in CI on every change). `wsrv-install-lib` refuses on macOS and Windows instead of writing a Linux file, and says so. The embedded server (`Wsrv\Embedded\Server`) needs `libwsrv`, so it is Linux only too.
+- **Not tested:** Docker Desktop on a real Mac (hosted macOS runners have no Docker; the same arm64 image is started on native arm64 Linux runners by the release job, and nobody on the project has a Mac), Intel Macs, and the PHP and JavaScript clients on native Windows.
+
+**Planned for a future 1.x release, not in 1.0:**
+- **TCP IPC**: a loopback TCP listener with the same token, so a worker running natively on the host can talk to a `wsrvd` in a container, without putting the worker in a container too.
+- **A native macOS server** (a kqueue poller), then Windows. A build probe in CI (Apple clang 17, 2026-11-26, TLS and deflate off) shows how far away this is: `base`, `protocol`, `http`, `crypto` and `ipc` already compile; what does not is `net`, `server`, `capi` and `wsrvd`, almost entirely on `<sys/epoll.h>`, plus one `getrandom` call.
+
+These have no dates. The 1.x promise (IPC protocol, C ABI, PHP API) does not change when they arrive.
+
