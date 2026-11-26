@@ -63,7 +63,7 @@ Rules:
 - The mode is per handler (a config choice at build time), not switched mid-message.
 
 ### 1.4 Resource accounting
-Memory held for partial messages counts against the per-connection and global byte budgets (SECURITY_DESIGN §6). Many connections each holding a nearly-full partial message is a DoS shape we explicitly budget for: a global "buffered message bytes" cap sheds new large messages (close 1013-style via 1008) before the process is under memory pressure.
+Memory held for partial messages counts against the per-connection and global byte budgets (SECURITY_DESIGN §6). Many connections each holding a nearly-full partial message is a DoS shape we explicitly budget for: since 1.1 a global cap (`max_buffered_bytes`, default 1 GiB, ADR-0040) counts the bytes of partial messages and unwritten output across all connections, and above it **new connections** are refused with a 503 (the ones that exist are left alone) before the process is under memory pressure. See OPERATIONS section 1.2.3.
 
 CPU amplification defence: 1-byte fragments are legal but costly. `max_fragments` (1024) bounds one message; the per-connection **data-frame rate** limit (default 10 000/s) bounds the flood across messages.
 

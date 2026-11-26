@@ -405,6 +405,19 @@ TEST(EmbeddedConfig, ThePendingSendBudgetKeyIsCheckedAndANoOpOnRefusal) {  // AD
     EXPECT_EQ(config.server().max_pending_send_bytes, 1048576U) << "a refusal changes nothing";
 }
 
+TEST(EmbeddedConfig, TheBufferedBytesBudgetKeyIsCheckedAndANoOpOnRefusal) {  // ADR-0040
+    EmbeddedConfig config;
+    EXPECT_EQ(config.server().max_buffered_bytes, std::size_t{1} << 30);
+    ASSERT_TRUE(config.set("max_buffered_bytes", "268435456").has_value());
+    EXPECT_EQ(config.server().max_buffered_bytes, std::size_t{256} << 20);
+    EXPECT_FALSE(config.set("max_buffered_bytes", "0").has_value()) << "no unlimited value";
+    EXPECT_FALSE(config.set("max_buffered_bytes", "x").has_value());
+    EXPECT_FALSE(config.set("max_buffered_bytes", "-1").has_value());
+    EXPECT_FALSE(config.set("max_buffered_bytes", "1099511627777").has_value()) << "above 1 TiB";
+    EXPECT_EQ(config.server().max_buffered_bytes, std::size_t{256} << 20)
+        << "a refusal changes nothing";
+}
+
 // ---- ADR-0016 A1: the three limits a conformance run raises ---------------------------------
 
 TEST(EmbeddedConfig, TheThreeLimitKeysDefaultToTheLibraryDefaults) {

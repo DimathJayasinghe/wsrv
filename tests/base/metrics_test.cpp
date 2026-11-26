@@ -196,6 +196,21 @@ TEST(MetricsText, TheExpositionHasOneHelpAndTypePerNameAndOneLinePerLabel) {
     EXPECT_EQ(types, 1U) << "a name is declared once however many labels it has";
 }
 
+TEST(MetricsText, TheBufferedBytesGaugeAndTheShedCounterAreExposed) {  // ADR-0040
+    CounterBank bank;
+    bank.add(Metric::RejectedBufferBudget, 3);
+    MetricsSnapshot snapshot;
+    snapshot.accumulate(bank);
+    const std::string text = wsrv::render_prometheus(snapshot, wsrv::MetricsGauges{12, 3456});
+    EXPECT_NE(text.find("# TYPE wsrv_buffered_bytes gauge\nwsrv_buffered_bytes 3456\n"),
+              std::string::npos)
+        << text;
+    EXPECT_NE(text.find("wsrv_connections_total{result=\"rejected_buffer_budget\"} 3\n"),
+              std::string::npos)
+        << text;
+    EXPECT_NE(text.find("wsrv_connections_current 12\n"), std::string::npos) << text;
+}
+
 TEST(MetricsText, EveryMetricAppearsExactlyOnceEvenAtZero) {
     const std::string text = wsrv::render_prometheus(MetricsSnapshot{}, wsrv::MetricsGauges{});
     for (std::size_t i = 0; i < kCount; ++i) {

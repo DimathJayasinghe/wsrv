@@ -14,7 +14,7 @@ The defaults and the allowed range of every limit are in `docs/REQUIREMENTS.md` 
 |---|---|
 | Listening | `listen_host`, `listen_port`, `threads` (event loops: start at the number of cores you give it) |
 | Who may connect | `allow_origin` (repeatable), `allow_missing_origin`, `trusted_proxy` (repeatable), `client_ip_header` |
-| Limits | `max_connections`, `max_connections_per_ip`, `max_new_connections_per_ip_per_second`, `max_message_size`, `max_frame_payload`, `max_fragments`, `max_data_frames_per_second`, `max_pending_send_bytes`, `event_queue_events`, `event_queue_bytes`, `shutdown_grace_ms` |
+| Limits | `max_connections`, `max_connections_per_ip`, `max_new_connections_per_ip_per_second`, `max_message_size`, `max_frame_payload`, `max_fragments`, `max_data_frames_per_second`, `max_pending_send_bytes`, `max_buffered_bytes`, `event_queue_events`, `event_queue_bytes`, `shutdown_grace_ms` |
 | Authenticating upgrades | `handshake_hook`, `handshake_forward_header` (repeatable), `handshake_decision_timeout_ms`, `max_pending_handshakes` |
 | TLS | `tls_cert`, `tls_key`, `tls_sni` (repeatable) |
 | Compression | `permessage_deflate`, `deflate_server_max_window_bits`, `deflate_server_no_context_takeover`, `deflate_level`, `deflate_min_size`, `deflate_max_ratio` (section 1.1) |
@@ -83,6 +83,17 @@ client_ip_header = X-Forwarded-For   # default; any other name is read as one si
 ### 1.2.2 Application sends waiting for a loop (ADR-0032)
 
 An application (the C API, the PHP worker through `wsrvd`) sends from its own thread: each `send_text` / `send_binary` is copied and queued to the loop that owns the connection. The queue is bounded in count, and since ADR-0032 also in bytes: `max_pending_send_bytes` (per loop, default 64 MiB, 1 B to 1 GiB, no unlimited value; `WSRVD_MAX_PENDING_SEND_BYTES` in a container). When the budget is used up a send returns `BufferFull` (C: `WSRV_ERR_BACKPRESSURE`, a PHP worker sees status `BACKPRESSURE`): wait and retry. A single message larger than the whole budget is refused for good with `InvalidArgument`, so keep the budget above your largest message. Worst case memory is `threads x budget`. Broadcasts and control commands are not charged (one shared buffer, and they must always get through).
+
+### 1.2.3 The bytes all connections buffer together (ADR-0040)
+
+Every connection is bounded on its own (a partial message at most `max_message_size`, the outbound queue at most `max_queued_bytes`, 1 MiB each by default), and `max_connections` bounds how many exist, but at the defaults the sum could reach about 20 GiB: many clients that each send the first fragments of a big message and stop, or many slow readers while your application broadcasts. `max_buffered_bytes` is the limit on that sum (the whole server, default **1 GiB**, 1 byte to 1 TiB, no unlimited value; `WSRVD_MAX_BUFFERED_BYTES` in a container, `--max-buffered-bytes` on the command line, `wsrv_config_set` in the C API).
+
+- **What counts:** per connection, the bytes of a message that has started and not been delivered, plus the bytes waiting to be written (queued, or framed and not yet accepted by the socket). Not counted: the permessage-deflate state (section 1.1 gives its figure, and `max_connections` bounds how many exist), the handshake head, the shared read buffer, TLS records in flight, and direct sends waiting for a loop (`max_pending_send_bytes`, section 1.2.2).
+- **What happens over the limit:** a **soft cap on new clients**. A client that connects while the sum is at or above the limit gets `HTTP/1.1 503 Service Unavailable` with `Retry-After: 1` and is closed; the connections that exist are not touched, and new clients are welcome again as soon as the sum drops. A burst between two checks can overshoot by what the admitted connections can still add.
+- **What you see:** the gauge `wsrv_buffered_bytes` (alert when it stays near the limit), the counter `wsrv_connections_total{result="rejected_buffer_budget"}`, and the warn event `buffer_budget` (rate-limited: the 1st, 2nd, 4th, 8th, ... refusal).
+- **What to set:** the default protects a host with several GiB. If the process has a memory limit (`MemoryMax`, a container limit), set the key to **about half of it**, after the deflate figure of section 1.1 and the other memory the process needs; `deploy/kubernetes/wsrv.yaml` sets 256 MiB for its 1 GiB limit. A healthy server holds close to nothing here (an idle or echoing connection holds zero), so a limit well below the default sheds nothing in normal operation. If `rejected_buffer_budget` grows while clients are healthy, look for slow readers (a queue near `max_queued_bytes` closes the connection under the default slow-consumer policy) and for fragmented uploads that never finish.
+- **If you raise other limits, raise this one with them.** The default is sized for ordinary message sizes. With `max_message_size` raised for file or image transfer, a limit of M bytes per message means about `1 GiB / M` unfinished messages at once before new clients are refused (50 MiB: about 20). The same goes for `max_queued_bytes`, and for an application that broadcasts large messages to many subscribers: a broadcast is copied into each subscriber's queue, and a slow reader keeps its copy. Size the key for the worst case you intend to serve, within about half of the memory limit; if the two do not fit, the host is too small for that workload.
+- **Not done:** closing existing connections to get back under the limit (a hard cap) is a separate decision.
 
 ### 1.3 Frame, fragment and frame-rate limits (ADR-0016 A1)
 
@@ -156,6 +167,7 @@ Never logged at any level: tokens and credentials, cookies and other headers, me
 | `tls_reload_skipped` | info | SIGHUP, but TLS is off |
 | `tls_reload_failed`, `tls_config` | error | the certificate or key cannot be used; `tls_config` lines name the file and the reason. The old certificate stays in use |
 | `conn_limit`, `ip_limit`, `loop_overloaded` | warn | a limit refused a client (section 1.2 and `max_connections`) |
+| `buffer_budget` | warn | the connections together hold `max_buffered_bytes` or more, so a new client was refused with a 503 (section 1.2.3, ADR-0040). Rate-limited. Repeated: slow readers or unfinished fragmented messages are holding the memory, or the limit is set too low for your load |
 | `origin_refused` | warn | the Origin header is not in `allow_origin`. A wrong list shows up here at once; scanners show up as a rate-limited stream |
 | `handshake_refused` | info | the upgrade was refused for another reason (malformed, too large). Any client can cause it, so it is deliberately not a warning |
 | `handshake_undecided` | warn | the application could not be asked about an upgrade (its queue is full or it is gone), so the client was refused with 503. This one is about your server, not the client |
@@ -184,7 +196,8 @@ ADR-0023. Counters live in one bank per loop (relaxed atomics, no lock) and are 
 | Metric | Type | Status |
 |---|---|---|
 | `wsrv_connections_current` | gauge | done |
-| `wsrv_connections_total{result}` | counter | done: `accepted`, `rejected_global_cap` (also a loop too overloaded to take a client), `rejected_ip_connections`, `rejected_ip_rate`, `rejected_ip_table`, `handshake_failed` |
+| `wsrv_buffered_bytes` | gauge | done: bytes the connections hold in partial inbound messages and outbound queues (section 1.2.3, ADR-0040) |
+| `wsrv_connections_total{result}` | counter | done: `accepted`, `rejected_global_cap` (also a loop too overloaded to take a client), `rejected_ip_connections`, `rejected_ip_rate`, `rejected_ip_table`, `rejected_buffer_budget`, `handshake_failed` |
 | `wsrv_messages_total{direction,type}` | counter | done: `in`/`out` x `text`/`binary` (a streamed message counts when it starts) |
 | `wsrv_bytes_total{direction}` | counter | done: bytes at the socket (ciphertext under TLS); `out` counts bytes the transport accepted |
 | `wsrv_close_total{class}` | counter | done: `normal` (1000, 1001), `protocol_error` (1002, 1003, 1007, 1009, 1010), `policy` (1008), `abnormal` (no Close frame: 1005, 1006, 1015), `other` (1011-1014 and application codes) |
@@ -266,7 +279,7 @@ What to watch: `wsrv_broker_deliveries_total{result="refused"}` rising means a l
 - Container: the official image runs as uid 10001 with a built-in `HEALTHCHECK` and only the libraries the daemon links against. Run it with a read-only root filesystem and every capability dropped, as `deploy/kubernetes/wsrv.yaml` does.
 - Kernel tuning (documented, not applied by the server): `net.core.somaxconn`, `net.ipv4.tcp_max_syn_backlog`, `tcp_syncookies=1`, `fs.file-max`, ephemeral port range, `tcp_keepalive_*`.
 - Behind a reverse proxy: configure `trusted_proxy`, ensure proxy timeouts > heartbeat, forward `Upgrade/Connection`, pass the real client IP in `X-Forwarded-For` (or another single-address header) and list the proxies in `trusted_proxy` (section 1.2.1); the PROXY protocol is not implemented yet.
-- Capacity planning: memory/connection × max_connections + buffer pool headroom; measured in `docs/PERFORMANCE.md` and `docs/BENCHMARKS.md`.
+- Capacity planning: memory/connection × max_connections + buffer pool headroom; and set `max_buffered_bytes` (section 1.2.3) to about half of the memory limit, so that a flood of buffering clients is answered with 503s instead of an out-of-memory kill; measured in `docs/PERFORMANCE.md` and `docs/BENCHMARKS.md`.
 
 ## 6. Runbook
 

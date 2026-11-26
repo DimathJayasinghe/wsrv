@@ -40,6 +40,19 @@ namespace {
     return {};
 }
 
+/// The two byte budgets: direct sends waiting for a loop (ADR-0032) and everything the connections
+/// buffer together (ADR-0040). Neither has an unlimited value.
+[[nodiscard]] Result<void> validate_byte_budgets(const ServerConfig& config) {
+    if (config.max_pending_send_bytes == 0 || config.max_pending_send_bytes > kMaxConfiguredQueue) {
+        return std::unexpected{
+            bad_config("max_pending_send_bytes must be in (0, 1 GiB] (ADR-0032)")};
+    }
+    if (config.max_buffered_bytes == 0 || config.max_buffered_bytes > kMaxConfiguredBufferedBytes) {
+        return std::unexpected{bad_config("max_buffered_bytes must be in (0, 1 TiB] (ADR-0040)")};
+    }
+    return {};
+}
+
 [[nodiscard]] Result<void> validate_limits(const ServerConfig& config) {
     if (const Result<void> listeners = validate_listeners(config); !listeners) {
         return listeners;
@@ -67,9 +80,8 @@ namespace {
         config.http.max_headers == 0) {
         return std::unexpected{bad_config("http limits must be non-zero")};
     }
-    if (config.max_pending_send_bytes == 0 || config.max_pending_send_bytes > kMaxConfiguredQueue) {
-        return std::unexpected{
-            bad_config("max_pending_send_bytes must be in (0, 1 GiB] (ADR-0032)")};
+    if (const Result<void> budgets = validate_byte_budgets(config); !budgets) {
+        return budgets;
     }
     if (config.read.max_reads_per_event == 0 || config.read.max_bytes_per_event == 0 ||
         config.read.max_bytes_per_event > kMaxConfiguredReadBytes) {

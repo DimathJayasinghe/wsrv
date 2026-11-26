@@ -209,6 +209,7 @@ int main(void) {
     int fd;
 
     CHECK((wsrv_abi_version() >> 16) == (WSRV_ABI_VERSION >> 16));
+    CHECK(wsrv_abi_version() == WSRV_ABI_VERSION);  /* the library and the header agree, minor too (1.1: max_buffered_bytes) */
     CHECK(strcmp(wsrv_status_name(WSRV_ERR_NO_SUCH_CONN), "WSRV_ERR_NO_SUCH_CONN") == 0);
     {   /* every status has a name; a value this version does not know does not crash */
         int code;

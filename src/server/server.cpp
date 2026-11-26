@@ -130,6 +130,7 @@ Result<void> Server::make_shared_state() {
                                                             clock_,
                                                             logger_,
                                                             live_,
+                                                            buffered_,
                                                             decider_,
                                                             pending_.get(),
                                                             wrapper_,
@@ -357,6 +358,12 @@ void Server::on_accept(Fd client, const Endpoint& peer) {
         }
         return;
     }
+    // The connections together hold more than the budget (ADR-0040): shed the newcomer before it
+    // takes a per-IP slot. A soft cap, so the connections that exist are not touched.
+    if (buffered_.load(std::memory_order_relaxed) >= config_.max_buffered_bytes) {
+        refuse_for_buffer_budget(std::move(client));
+        return;
+    }
     // A trusted proxy (ADR-0029) takes no per-IP slot here: its clients are admitted by the
     // connection once the upgrade request names them. The shard decides the same way on release.
     if (ip_limits_ != nullptr && !is_trusted_proxy(config_.trusted_proxies, peer)) {
@@ -400,6 +407,21 @@ void Server::refuse_for_ip_limit(Fd client, Admission verdict) {
     const std::string_view answer = verdict == Admission::TableFull ? kAnswer503 : kAnswer429;
     static_cast<void>(
         sys_.send(client.get(), answer.data(), answer.size(), MSG_NOSIGNAL | MSG_DONTWAIT));
+}  // the descriptor is closed here
+
+/// The buffered-bytes budget is used up (ADR-0040): say so in one send and close, like a refused
+/// address. A 503 and not a silent close, because the server is overloaded, not the client wrong,
+/// and `Retry-After` is the honest answer. Counted, and logged on the 1st, 2nd, 4th... refusal.
+void Server::refuse_for_buffer_budget(Fd client) {
+    main_->metrics().add(Metric::RejectedBufferBudget);
+    const std::uint64_t total = main_->metrics().read(Metric::RejectedBufferBudget);
+    if ((total & (total - 1)) == 0) {  // log the 1st, 2nd, 4th, 8th...: rate-limited
+        logger_.log(LogLevel::Warn,
+                    "buffer_budget",
+                    "server: buffered-bytes budget used up, refusing clients");
+    }
+    static_cast<void>(
+        sys_.send(client.get(), kAnswer503.data(), kAnswer503.size(), MSG_NOSIGNAL | MSG_DONTWAIT));
 }  // the descriptor is closed here
 
 /// Give the descriptor to another loop. The task must be copyable, so the move-only Fd travels in

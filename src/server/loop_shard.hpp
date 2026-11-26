@@ -39,6 +39,7 @@ struct ShardShared {
     const IClock& clock;
     ILogger& logger;                       // must be thread-safe once threads > 1
     std::atomic<std::size_t>& live;        // connections alive in all shards (the global cap)
+    std::atomic<std::size_t>& buffered;    // bytes all connections hold (ADR-0040)
     IHandshakeDecider* decider = nullptr;  // null = valid upgrades are accepted at once
     PendingGate* pending = nullptr;        // the bound on upgrades waiting for the decider
     ITransportWrapper* wrapper = nullptr;  // null = plain TCP; else wraps each accepted transport

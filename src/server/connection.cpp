@@ -8,6 +8,7 @@
 #include <array>
 #include <charconv>
 #include <exception>
+#include <limits>
 #include <new>
 #include <utility>
 
@@ -107,7 +108,7 @@ Connection::Connection(ConnectionId id,
                        std::unique_ptr<ITransport> transport,
                        const ConnectionContext& context)
     : id_{id}, peer_{peer}, client_{peer}, transport_{std::move(transport)}, ctx_{context},
-      driver_{context.negotiator, context.config.http} {}
+      ledger_{context.buffered}, driver_{context.negotiator, context.config.http} {}
 
 Connection::~Connection() {
     release();  // normally finish() already did; this covers a server torn down with live clients
@@ -541,6 +542,19 @@ void Connection::settle() {
     if (phase_ != Phase::Finished) {
         apply_interest();  // Write interest follows blocked output and a pending on_writable
     }
+    account_buffers();  // the one place every read, write and command passes through
+}
+
+/// ADR-0040: what the session holds for the peer (an unfinished message, output not yet written)
+/// is charged to the server's budget by difference; release() and the destructor give it all back.
+void Connection::account_buffers() noexcept {
+    if (released_ || !session_) {
+        return;
+    }
+    const std::size_t in = session_->buffered_input_bytes();
+    const std::size_t out = session_->buffered_output_bytes();
+    constexpr std::size_t kMax = std::numeric_limits<std::size_t>::max();
+    ledger_.set(out > kMax - in ? kMax : in + out);
 }
 
 /// Collect events that do not need input (Closed after the last byte was written, a timer's
@@ -912,6 +926,7 @@ void Connection::release() noexcept {
         return;
     }
     released_ = true;
+    ledger_.release();  // ADR-0040: whatever ended the connection, its bytes are given back
     if (stream_link_ != nullptr) {
         stream_link_->sink = nullptr;  // writers that outlive us now fail with Closing
     }

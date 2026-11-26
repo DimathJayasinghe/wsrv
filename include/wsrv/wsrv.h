@@ -36,7 +36,7 @@ extern "C" {
 
 /* (major << 16) | minor. Compare the major with the one you compiled against. From 1.0 the major
  * changes only with wsrv 2.0 and a minor only adds (ADR-0016 amendment A4). */
-#define WSRV_ABI_VERSION ((1u << 16) | 0u)
+#define WSRV_ABI_VERSION ((1u << 16) | 1u) /* 1.1: the key max_buffered_bytes (ADR-0040) */
 WSRV_API uint32_t wsrv_abi_version(void);
 
 typedef enum wsrv_status {
@@ -131,6 +131,10 @@ WSRV_API void wsrv_config_free(wsrv_config *config); /* NULL is fine */
  *                        loop, default 67108864 (1 .. 1073741824); over it a send returns
  *                        WSRV_ERR_BACKPRESSURE (wait and retry), a message larger than the whole
  *                        budget WSRV_ERR_INVALID_ARGUMENT
+ *   max_buffered_bytes   the whole server: the most bytes its connections may hold in partial
+ *                        inbound messages and outbound queues together, default 1073741824
+ *                        (1 .. 1099511627776); above it new clients get a 503 and the connected
+ *                        ones are left alone (ADR-0040). Needs ABI 1.1; a 1.0 library refuses the key
  *   tls_cert             path of the server certificate chain (PEM, certificate first)
  *   tls_key              path of its private key (PEM, not readable by "others"; no passphrase)
  *                        Setting either asks for wss://: connections are then TLS only (1.2 and

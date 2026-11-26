@@ -166,6 +166,94 @@ TEST(Session, APingBetweenFragmentsWithASplitCharacterIsAnsweredAndTheMessageCom
     EXPECT_EQ(rig.take_output().frames, (std::vector<WireFrame>{{Opcode::Pong, true, "x"}}));
 }
 
+// ADR-0040: the bytes a peer can make a session hold on the inbound side are the message it has
+// not finished. They are counted while the message is partial and not once it was delivered (the
+// assembler keeps the delivered bytes until the next call, but they are no longer held for anyone).
+TEST(Session, BufferedInputBytesCountsAPartialMessageAndForgetsItOnceDelivered) {
+    Rig rig;
+    EXPECT_EQ(rig.session().buffered_input_bytes(), 0U);
+    EXPECT_TRUE(rig.feed(client_frame(Opcode::Binary, false, std::string(1000, 'a'))).empty());
+    EXPECT_EQ(rig.session().buffered_input_bytes(), 1000U);
+    EXPECT_TRUE(rig.feed(client_frame(Opcode::Continuation, false, std::string(500, 'b'))).empty());
+    EXPECT_EQ(rig.session().buffered_input_bytes(), 1500U);
+    const auto events = rig.feed(client_frame(Opcode::Continuation, true, "cc"));
+    ASSERT_EQ(events.size(), 1U);
+    EXPECT_EQ(events[0].data.size(), 1502U);
+    EXPECT_EQ(rig.session().buffered_input_bytes(), 0U) << "delivered: held for nobody";
+}
+
+// The outbound side counts what is waiting to be written, wherever it waits: in the queue, or
+// already framed in the wire buffer (a message moves there as soon as the transport asks for
+// output, and a client that reads nothing keeps it there).
+TEST(Session, BufferedOutputBytesCountsAMessageUntilItIsWrittenAndNotAfter) {
+    // RFC 6455 section 5.2: a server frame (unmasked) with a payload of 126..65535 bytes has a
+    // 4-byte header. Exact numbers, not bounds: a bound cannot tell "counted once" from "twice".
+    constexpr std::size_t kPayload = 3000;
+    constexpr std::size_t kHeader = 4;
+    Rig rig;
+    EXPECT_EQ(rig.session().buffered_output_bytes(), 0U);
+    ASSERT_TRUE(rig.session().send_text(std::string(kPayload, 'x')).has_value());
+    EXPECT_EQ(rig.session().buffered_output_bytes(), kPayload + wsrv::kMessageOverhead) << "queued";
+    const wsrv::ByteView framed = rig.session().pending_output();  // the transport asks for output
+    ASSERT_EQ(framed.size(), kPayload + kHeader);
+    EXPECT_EQ(rig.session().buffered_output_bytes(), kPayload + kHeader)
+        << "framed and unwritten: moved from the queue to the wire buffer, not counted in both";
+    rig.session().consume_output(1000);
+    EXPECT_EQ(rig.session().buffered_output_bytes(), kPayload + kHeader - 1000);
+    rig.session().consume_output(kPayload + kHeader - 1000);
+    EXPECT_EQ(rig.session().buffered_output_bytes(), 0U) << "written";
+}
+
+// A message longer than max_frame_payload leaves the queue one frame at a time. At every step what
+// is still queued plus what is framed must be exactly the bytes the peer has not taken, with the
+// per-message overhead counted once and released with the last frame.
+TEST(Session, BufferedOutputBytesIsExactWhileAMessageIsFramedInSeveralFrames) {
+    constexpr std::size_t kFrame = 1000;
+    constexpr std::size_t kPayload = 2500;  // frames of 1000, 1000 and 500
+    constexpr std::size_t kHeader = 4;      // RFC 6455 section 5.2, payload 126..65535
+    SessionConfig config;
+    config.outbound.max_frame_payload = kFrame;
+    Rig rig{config};
+    ASSERT_TRUE(
+        rig.session().send_binary(std::vector<std::byte>(kPayload, std::byte{0x61})).has_value());
+    EXPECT_EQ(rig.session().buffered_output_bytes(), kPayload + wsrv::kMessageOverhead);
+
+    ASSERT_EQ(rig.session().pending_output().size(), kFrame + kHeader);  // frame 1 of 3
+    EXPECT_EQ(rig.session().buffered_output_bytes(), kPayload + wsrv::kMessageOverhead + kHeader)
+        << "the whole message still waits, plus one header: nothing is counted twice";
+    rig.session().consume_output(kFrame + kHeader);
+    EXPECT_EQ(rig.session().buffered_output_bytes(), kPayload - kFrame + wsrv::kMessageOverhead);
+
+    ASSERT_EQ(rig.session().pending_output().size(), kFrame + kHeader);  // frame 2 of 3
+    EXPECT_EQ(rig.session().buffered_output_bytes(),
+              kPayload - kFrame + wsrv::kMessageOverhead + kHeader);
+    rig.session().consume_output(kFrame + kHeader);
+    EXPECT_EQ(rig.session().buffered_output_bytes(),
+              kPayload - 2 * kFrame + wsrv::kMessageOverhead);
+
+    ASSERT_EQ(rig.session().pending_output().size(), 500 + kHeader);  // the last frame
+    EXPECT_EQ(rig.session().buffered_output_bytes(), 500 + kHeader)
+        << "the overhead is released with the last frame";
+    rig.session().consume_output(500 + kHeader);
+    EXPECT_EQ(rig.session().buffered_output_bytes(), 0U);
+}
+
+TEST(Session, ASingleFrameMessageThatFitsInOneReadIsNeverCharged) {
+    Rig rig;
+    const auto events = rig.feed(client_frame(Opcode::Text, true, std::string(4000, 'x')));
+    ASSERT_EQ(events.size(), 1U);
+    EXPECT_EQ(rig.session().buffered_input_bytes(), 0U);
+}
+
+TEST(Session, ADiscardedPartialMessageIsNoLongerCharged) {  // a Close mid-message drops it
+    Rig rig;
+    EXPECT_TRUE(rig.feed(client_frame(Opcode::Binary, false, std::string(2000, 'a'))).empty());
+    ASSERT_EQ(rig.session().buffered_input_bytes(), 2000U);
+    ASSERT_TRUE(rig.session().close(CloseCode::Normal, "").has_value());
+    const auto after = rig.feed(client_frame(Opcode::Continuation, true, "z"));
+    EXPECT_EQ(rig.session().buffered_input_bytes(), 0U) << after.size() << " events followed";
+}
+
 TEST(Session, AnUnsolicitedPongIsSurfacedAndAnswersNothing) {  // EC-C03
     Rig rig;
     EXPECT_EQ(rig.feed(client_frame(Opcode::Pong, true, "?")), (std::vector<Seen>{pong("?")}));

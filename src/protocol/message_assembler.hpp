@@ -79,6 +79,13 @@ public:
         return in_message_;
     }
 
+    /// Bytes of a message that has started and not been delivered: what a peer can make this
+    /// assembler hold (ADR-0040). A delivered or discarded message is no longer held for anyone,
+    /// although its storage lives until the next handle() (the delivered view must stay valid).
+    [[nodiscard]] std::size_t buffered_bytes() const noexcept {
+        return clear_buffer_ ? 0 : buffer_.size();
+    }
+
     /// Drop the message in progress, wherever it is, even in the middle of a frame (used when the
     /// session decides to close). Nothing more of that message is delivered; the frames that
     /// complete it are drained silently. A no-op when no message is in progress.

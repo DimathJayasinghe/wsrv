@@ -2,6 +2,7 @@
 #include "wsrvd/startup.hpp"
 
 #include "net/endpoint.hpp"
+#include "server/config.hpp"
 #include "support/fake_syscalls.hpp"
 
 #include <gtest/gtest.h>
@@ -286,6 +287,40 @@ TEST_F(EnvironmentTest, AnEnvironmentAloneIsEnoughAndNamesAreTheUpperCasedKeys) 
     EXPECT_EQ(startup->config.embedded().server().max_connections_per_ip, 7U);
 }
 
+// ADR-0040: the budget is one more key, so it is a flag and a variable with no extra code; this
+// pins that a container operator can set it (the Kubernetes manifest does) and that a bad value is
+// refused at start-up rather than silently ignored.
+TEST_F(EnvironmentTest, TheBufferedBytesBudgetIsAVariableAndAFlagAndABadOneIsRefused) {
+    const auto defaults = run_with({}, {"WSRVD_IPC_SOCKET=/run/a.sock"});
+    ASSERT_TRUE(defaults.has_value());
+    EXPECT_EQ(defaults->config.embedded().server().max_buffered_bytes,
+              wsrv::kDefaultMaxBufferedBytes);
+
+    const auto from_env =
+        run_with({}, {"WSRVD_IPC_SOCKET=/run/a.sock", "WSRVD_MAX_BUFFERED_BYTES=268435456"});
+    ASSERT_TRUE(from_env.has_value());
+    EXPECT_EQ(from_env->config.embedded().server().max_buffered_bytes, 268435456U);
+
+    const auto flag =
+        run_with({"--max-buffered-bytes=1048576"},
+                 {"WSRVD_IPC_SOCKET=/run/a.sock", "WSRVD_MAX_BUFFERED_BYTES=268435456"});
+    ASSERT_TRUE(flag.has_value());
+    EXPECT_EQ(flag->config.embedded().server().max_buffered_bytes, 1048576U)
+        << "a flag wins over the environment";
+
+    for (const char* bad : {"WSRVD_MAX_BUFFERED_BYTES=0",
+                            "WSRVD_MAX_BUFFERED_BYTES=-1",
+                            "WSRVD_MAX_BUFFERED_BYTES=lots",
+                            "WSRVD_MAX_BUFFERED_BYTES=1099511627777"}) {
+        EXPECT_FALSE(run_with({}, {"WSRVD_IPC_SOCKET=/run/a.sock", bad}).has_value())
+            << bad << " (0, a sign, text and one byte over 1 TiB are all refused)";
+    }
+    const auto top =
+        run_with({}, {"WSRVD_IPC_SOCKET=/run/a.sock", "WSRVD_MAX_BUFFERED_BYTES=1099511627776"});
+    ASSERT_TRUE(top.has_value()) << "exactly 1 TiB is the largest value";
+    EXPECT_EQ(top->config.embedded().server().max_buffered_bytes, std::size_t{1} << 40);
+}
+
 TEST_F(EnvironmentTest, TheLogSettingsAreFlagsAndVariablesLikeAnyOther) {  // ADR-0037
     const auto from_env = run_with(
         {}, {"WSRVD_IPC_SOCKET=/run/a.sock", "WSRVD_LOG_LEVEL=debug", "WSRVD_LOG_PEER=true"});
@@ -444,6 +479,12 @@ TEST(Usage, NamesThePerIpLimitFlagsWithTheirDefaults) {  // ADR-0021 section 5
     EXPECT_NE(text.find("--max-connections-per-ip"), std::string_view::npos);
     EXPECT_NE(text.find("--max-new-connections-per-ip-per-second"), std::string_view::npos);
     EXPECT_NE(text.find("0 = no limit"), std::string_view::npos);
+}
+
+TEST(Usage, NamesTheBufferedBytesBudgetAndWhatToSetItTo) {  // ADR-0040
+    const std::string_view text = wsrv::wsrvd::usage();
+    EXPECT_NE(text.find("--max-buffered-bytes"), std::string_view::npos);
+    EXPECT_NE(text.find("half the memory limit"), std::string_view::npos);
 }
 
 TEST(Usage, NamesTheAdminFlagsAndWarnsThatThePortIsNotAuthenticated) {  // ADR-0023

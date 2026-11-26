@@ -130,7 +130,7 @@ public:
     }
     /// The values that are state, not events. Any-thread.
     [[nodiscard]] MetricsGauges metrics_gauges() const noexcept {
-        return MetricsGauges{live_.load()};
+        return MetricsGauges{live_.load(), buffered_.load(std::memory_order_relaxed)};
     }
     /// Prometheus text of metrics() and metrics_gauges(), what the admin endpoint serves.
     [[nodiscard]] std::string metrics_text() const {
@@ -151,6 +151,7 @@ private:
     void stop_workers();
     void on_accept(Fd client, const Endpoint& peer);
     void refuse_for_ip_limit(Fd client, Admission verdict);
+    void refuse_for_buffer_budget(Fd client);
     void hand_off(std::size_t worker, Fd client, const Endpoint& peer, ConnectionId id);
     void begin_shutdown();
     void force_shutdown();
@@ -176,7 +177,9 @@ private:
     // Destruction runs in reverse declaration order. The acceptor and the signal watcher come
     // last: they are destroyed first and stop feeding new work. Then the worker threads (their
     // shards die on their own threads), then loop 0's shard, which everything above may use.
-    std::atomic<std::size_t> live_{0};      // connections alive in every shard: the global cap
+    std::atomic<std::size_t> live_{0};  // connections alive in every shard: the global cap
+    std::atomic<std::size_t> buffered_{
+        0};  // bytes every connection holds (ADR-0040); outlives them
     std::unique_ptr<PendingGate> pending_;  // upgrades waiting for the decider; outlives the shards
     std::unique_ptr<IpLimits> ip_limits_;   // null = no per-IP limits; outlives the shards
     std::unique_ptr<MetricBanks> banks_;    // one counter bank per loop; outlives the shards
