@@ -1,10 +1,10 @@
-# Release readiness: 1.0-rc
+# Release readiness: 1.0
 
-> No stable version has been released yet: the latest published version is the release candidate **`1.0.0-rc.2`** (2026-11-26). The sources are at **1.0.0** since 2026-11-25 (project, PHP package and C ABI 1.0, ADR-0016 A4). It is published first as release candidates (`v1.0.0-rc.N`); the final `v1.0.0` waits for the owner's go. The unchecked boxes in section 4 are what is left. Until the final release, pin the version you use.
+> **`1.0.0` is released** (2026-11-26, tag `v1.0.0`, GitHub release "Latest"). It was published first as release candidates (`v1.0.0-rc.1` to `-rc.3`); the final tag has the same sources as `-rc.3`. The checklists below are the record of how that decision was made and what was verified; the boxes still open in section 4 are the owner's or are planned for 1.0.1 or 1.x, not blockers of the release. What `1.0.0` freezes (the IPC protocol, the C ABI, the PHP API) is in the README.
 
-What a 1.0 release candidate claims, the evidence for each claim, what is known to be missing, and the checklist that decides it. Written at the end of M10 (2026-11-14). A claim without evidence in the right-hand column is not a claim.
+What 1.0 claims, the evidence for each claim, what is known to be missing, and the checklist that decides it. Written at the end of M10 (2026-11-14). A claim without evidence in the right-hand column is not a claim.
 
-## 1. What the release candidate is
+## 1. What 1.0 is
 
 A C++23 RFC 6455 WebSocket server core: sans-I/O protocol, multi-loop server on epoll, TLS (OpenSSL), permessage-deflate (RFC 7692), per-IP and global limits, a pub/sub broker, Prometheus metrics, a stable C ABI (`libwsrv`), the `wsrvd` sidecar and a pure-PHP client. Linux only. The C++ headers still live in `src/server/` until the C ABI fixes the public surface (ADR-0013); the C ABI (`include/wsrv/wsrv.h`) is the stable part.
 
@@ -70,7 +70,7 @@ Repository and launch (M14, listed here so nothing is forgotten)
 - [x] Owner: final project name (`wsrv`, confirmed 2026-11-22; Composer name `wsrv/client`, found free on Packagist) and license confirmed
 - [x] `NOTICE`, `CODE_OF_CONDUCT.md`, `CHANGELOG.md` added (repository root)
 - [ ] Owner: review of the git history (author e-mail addresses) and a full-history secret scan before the repository goes public
-- [ ] Owner: branch protection on `main`; secret scanning, push protection, private vulnerability reporting enabled
+- [x] Owner: branch protection on `main`; secret scanning, push protection, private vulnerability reporting enabled (all on, checked 2026-11-26)
   - Recommendation (2026-11-22): block force pushes and branch deletion on `main`; do **not** require status checks while `ci.yml` uses `paths-ignore`, because a docs-only PR gets no status and would stay blocked forever. Required checks are an M14 decision. Not applied: a repository setting, and a private repository may need a paid plan for it.
 - [x] Signed release artifacts and an SBOM (ADR-0033), verified on `1.0.0-rc.1` (2026-11-26): `SHA256SUMS` matches all five files; `gh attestation verify` passes for the four binaries, the SBOM and the image (and fails on a file with one byte added); `cosign verify` (cosign 3) passes for the image with the identity `release.yml@refs/tags/v1.0.0-rc.1`; the SBOM is SPDX 2.3 with 93 packages; the multi-arch image (30 MB, non-root, `latest` not set) starts, answers a handshake (101 for the allowed origin, 403 for another) and becomes healthy on x86-64. The arm64 image could not be run on the development machine (no emulation). **`1.0.0-rc.2`** (same day, with the image-start step of ADR-0033 A1) closed that: both images were started and went healthy on their native runners (amd64 and arm64) before being pushed; the image was also copied to Docker Hub (`dimathjayasinghe/wsrvd:1.0.0-rc.2`, public, anonymous pull answers 200) with the same digest as on GHCR, `cosign verify` (cosign 3) passes there too, the five release files match `SHA256SUMS` and carry attestations, and neither registry has a `latest` tag.
 - [x] Versioning policy stated: README "Stability" (IPC protocol 0.3 frozen for 1.x, C ABI 1.0 with ADR-0016 A4, PHP package follows semantic versioning; the C++ headers under `src/` are not promised)
@@ -79,7 +79,7 @@ Repository and launch (M14, listed here so nothing is forgotten)
 
 **Go for `1.0.0`: yes, given by the owner on 2026-11-26** (a request to release the final stable version), after: all CI jobs green on `develop` (gcc, clang with TSan and fuzz, clang-tidy, the container, Kubernetes (kind) and macOS jobs), the evidence of section 2, the coverage and limits audits, the runtime logger (ADR-0037) and the operations guide corrected to match the code. The server core, TLS, deflate, limits, broker, metrics, logging, C ABI and sidecar are built, tested under every sanitizer, fuzzed and reviewed; the claims in section 2 can be checked by running the named commands.
 
-What this release does not do is stated in section 3 (Linux only, TCP IPC and a native macOS server planned for 1.x, histograms and a loop-lag watchdog after 1.0). Still open and the owner's alone: the review of the git history for the personal e-mail address, branch protection on `main`, Dependabot security updates. Released as `v1.0.0` on 2026-11-26 (commit `4317d45` on `main`, after a `v1.0.0-rc.3` dry run of the same commit): the checksums, the build attestations, the cosign signatures on GHCR and Docker Hub and the Packagist listing were verified, `:latest` and `:1.0.0` are the same image, and the Docker Hub overview is `docker/HUB.md`. For 1.0.1, not done before 1.0.0 because `release.yml` runs only on a tag and a change to it cannot be tested without publishing: move `latest` to a last job after everything else has succeeded, and have a final tag refuse a commit that is not on `main` with a green `ci.yml` run (today the person tagging checks both by hand).
+What this release does not do is stated in section 3 (Linux only, TCP IPC and a native macOS server planned for 1.x, histograms and a loop-lag watchdog after 1.0). Still open and the owner's alone: the review of the git history for the personal e-mail address. Branch protection on `main` (force pushes and deletion blocked, enforced for administrators) and Dependabot security updates were switched on on 2026-11-26. Released as `v1.0.0` on 2026-11-26 (commit `4317d45` on `main`, after a `v1.0.0-rc.3` dry run of the same commit): the checksums, the build attestations, the cosign signatures on GHCR and Docker Hub and the Packagist listing were verified, `:latest` and `:1.0.0` are the same image, and the Docker Hub overview is `docker/HUB.md`. For 1.0.1, not done before 1.0.0 because `release.yml` runs only on a tag and a change to it cannot be tested without publishing: move `latest` to a last job after everything else has succeeded, and have a final tag refuse a commit that is not on `main` with a green `ci.yml` run (today the person tagging checks both by hand).
 
 ## 6. Going public (checklist, 2026-11-22)
 
@@ -91,7 +91,7 @@ Owner decisions that cannot be made for the owner:
 - [x] **Flip the visibility**: done, the repository is public (checked with `gh repo view`, 2026-11-25). Announcing is a separate step that waits for the final `v1.0.0`.
 
 Right after the flip (not available while the repository is private):
-- [x] Settings, Code security: private vulnerability reporting, secret scanning, push protection and Dependabot alerts are on (checked with `gh api`, 2026-11-26). Dependabot security updates (automatic fix PRs) are off: optional, the owner's call.
+- [x] Settings, Code security: private vulnerability reporting, secret scanning, push protection and Dependabot alerts are on (checked with `gh api`, 2026-11-26). Dependabot security updates (automatic fix PRs) were switched on on 2026-11-26.
 - [x] Private vulnerability reporting is enabled, so the Security tab offers "Report a vulnerability" (SECURITY.md and the issue template link depend on it).
 - [x] Pushed `v1.0.0-rc.1`: `release.yml` ran with the arm runner, the attestation and the signature (see the signed-artifact line above), and Packagist lists `wsrv/client` `v1.0.0-rc.1`.
 - [x] The GHCR package `wsrvd` is public (an anonymous manifest fetch of `1.0.0-rc.1` answers 200).
