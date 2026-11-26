@@ -92,6 +92,9 @@ public:
     virtual SysResult peer_uid(int fd, std::uint32_t& uid) = 0;
     /// geteuid(2): cannot fail.
     virtual std::uint32_t effective_uid() noexcept = 0;
+    /// A copy of `fd` with close-on-exec, numbered `lowest` or above (fcntl F_DUPFD_CLOEXEC). The
+    /// logger keeps its own copy of stderr this way (ADR-0037).
+    virtual SysResult dup_cloexec(int fd, int lowest) = 0;
     virtual SysResult epoll_create1(int flags) = 0;
     virtual SysResult epoll_ctl(int epoll_fd, int op, int fd, epoll_event* event) = 0;
     virtual SysResult
@@ -133,6 +136,7 @@ public:
     SysResult unlink_path(const char* path) override;
     SysResult peer_uid(int fd, std::uint32_t& uid) override;
     std::uint32_t effective_uid() noexcept override;
+    SysResult dup_cloexec(int fd, int lowest) override;
     SysResult epoll_create1(int flags) override;
     SysResult epoll_ctl(int epoll_fd, int op, int fd, epoll_event* event) override;
     SysResult

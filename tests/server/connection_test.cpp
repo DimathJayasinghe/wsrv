@@ -1668,6 +1668,19 @@ TEST_F(HookTest, ADeciderThatAnsweredIsNeverToldAboutAWithdrawal) {
     EXPECT_TRUE(decider.withdrawals.empty()) << "it answered; there is nothing to forget";
 }
 
+// The event name is also the rate-limit bucket (ADR-0037 section 5): a line a peer can trigger at
+// will (garbage in place of an upgrade) must never share a name with a warning about the server
+// itself, or a flood of the first would hide the second.
+TEST_F(HookTest, ANobodyCanDecideWarningHasItsOwnEventNotTheOneAPeerCanFlood) {
+    decider.refuse = true;
+    open_hook();
+    send_request();
+    const auto* entry = find_event(host.logs, "handshake_undecided");
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->level, wsrv::LogLevel::Warn);
+    EXPECT_EQ(find_event(host.logs, "handshake_refused"), nullptr);
+}
+
 TEST_F(HookTest, ADeciderThatRefusedTheRequestIsNotToldAboutAWithdrawalEither) {
     decider.refuse = true;
     open_hook();

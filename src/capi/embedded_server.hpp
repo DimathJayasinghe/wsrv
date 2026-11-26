@@ -4,6 +4,7 @@
 #include "base/clock.hpp"
 #include "base/error.hpp"
 #include "base/logger.hpp"
+#include "net/fd.hpp"
 #include "net/stream_logger.hpp"
 #include "net/syscalls.hpp"
 #include "server/server.hpp"
@@ -169,7 +170,8 @@ private:
     LinuxSyscalls sys_;
     SteadyClock clock_;
     SystemWallClock wall_;
-    StreamLogger logger_;  ///< stderr, level from the configuration (ADR-0037); outlives the server
+    Fd log_fd_;  ///< a private copy of stderr, taken in create(), before any socket exists
+    StreamLogger logger_;  ///< writes to log_fd_, level from the configuration (ADR-0037)
     std::unique_ptr<HostBridge> bridge_;
     std::unique_ptr<TlsState> tls_;  // null = plain TCP; set in start(), before the I/O thread
 

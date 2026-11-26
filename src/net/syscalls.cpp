@@ -110,6 +110,10 @@ std::uint32_t LinuxSyscalls::effective_uid() noexcept {
     return static_cast<std::uint32_t>(::geteuid());
 }
 
+SysResult LinuxSyscalls::dup_cloexec(int fd, int lowest) {
+    return captured(::fcntl(fd, F_DUPFD_CLOEXEC, lowest));
+}
+
 SysResult LinuxSyscalls::epoll_create1(int flags) {
     return captured(::epoll_create1(flags));
 }

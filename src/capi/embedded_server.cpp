@@ -97,9 +97,23 @@ Result<std::unique_ptr<EmbeddedServer>> EmbeddedServer::create(const EmbeddedCon
     }
 }
 
+namespace {
+
+/// The log's destination is the stderr of the moment the server is created, as a private copy
+/// numbered 3 or above. Writing to "descriptor 2" later would be wrong when a host closes its stdio
+/// after create() (a daemon does) and a socket of ours, or of the host's, takes the number 2: the
+/// log lines would go into a client connection (ADR-0037). A host whose stderr is closed gets no
+/// logging at all (the copy fails and the logger has nowhere to write).
+Fd copy_of_stderr(ISyscalls& sys) {
+    const SysResult copy = sys.dup_cloexec(STDERR_FILENO, 3);
+    return Fd{copy.value >= 0 ? static_cast<int>(copy.value) : -1};
+}
+
+}  // namespace
+
 EmbeddedServer::EmbeddedServer(Key /*unused*/, EmbeddedConfig config)
-    : owner_pid_{::getpid()}, config_{std::move(config)},
-      logger_{sys_, wall_, clock_, STDERR_FILENO, config_.log_level()} {}
+    : owner_pid_{::getpid()}, config_{std::move(config)}, log_fd_{copy_of_stderr(sys_)},
+      logger_{sys_, wall_, clock_, log_fd_.get(), config_.log_level()} {}
 
 EmbeddedServer::~EmbeddedServer() {
     if (!thread_) {

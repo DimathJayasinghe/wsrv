@@ -118,6 +118,14 @@ TEST_F(StreamLoggerTest, ALineIsAtMostTheBoundWhateverThePeerSent) {
     EXPECT_EQ(lines(out).size(), 1U);
 }
 
+TEST_F(StreamLoggerTest, WithoutADestinationNothingIsEnabledAndNothingIsWritten) {
+    wsrv::StreamLogger logger{sys, wall, clock, -1, LogLevel::Debug};
+    EXPECT_FALSE(logger.enabled(LogLevel::Error));
+    logger.log(LogLevel::Error, "internal_error", "x");
+    EXPECT_EQ(sys.calls(Call::Write), 0U);
+    EXPECT_EQ(sys.calls(Call::Poll), 0U);
+}
+
 TEST_F(StreamLoggerTest, AnInterruptedWriteIsRetriedOnce) {
     auto logger = make();
     sys.fail(Call::Write, EINTR);

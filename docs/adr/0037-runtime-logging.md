@@ -34,7 +34,7 @@ ts=2026-11-26T12:00:01.001Z level=warn event=ip_limit peer=203.0.113.9:51234 sup
 An IP address is personal data in the GDPR sense, and NFR-O1 says "no secrets/PII by default". So `peer` appears only with `log_peer = true`. The cost is that the default `ip_limit` line says that a limit was hit but not by whom; the metric and the line count still tell you it is happening, and one setting names the culprit. No token, cookie, header value or payload is ever logged, at any level.
 
 ### 5. Rate limit per event
-A token bucket per event name: a burst of 10, then 1 per second. What is held back is counted, and the next line of that event carries `suppressed=N`. A table of 64 event names is enough for the catalogue; further names share one bucket (bounded memory whatever the code does). A hostile client that causes a million bad handshakes therefore costs about one line per second, not a million.
+**An event name is also its bucket**, so a line any client can cause at will must never share a name with a warning about the server itself (otherwise a flood of the first would hide the second): garbage in place of an upgrade is `handshake_refused` at info, "the application cannot be asked" is `handshake_undecided` at warn. A token bucket per event name: a burst of 10, then 1 per second. What is held back is counted, and the next line of that event carries `suppressed=N`. A table of 64 event names is enough for the catalogue; further names share one bucket (bounded memory whatever the code does). A hostile client that causes a million bad handshakes therefore costs about one line per second, not a million.
 
 ### 6. A stuck destination must not stall the loops (**Call**: no thread)
 `StreamLogger` (in `net/`) formats the line in the calling thread, then does one `poll(fd, POLLOUT, timeout 0)` and one `write` of the whole line. Not writable, or the write fails: the line is dropped and counted, and the next line that gets out carries `dropped=N`. A line is at most 512 bytes, below `PIPE_BUF` (4096), so concurrent writers on a pipe, a file opened with `O_APPEND` or a tty never interleave inside a line.
@@ -60,7 +60,8 @@ Rejected: a writer thread with a bounded queue (what OPERATIONS promised). It ad
 | `tls_reload_failed`, `tls_config` | error | the certificate or key cannot be used |
 | `conn_limit`, `ip_limit`, `loop_overloaded` | warn | a limit refused a client |
 | `origin_refused` | warn | the Origin header is not allowed |
-| `handshake_refused`, `handshake_timeout`, `handshake_decision_timeout` | warn/info | the upgrade was not completed |
+| `handshake_refused`, `handshake_timeout` | info | the upgrade was not completed (any client can cause these) |
+| `handshake_decision_timeout`, `handshake_undecided` | warn | the application did not answer the handshake hook, or could not be asked |
 | `slow_consumer`, `peer_stalled` | warn | a connection was closed for not reading |
 | `protocol_error` | info | the peer broke RFC 6455 (the code travels in the close) |
 | `publish_rejected` | warn | the publish endpoint refused a request (wrong token, bad request) |
@@ -87,4 +88,6 @@ Escaping (control characters, quote, backslash, DEL, bytes above 0x7f, CR/LF inj
 - Added to the catalogue of section 9 while converting: `publish_exposed`, `admin_exposed`, `descriptor_limit`, `descriptor_limit_raised`, `decision_queue_full`, `handler_misuse`, `handler_exception`, `no_handler`, `transport_failed`, `shutdown_failed`, `ipc_no_token`, `tls_reload_skipped`, `start_failed`, `peer_stalled`. The Origin refusal is recognised by the 403 the negotiator renders (it has no other reason for 403); the connection logs `origin_refused` for it and `handshake_refused` for every other refusal, with fixed texts.
 - A refused publish request logs `publish_rejected` with its status (three digits, built on the stack); the token, the topic and the body are never in the line.
 - Daemon lifecycle lines moved from `std::cerr` to events (`ipc_ready`, `listening`, `shutdown`, `tls_reload_skipped`); only what happens before a logger exists (usage, a bad setting) is still printed plainly.
+- **The destination is a private copy of stderr** (found by the automated security review of #97): `EmbeddedServer` takes `fcntl(F_DUPFD_CLOEXEC, 3)` of descriptor 2 in `create()`, before any socket of the server exists, and logs to the copy. Writing to "descriptor 2" later would be wrong for a host that closes its stdio after `create()` (a daemon does): a socket could take the number 2 and the log lines would go into a client connection. If stderr is closed at `create()` the copy fails and the server logs nothing (`enabled()` is false for a negative descriptor).
+- **`log_level=off` is not offered in 1.0.** A host that wants silence sets `error`; a host-supplied sink would be a C ABI addition and could never call back into the language runtime from an I/O thread (BINDINGS), so it is a possible 1.x feature, not a 1.0 gap.
 

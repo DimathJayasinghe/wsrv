@@ -29,7 +29,8 @@ namespace wsrv {
 /// for a handful of instructions; formatting and the system calls happen outside it.
 class StreamLogger final : public ILogger {
 public:
-    /// `fd` stays owned by the caller (stderr is never closed here).
+    /// `fd` stays owned by the caller (it is never closed here); a negative `fd` means "no
+    /// destination": nothing is enabled and nothing is written.
     StreamLogger(ISyscalls& sys,
                  const IWallClock& wall,
                  const IClock& clock,
@@ -41,7 +42,7 @@ public:
     void log(const LogRecord& record) override;
 
     [[nodiscard]] bool enabled(LogLevel level) const noexcept override {
-        return level >= min_level_;
+        return fd_ >= 0 && level >= min_level_;
     }
 
 private:

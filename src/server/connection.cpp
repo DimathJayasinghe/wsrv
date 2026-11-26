@@ -380,7 +380,7 @@ void Connection::await_decision(HandshakeOutcome& outcome, ByteView leftover) {
             ctx_.decider->request(std::move(*request), PendingHandle{ctx_.link, id_, offered});
         !asked) {
         log(LogLevel::Warn,
-            "handshake_refused",
+            "handshake_undecided",
             "nobody can decide the handshake, refusing");  // fail closed
         refuse(503);
     } else if (pending_) {

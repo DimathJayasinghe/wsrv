@@ -14,6 +14,7 @@
 #include <thread>
 #include <vector>
 
+#include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -56,6 +57,25 @@ TEST(EmbeddedServerLogging, StartingWritesOneListeningLineWithTheActualPort) {
     EXPECT_NE(text.find("port " + std::to_string(server->port()) + "\""), std::string::npos)
         << text;
     EXPECT_EQ(text.rfind("ts=", 0), 0U) << "the line starts with its timestamp";
+}
+
+// The log goes to the descriptor that was stderr when the server was created, by a private copy,
+// not to "whatever is descriptor 2 now": a host that closes or redirects its stdio afterwards (a
+// daemon that closed 0-2 and then let a socket take number 2) must not receive log lines in a
+// client socket.
+TEST(EmbeddedServerLogging, TheLogDoesNotFollowDescriptorTwoWhenTheHostChangesIt) {
+    StderrCapture capture;
+    auto server = EmbeddedServer::create(base_config());
+    ASSERT_TRUE(server.has_value());
+    const int elsewhere = ::open("/dev/null", O_WRONLY | O_CLOEXEC);
+    ASSERT_GE(elsewhere, 0);
+    ASSERT_NE(::dup2(elsewhere, STDERR_FILENO), -1);  // the host redirects stderr after create()
+    ::close(elsewhere);
+    ASSERT_TRUE((*server)->start().has_value());
+    const std::string text = capture.wait_for("event=listening");
+    capture.restore();
+    EXPECT_NE(text.find("event=listening"), std::string::npos)
+        << "the line must reach the stderr of create() time, not /dev/null";
 }
 
 TEST(EmbeddedServerLogging, TheLevelKeepsInfoOut) {

@@ -174,7 +174,8 @@ Never logged at any level: tokens and credentials, cookies and other headers, me
 | `tls_reload_failed`, `tls_config` | error | the certificate or key cannot be used; `tls_config` lines name the file and the reason. The old certificate stays in use |
 | `conn_limit`, `ip_limit`, `loop_overloaded` | warn | a limit refused a client (section 1.2 and `max_connections`) |
 | `origin_refused` | warn | the Origin header is not in `allow_origin`. A wrong list shows up here at once; scanners show up as a rate-limited stream |
-| `handshake_refused` | info or warn | the upgrade was refused for another reason (malformed, too large, no one to decide) |
+| `handshake_refused` | info | the upgrade was refused for another reason (malformed, too large). Any client can cause it, so it is deliberately not a warning |
+| `handshake_undecided` | warn | the application could not be asked about an upgrade (its queue is full or it is gone), so the client was refused with 503. This one is about your server, not the client |
 | `handshake_timeout`, `handshake_decision_timeout` | info, warn | the upgrade was not completed in time (slow clients; the application did not answer the handshake hook) |
 | `decision_queue_full` | warn | too many upgrades waiting for the application's decision |
 | `slow_consumer`, `peer_stalled` | warn | a connection was closed for not reading what was sent to it |
