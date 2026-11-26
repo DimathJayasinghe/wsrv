@@ -57,14 +57,25 @@ jobs:
           ! docker run --rm -e WSRVD_IPC_SOCKET=/nonexistent/ipc.sock wsrvd:ci --healthcheck
       - name: The TCP IPC transport (ADR-0038) is chosen by the environment alone and needs its token
         run: |
-          token="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"   # 48 hex characters
-          echo "::add-mask::$token"
           docker volume create wsrv-ci-secret >/dev/null
           # The token file keeps its rules (mode 0600, owned by the daemon's uid 10001): the volume is
-          # prepared as root, the way the Kubernetes manifest's init container does it.
-          docker run --rm --user 0 --entrypoint sh -v wsrv-ci-secret:/s -e T="$token" wsrvd:ci -c \
-            'printf %s "$T" > /s/ipc.token && chown 10001:10001 /s/ipc.token && chmod 0600 /s/ipc.token'
+          # made writable for that uid as root, the way the Kubernetes manifest's init container does
+          # it, and the daemon's own generator writes the token (ADR-0038 section 3).
+          docker run --rm --user 0 --entrypoint chown -v wsrv-ci-secret:/s wsrvd:ci 10001:10001 /s
+          docker run --rm -v wsrv-ci-secret:/s wsrvd:ci --generate-token=/s/ipc.token
+          token="$(docker run --rm --entrypoint cat -v wsrv-ci-secret:/s wsrvd:ci /s/ipc.token)"
+          echo "::add-mask::$token"
+          # It never overwrites: a second run fails and the token is unchanged.
+          ! docker run --rm -v wsrv-ci-secret:/s wsrvd:ci --generate-token=/s/ipc.token
+          [ "$token" = "$(docker run --rm --entrypoint cat -v wsrv-ci-secret:/s wsrvd:ci /s/ipc.token)" ]
           # Only the port is chosen: the image has no WSRVD_IPC_SOCKET set, so there is no "both" error.
+          # A long token somebody chose is refused over TCP, and the message says what to run.
+          docker run --rm --user 0 --entrypoint sh -v wsrv-ci-secret:/s wsrvd:ci -c \
+            'printf %s MyCompanyWebsocketToken2026!!!!! > /s/weak.token && chown 10001:10001 /s/weak.token && chmod 0600 /s/weak.token'
+          weak=$(docker run --rm -v wsrv-ci-secret:/run/secrets:ro -e WSRVD_IPC_PORT=9300 \
+                   -e WSRVD_IPC_TOKEN_FILE=/run/secrets/weak.token wsrvd:ci 2>&1) && exit 1
+          echo "$weak" | grep -q -- '--generate-token'
+          ! echo "$weak" | grep -q MyCompanyWebsocketToken
           docker run -d --name wsrvd-tcp -p 127.0.0.1:19300:9300 -v wsrv-ci-secret:/run/secrets:ro \
             -e WSRVD_IPC_PORT=9300 -e WSRVD_IPC_HOST=0.0.0.0 \
             -e WSRVD_IPC_TOKEN_FILE=/run/secrets/ipc.token wsrvd:ci

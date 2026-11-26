@@ -116,13 +116,8 @@ public:
     [[nodiscard]] bool closed() const noexcept {
         return closed_;
     }
-    /// Connected but not yet through HELLO: it holds no state, so over TCP it may be replaced.
-    [[nodiscard]] bool awaiting_hello() const noexcept {
-        return !closed_ && state_ == State::AwaitHello;
-    }
-
-    /// Stop being the application's connection and hand its socket over, still open and unwatched:
-    /// used to tell a replaced pre-HELLO connection why before it goes (admit()).
+    /// Stop being a connection and hand its socket over, still open and unwatched: used to tell a
+    /// waiting connection why it is let go (evicted, or another application was accepted).
     [[nodiscard]] Fd surrender() noexcept {
         closed_ = true;
         stop_watching();
@@ -290,6 +285,16 @@ private:
                              "ipc: the first message was refused (version, token or format)");
                 closing_after_flush_ = true;  // one STATUS, then goodbye
                 send(outcome.reply);
+                return;
+            }
+            if (!server_.claim(*this)) {
+                // Another waiting connection was accepted first: this one is a second application.
+                server_.note(LogLevel::Warn,
+                             "app_rejected",
+                             "ipc: a second application was refused, one is already connected");
+                closing_after_flush_ = true;
+                send(ipc::Message{ipc::Status{
+                    .request = 0, .status = static_cast<std::uint8_t>(WSRV_ERR_BACKPRESSURE)}});
                 return;
             }
             state_ = State::Ready;
@@ -689,6 +694,9 @@ IpcServer::~IpcServer() {
         loop_.unwatch(*watch_);
     }
     peer_.reset();
+    for (std::unique_ptr<Peer>& waiting : waiting_) {
+        waiting.reset();
+    }
 }
 
 bool IpcServer::has_consumer() const noexcept {
@@ -867,21 +875,13 @@ void IpcServer::admit(Fd client) noexcept {
     if (peer_ != nullptr && peer_->closed()) {
         peer_.reset();
     }
-    // Over TCP, anyone who can reach the port can connect and stay silent. A connection that has
-    // not said HELLO holds no state, so it must not keep the real application out: replace it
-    // (ADR-0038 section 5). An authenticated application is never displaced.
-    if (tcp && peer_ != nullptr && peer_->awaiting_hello()) {
-        // A warning, not debug: a worker that keeps getting BACKPRESSURE because something else keeps
-        // connecting first is exactly what an operator needs to see (the logger rate-limits repeats).
-        note(LogLevel::Warn, "app_replaced", "ipc: a connection that had not said HELLO was replaced by a newcomer");
-        // Tell it why, as any application we turn away is told, instead of cutting it off silently.
-        Fd displaced = peer_->surrender();
-        peer_.reset();
-        reject_busy(std::move(displaced));
-    }
     if (peer_ != nullptr) {
         note(LogLevel::Warn, "app_rejected", "ipc: a second application was refused, one is already connected");
         reject_busy(std::move(client));
+        return;
+    }
+    if (tcp) {
+        admit_waiting(std::move(client));
         return;
     }
     auto peer = std::make_unique<Peer>(*this, std::move(client));
@@ -889,6 +889,96 @@ void IpcServer::admit(Fd client) noexcept {
         return;  // the peer's destructor closes the socket
     }
     peer_ = std::move(peer);
+}
+
+void IpcServer::admit_waiting(Fd client) noexcept {
+    // Over TCP anyone who can reach the port can connect and stay silent, so a connection that has
+    // not said HELLO must not hold the application's place (ADR-0038 section 5): it waits in a room
+    // of kMaxPendingHello places, each with its own HELLO deadline, and the first to send an accepted
+    // HELLO becomes the application (claim()).
+    forget_closed_waiting();
+    if (waiting_count_ == kMaxPendingHello) {
+        // Full. The oldest is the one to go, but look at it first: a HELLO that has already arrived
+        // is processed, not thrown away (and then this newcomer is the second application).
+        waiting_.front()->look_now();
+        if (peer_ != nullptr) {
+            note(LogLevel::Warn, "app_rejected", "ipc: a second application was refused, one is already connected");
+            reject_busy(std::move(client));
+            return;
+        }
+        forget_closed_waiting();  // it may have closed itself while we looked
+    }
+    if (waiting_count_ == kMaxPendingHello) {
+        // A warning, not debug: a worker that keeps getting BACKPRESSURE because connections keep
+        // arriving ahead of its HELLO is exactly what an operator needs to see (the logger
+        // rate-limits repeats).
+        note(LogLevel::Warn,
+             "app_replaced",
+             "ipc: the oldest connection that had not said HELLO was dropped, the waiting room was full");
+        std::unique_ptr<Peer> oldest = take_waiting(0);
+        Fd evicted = oldest->surrender();
+        oldest.reset();
+        reject_busy(std::move(evicted));  // told why, as any application we turn away is
+    }
+    auto waiting = std::make_unique<Peer>(*this, std::move(client));
+    if (!waiting->start()) {
+        return;  // the peer's destructor closes the socket
+    }
+    waiting_[waiting_count_] = std::move(waiting);
+    ++waiting_count_;
+    note(LogLevel::Debug, "app_waiting", "ipc: a connection is waiting for HELLO");
+}
+
+bool IpcServer::claim(Peer& peer) noexcept {
+    if (peer_.get() == &peer) {
+        return true;  // a Unix connection: it was the application from the start
+    }
+    std::size_t index = waiting_count_;
+    for (std::size_t i = 0; i < waiting_count_; ++i) {
+        if (waiting_[i].get() == &peer) {
+            index = i;
+            break;
+        }
+    }
+    if (index == waiting_count_) {
+        return false;  // not waiting any more: it was already let go
+    }
+    if (peer_ != nullptr && !peer_->closed()) {
+        return false;  // another application was accepted first
+    }
+    // This peer is the application now. (Replacing a closed one here is safe: it is not running.)
+    peer_ = take_waiting(index);
+    refuse_waiting();
+    return true;
+}
+
+void IpcServer::refuse_waiting() noexcept {
+    while (waiting_count_ > 0) {
+        std::unique_ptr<Peer> other = take_waiting(0);
+        Fd fd = other->surrender();
+        other.reset();
+        reject_busy(std::move(fd));
+    }
+}
+
+std::unique_ptr<IpcServer::Peer> IpcServer::take_waiting(std::size_t index) noexcept {
+    std::unique_ptr<Peer> taken = std::move(waiting_[index]);
+    for (std::size_t i = index + 1; i < waiting_count_; ++i) {
+        waiting_[i - 1] = std::move(waiting_[i]);
+    }
+    --waiting_count_;
+    waiting_[waiting_count_].reset();
+    return taken;
+}
+
+void IpcServer::forget_closed_waiting() noexcept {
+    for (std::size_t i = 0; i < waiting_count_;) {
+        if (waiting_[i]->closed()) {
+            take_waiting(i).reset();
+        } else {
+            ++i;
+        }
+    }
 }
 
 void IpcServer::reject_busy(Fd client) noexcept {
@@ -984,6 +1074,7 @@ void IpcServer::release(const Peer* peer) noexcept {
         if (peer_.get() == peer && peer_->closed()) {
             peer_.reset();
         }
+        forget_closed_waiting();  // a waiting connection that timed out or hung up
     });
     static_cast<void>(queued);  // see above: admit() covers a refused task
 }

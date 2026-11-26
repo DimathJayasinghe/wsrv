@@ -21,7 +21,7 @@ Connect a WebSocket client to `ws://localhost:8080/` and send a message: the wor
 
 ## What to know
 
-- **The link is not encrypted.** The compose file publishes the IPC port on your machine's loopback only (`127.0.0.1:9300`). Keep it that way, or put it behind a VPN or an SSH tunnel; never on an open network. A TCP peer has no operating-system identity, so the token (at least 32 bytes, in the volume) is the only authentication, and anyone who can reach the port can try it.
+- **The link is not encrypted.** The compose file publishes the IPC port on your machine's loopback only (`127.0.0.1:9300`). Keep it that way, or put it behind a VPN or an SSH tunnel; never on an open network. A TCP peer has no operating-system identity, so the token is the only authentication, and anyone who can reach the port can try it. The compose file makes the token with `wsrvd --generate-token` (256 random bits in a fixed form); the daemon refuses over TCP any token it did not make, however long, because a chosen one can be guessed.
 - **The daemon logs a warning, `ipc_plaintext`, and that is expected here.** Inside the container it must listen on `0.0.0.0` so that the published port arrives; the warning is there so that nobody does the same on a server by accident.
 - **Why a volume and not a file from your drive.** The daemon refuses a token file that other users can read or another user owns (docs/OPERATIONS.md section 7). Docker Desktop shows a file mounted from a Windows or macOS drive as root-owned and world-readable, so the compose file creates the token inside a volume with the right owner and mode instead of loosening the rule.
 - **Only one application at a time.** A second worker is refused with `BACKPRESSURE`; stop the first one before starting another.

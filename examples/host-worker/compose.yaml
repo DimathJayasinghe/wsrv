@@ -7,9 +7,10 @@
 # The IPC link is TCP here, because a Unix socket cannot cross from the host into Docker Desktop's Linux VM.
 # It is NOT encrypted, so the port is published on the host's loopback only ("127.0.0.1:9300:9300"); never
 # change that to a bare "9300:9300" (every device on your network could then try to reach it). The token is
-# the only authentication over TCP: `token-init` writes 64 random hex characters once, mode 0600, owned by the
-# daemon's uid, into a volume (the token file keeps the rules it has everywhere: Docker Desktop shows a file
-# bind-mounted from your drive as root-owned and world-readable, and the daemon would rightly refuse it).
+# the only authentication over TCP: `token-init` runs `wsrvd --generate-token` once (a 256-bit random token in
+# the form the daemon insists on over TCP, mode 0600, owned by the daemon's uid) into a volume. The token file
+# keeps the rules it has everywhere: Docker Desktop shows a file bind-mounted from your drive as root-owned and
+# world-readable, and the daemon would rightly refuse it.
 services:
   # Runs once and exits: creates /run/wsrv/ipc.token if it does not exist yet.
   token-init:
@@ -17,7 +18,8 @@ services:
     user: "10001:10001"
     entrypoint: ["/bin/sh", "-c"]
     command:
-      - umask 077; [ -s /run/wsrv/ipc.token ] || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > /run/wsrv/ipc.token
+      # The generator never overwrites a token, so a second `up` must not run it again.
+      - '[ -s /run/wsrv/ipc.token ] || exec /usr/local/bin/wsrvd --generate-token=/run/wsrv/ipc.token'
     volumes:
       - secrets:/run/wsrv
     restart: "no"

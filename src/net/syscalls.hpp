@@ -86,6 +86,10 @@ public:
     virtual SysResult stat_path(const char* path, bool follow_links, FileInfo& info) = 0;
     virtual SysResult chmod_path(const char* path, std::uint32_t mode) = 0;
     virtual SysResult unlink_path(const char* path) = 0;
+    /// open(2) with the given flags (O_CLOEXEC is always added) and, when it creates the file, the
+    /// given mode (before the umask, which can only remove bits). Used to create a secret file with
+    /// O_EXCL, so that an existing file or a symlink is never overwritten or followed.
+    virtual SysResult open_file(const char* path, int flags, std::uint32_t mode) = 0;
     /// The uid of the process on the other end of a connected Unix-domain socket, as the kernel
     /// recorded it when the connection was made (SO_PEERCRED on Linux; macOS would use
     /// LOCAL_PEERCRED). It cannot be forged by the peer. On success `uid` is filled in.
@@ -134,6 +138,7 @@ public:
     SysResult stat_path(const char* path, bool follow_links, FileInfo& info) override;
     SysResult chmod_path(const char* path, std::uint32_t mode) override;
     SysResult unlink_path(const char* path) override;
+    SysResult open_file(const char* path, int flags, std::uint32_t mode) override;
     SysResult peer_uid(int fd, std::uint32_t& uid) override;
     std::uint32_t effective_uid() noexcept override;
     SysResult dup_cloexec(int fd, int lowest) override;

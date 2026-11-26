@@ -51,8 +51,8 @@ final class Client
      * $socketPath is either the path of wsrvd's Unix socket (`/run/wsrv/ipc.sock`) or, since 1.1,
      * `tcp://host:port` (`tcp://127.0.0.1:9300`, `tcp://[::1]:9300`), for a worker that cannot reach
      * a Unix socket: on Windows, or on macOS against a daemon in Docker (ADR-0038). Over TCP the
-     * daemon requires a token of at least 32 bytes, and the link is not encrypted: keep it on
-     * loopback, a private network or a tunnel.
+     * daemon requires a token that `wsrvd --generate-token=FILE` made (any other is refused at its
+     * start), and the link is not encrypted: keep it on loopback, a private network or a tunnel.
      *
      * @throws HandshakeRefused the daemon said no (wrong token or version, or another application is connected)
      * @throws ConnectionClosed the daemon hung up, or never answered within $timeout seconds

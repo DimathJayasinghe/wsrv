@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "wsrvd/token_file.hpp"
+#include "wsrvd/token_format.hpp"
 
 namespace wsrv::wsrvd {
 
@@ -15,6 +16,8 @@ namespace {
 constexpr std::string_view kConfigFlag = "--config=";
 constexpr std::string_view kEnvironmentPrefix = "WSRVD_";
 constexpr std::string_view kHealthcheckFlag = "--healthcheck";
+constexpr std::string_view kGenerateTokenFlag = "--generate-token";
+constexpr std::string_view kGenerateTokenPrefix = "--generate-token=";
 
 /// The keys that may be given several times (ADR-0030 section 1): one variable carries a comma list.
 [[nodiscard]] bool repeatable(std::string_view key) noexcept {
@@ -169,6 +172,25 @@ Result<void> apply(DaemonConfig& config, std::string_view arg) {
     return arg == "--help" || arg == "-h";
 }
 
+[[nodiscard]] bool is_generate_token(std::string_view arg) noexcept {
+    return arg == kGenerateTokenFlag || arg.starts_with(kGenerateTokenPrefix);
+}
+
+/// `--generate-token=FILE` is a mode of its own: it reads no environment and no configuration (the
+/// image's WSRVD_* variables are there when it runs, and a run that only writes a file must not
+/// depend on them), and any other argument is a mistake worth stopping for.
+Result<void> read_generate_mode(Startup& startup, std::span<const std::string_view> args) {
+    if (args.size() != 1) {
+        return fail(ErrorCode::InvalidConfig, "--generate-token takes no other argument");
+    }
+    const std::string_view arg = args.front();
+    if (!arg.starts_with(kGenerateTokenPrefix) || arg.size() == kGenerateTokenPrefix.size()) {
+        return fail(ErrorCode::InvalidConfig, "--generate-token needs a file: --generate-token=FILE");
+    }
+    startup.generate_token = std::string{arg.substr(kGenerateTokenPrefix.size())};
+    return {};
+}
+
 /// The arguments in order (`--config=FILE` and `--key=value`); `--healthcheck` is a mode.
 Result<void> apply_arguments(Startup& startup, std::span<const std::string_view> args) {
     for (const std::string_view arg : args) {
@@ -189,10 +211,6 @@ constexpr std::string_view kBuiltInSocket = WSRVD_DEFAULT_IPC_SOCKET;
 constexpr std::string_view kBuiltInSocket{};
 #endif
 
-/// Over TCP the token is the only authentication and can be guessed from the network: the same
-/// floor as the publish token (ADR-0028, ADR-0038 section 3).
-constexpr std::size_t kMinTcpTokenBytes = 32;
-
 /// The IPC token and the publish token, each read from its file with the permission checks of
 /// read_token_file. The publish token goes straight into the embedded config, never through the key
 /// table, and has the length floor of set_publish_token().
@@ -202,9 +220,13 @@ Result<void> read_secrets(Startup& startup, ISyscalls& sys) {
         if (!token) {
             return std::unexpected{token.error()};
         }
-        if (startup.config.tcp() && token->size() < kMinTcpTokenBytes) {
+        // Over TCP the token is the only authentication and can be guessed from the network, so
+        // only the form the generator writes is accepted: a long token somebody chose is not safe
+        // (ADR-0038 section 3). The message names the fix and never echoes the token.
+        if (startup.config.tcp() && !is_generated_token(*token)) {
             return fail(ErrorCode::InvalidConfig,
-                        "config: the ipc token needs at least 32 bytes over TCP");
+                        "config: over TCP the ipc token must be one made by `wsrvd "
+                        "--generate-token=FILE` (a token you chose, however long, can be guessed)");
         }
         startup.token = std::move(*token);
     }
@@ -225,10 +247,13 @@ constexpr std::string_view kUsageText =
            "  --ipc-socket=PATH          Unix socket the application connects to\n"
            "  --ipc-port=PORT  --ipc-host=ADDR (127.0.0.1)  TCP instead of the Unix socket, for a\n"
            "                             worker on another host or outside Docker; needs\n"
-           "                             --ipc-token-file with a token of at least 32 bytes; the\n"
-           "                             link is plaintext: loopback, a private network or a\n"
-           "                             tunnel only (docs/DEPLOYMENT.md section 11)\n"
+           "                             --ipc-token-file with a token made by --generate-token\n"
+           "                             (wsrv1_ + 64 hex digits + _ + checksum); the link is\n"
+           "                             plaintext: loopback, a private network or a tunnel only\n"
+           "                             (docs/DEPLOYMENT.md section 11)\n"
            "  --ipc-token-file=FILE      shared token; FILE must be mode 0600 and yours\n"
+           "  --generate-token=FILE      write a new random token to FILE (mode 0600, refuses an\n"
+           "                             existing file, prints no secret) and exit; use it alone\n"
            "  --ipc-max-frame=BYTES      largest IPC frame (default: max_message_size + 64 KiB)\n"
            "  --ipc-hello-timeout-ms=MS  time allowed for HELLO (default 5000)\n"
            "  --ipc-stall-ms=MS          drop an application that reads nothing for MS (default "
@@ -285,6 +310,12 @@ Result<Startup> prepare(std::span<const std::string_view> args,
     startup.config.set_default_socket(std::string{kBuiltInSocket});
     if (std::ranges::any_of(args, is_help)) {
         startup.help = true;  // help wins over a bad variable or flag: it is how one finds out
+        return startup;
+    }
+    if (std::ranges::any_of(args, is_generate_token)) {
+        if (const Result<void> done = read_generate_mode(startup, args); !done) {
+            return std::unexpected{done.error()};
+        }
         return startup;
     }
     if (const Result<void> done = apply_environment(startup.config, environment, detail); !done) {

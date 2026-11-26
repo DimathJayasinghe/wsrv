@@ -21,6 +21,12 @@ namespace fs = std::filesystem;
 using wsrv::ErrorCode;
 using wsrv::test::FakeSyscalls;
 using wsrv::wsrvd::prepare;
+using wsrv::wsrvd::usage;
+
+/// A token in the form `wsrvd --generate-token` writes (computed independently, see
+/// token_format_test).
+constexpr std::string_view kGenerated =
+    "wsrv1_000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f_27994e12";
 
 struct StartupTest : public ::testing::Test {
     FakeSyscalls sys;
@@ -97,18 +103,61 @@ TEST_F(StartupTest, AnUnsafeTokenFileStopsTheStartup) {
     EXPECT_EQ(startup.error().code, ErrorCode::InvalidConfig);
 }
 
-// ADR-0038: the TCP transport. The token is the only authentication, so it must be long.
-TEST_F(StartupTest, TheTcpTransportNeedsATokenOfAtLeast32Bytes) {
-    const std::string shorty = write("short", std::string(31, 't') + "\n");
-    const auto too_short = run({"--ipc-port=9300", "--ipc-token-file=" + shorty});
-    ASSERT_FALSE(too_short.has_value());
-    EXPECT_EQ(too_short.error().code, ErrorCode::InvalidConfig);
-
-    const std::string enough = write("enough", std::string(32, 't') + "\n");
-    const auto startup = run({"--ipc-port=9300", "--ipc-token-file=" + enough});
+// ADR-0038 section 3: the TCP transport. The token is the only authentication, so it must be one
+// the generator made: a length floor lets "MyCompanyWebsocketToken2026!!!!!" through.
+TEST_F(StartupTest, TheTcpTransportNeedsATokenTheGeneratorMade) {
+    const std::string generated = std::string{kGenerated};
+    const std::string good = write("good", generated + "\n");
+    const auto startup = run({"--ipc-port=9300", "--ipc-token-file=" + good});
     ASSERT_TRUE(startup.has_value());
     EXPECT_TRUE(startup->config.tcp());
-    EXPECT_EQ(startup->token, std::string(32, 't'));
+    EXPECT_EQ(startup->token, generated);
+}
+
+TEST_F(StartupTest, ALongButChosenTokenIsRefusedOverTcpAndTheMessageSaysWhatToRun) {
+    for (const std::string& weak : {std::string(31, 't'),
+                                    std::string(32, 't'),
+                                    std::string{"MyCompanyWebsocketToken2026!!!!!"},
+                                    std::string(200, 'x')}) {
+        const std::string file = write("weak", weak + "\n");
+        const auto result = run({"--ipc-port=9300", "--ipc-token-file=" + file});
+        ASSERT_FALSE(result.has_value()) << weak;
+        EXPECT_EQ(result.error().code, ErrorCode::InvalidConfig);
+        const std::string message{result.error().context};
+        EXPECT_NE(message.find("--generate-token"), std::string::npos) << message;
+        EXPECT_EQ(message.find(weak), std::string::npos) << "the token must never be echoed";
+    }
+}
+
+TEST_F(StartupTest, ATokenWithOneDigitChangedIsRefusedOverTcp) {
+    std::string typo = std::string{kGenerated};
+    typo[20] = typo[20] == '0' ? '1' : '0';
+    const auto result = run({"--ipc-port=9300", "--ipc-token-file=" + write("typo", typo + "\n")});
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(StartupTest, GenerateTokenIsAModeThatNeedsNoConfigAndNoSecrets) {
+    const auto startup = run({"--generate-token=/data/ipc.token"});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_EQ(startup->generate_token, "/data/ipc.token");
+    EXPECT_FALSE(startup->healthcheck);
+}
+
+TEST_F(StartupTest, GenerateTokenTakesNoOtherArguments) {
+    // Anything else on the line is a mistake worth stopping for, not something to ignore quietly.
+    EXPECT_FALSE(run({"--generate-token=/data/t", "--ipc-port=9300"}).has_value());
+    EXPECT_FALSE(run({"--ipc-port=9300", "--generate-token=/data/t"}).has_value());
+}
+
+TEST_F(StartupTest, GenerateTokenNeedsAPath) {
+    EXPECT_FALSE(run({"--generate-token="}).has_value());
+    EXPECT_FALSE(run({"--generate-token"}).has_value());
+}
+
+TEST_F(StartupTest, TheUsageTextNamesTheGeneratorAndTheTokenForm) {
+    const std::string text{usage()};
+    EXPECT_NE(text.find("--generate-token=FILE"), std::string::npos);
+    EXPECT_NE(text.find("wsrv1_"), std::string::npos);
 }
 
 TEST_F(StartupTest, ASocketTokenKeepsItsOldRulesWhateverItsLength) {  // 1.0 behaviour is unchanged
@@ -363,12 +412,22 @@ TEST(Usage, NamesTheAdminFlagsAndWarnsThatThePortIsNotAuthenticated) {  // ADR-0
 
 TEST_F(EnvironmentTest,
        TheTcpTransportCanBeChosenByTheEnvironmentAlone) {  // docker run -e WSRVD_IPC_PORT=...
-    const std::string token = write("token", std::string(40, 'k') + "\n");
+    const std::string token = write("token", std::string{kGenerated} + "\n");
     const auto startup = run_with(
         {}, {"WSRVD_IPC_PORT=9300", "WSRVD_IPC_HOST=0.0.0.0", "WSRVD_IPC_TOKEN_FILE=" + token});
     ASSERT_TRUE(startup.has_value());
     EXPECT_TRUE(startup->config.tcp());
     EXPECT_EQ(wsrv::format_endpoint(startup->config.ipc_endpoint()), "0.0.0.0:9300");
+}
+
+// `docker run --rm wsrvd --generate-token=...` runs with the variables the image sets; none of them
+// matters (and an unknown WSRVD_* one must not stop a run that reads no configuration).
+TEST_F(EnvironmentTest, GenerateTokenIgnoresTheEnvironment) {
+    const auto startup =
+        run_with({"--generate-token=/data/t"},
+                 {"WSRVD_LISTEN_HOST=0.0.0.0", "WSRVD_LISTEN_PORT=8080", "WSRVD_NOT_A_KEY=1"});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_EQ(startup->generate_token, "/data/t");
 }
 
 }  // namespace

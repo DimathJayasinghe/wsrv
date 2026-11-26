@@ -15,7 +15,7 @@ After this lesson you can say what a Unix socket gives a server for free that TC
 ## 2. The design, one answer per loss
 | Lost | Answer |
 |---|---|
-| identity | the token becomes **mandatory** and **at least 32 bytes** (it can now be guessed from the network); compared in constant time; one `INVALID_ARGUMENT` for every failure so the answer teaches nothing |
+| identity | the token becomes **mandatory** and must be one the daemon's own `--generate-token` made (it can now be guessed from the network, and a length floor cannot tell a random token from a long guessable one: see section 7); compared in constant time; one `INVALID_ARGUMENT` for every failure so the answer teaches nothing |
 | reachability | loopback by default; a non-loopback bind logs `ipc_plaintext`; docs say where it is acceptable (loopback, a published loopback port, a VPN, an SSH tunnel) |
 | a dead peer | `SO_KEEPALIVE` with 30 s idle, 10 s interval, 3 probes: the slot frees in about a minute |
 | privacy | not solved: **said out loud**. TLS on this link is a later decision, and the ADR records why it is not in the first step |
@@ -23,11 +23,16 @@ After this lesson you can say what a Unix socket gives a server for free that TC
 Plus `TCP_NODELAY` on both ends: the link carries small request and answer frames, and Nagle's algorithm with delayed ACK would add tens of milliseconds to each.
 
 ## 3. The single slot, and the connection that says nothing
-The daemon serves **one** application at a time. On a Unix socket the slot was taken at `accept`, which was fine: the other end was the same user. On TCP, anyone can connect and stay silent for the whole `HELLO` timeout, and the real application then gets `BACKPRESSURE` in a loop. The rule (ADR-0038 section 5): **a connection that has not said `HELLO` holds nothing, so a newcomer replaces it**. An authenticated application is never displaced.
+The daemon serves **one** application at a time. On a Unix socket the slot was taken at `accept`, which was fine: the other end was the same user. On TCP, anyone can connect and stay silent for the whole `HELLO` timeout, and the real application then gets `BACKPRESSURE` in a loop.
 
-The subtle part is the order. If a real `HELLO` is already sitting in the kernel's buffer when a second connection arrives, "replace the one that has not said HELLO" would throw away a real application. So `admit()` first *looks* at the current connection (reads what has arrived, processes it), and only then, if it is still waiting for `HELLO`, replaces it. Two tests pin the two halves, and each was **mutation-checked**: remove the replacement and the "idle connection" test fails; move the replacement before the look and the "HELLO already arrived" test fails. A test that has never been seen to fail proves nothing.
+The first answer was "a connection that has not said `HELLO` holds nothing, so a newcomer replaces it". It closed the silent-connection case and left a hole that an audit found after the feature had merged: connects that arrive faster than the real worker's *connect-to-`HELLO` window* keep replacing the worker's connection before its `HELLO` is read. The window is short on loopback and longer across Docker Desktop's VM, but it is never zero, so a flood always had a chance.
 
-An automated review pointed out that a flood of connections can still displace the real application's pending connection. True, and written down in the ADR with the alternative (a bounded set of pending connections raises the cost from one connect to N, but does not remove the case, and makes admission multi-peer). The port is a trust boundary like a database port.
+The answer now (ADR-0038 section 5, amended) is a **waiting room**: up to 8 connections wait at once, each with its own `HELLO` deadline. The first to send an accepted `HELLO` becomes the application and the rest are told `BACKPRESSURE`; when a ninth arrives the *oldest* is evicted and told why. An authenticated application is never displaced. To keep the real worker out an attacker needs more than 8 new connections inside its window, instead of one.
+
+Three things to notice:
+- **It is a mitigation, and the ADR says so.** A big enough flood still wins, like against any listener. What removes it is who can reach the port (loopback bind, a firewall, a private Docker network), not code. Do not claim more than the design delivers.
+- **The order still matters.** A `HELLO` that already sits in the kernel's buffer must be processed before anything is evicted, so `admit_waiting()` first *looks* at the oldest connection (`look_now()`), and only then evicts.
+- **Test the property, not the constant.** The tests are written in terms of `kMaxPendingHello`, so a mutation that changes the constant would shrink them too. A `static_assert` pins the documented value (8), and the mutation that matters, "a newcomer evicts whoever is waiting" (the old design), is run by hand and fails four tests. A test that has never been seen to fail proves nothing.
 
 ## 4. The close that can erase the answer
 The first Windows CI run failed one test, and the failure was real. The daemon says "busy" and closes. If the worker's `HELLO` was still unread (or arrives after the close), the operating system answers with **RST** instead of a clean FIN. Linux lets the receiver still read what arrived before the reset; **Windows throws it away**. So a Windows worker would see "connection closed" instead of `BACKPRESSURE`, and could not tell a busy daemon from a dead one. First reaction, "the supervisor retries both, so it costs nothing", was the wrong one: the owner's rule is that what can break will break, and a fixable thing is fixed.
@@ -41,7 +46,12 @@ The fix is a *lingering close*: send the status, send FIN (`shutdown(SHUT_WR)`),
 ## 6. What "it works on Windows" means
 PHP's `pcntl_fork` does not exist on Windows, and `stream_socket_pair` there accepts only the INET family. So the client tests were rewritten to use real loopback TCP and a **child PHP process** as the fake daemon (`proc_open` exists everywhere), and a `windows-latest` job runs them. What it does not prove, and the docs say so: Docker for Linux containers on a Windows runner, and the daemon itself. Each claim is tied to the test that backs it, on the platform where it can run.
 
+## 7. A length floor is not a strength check
+The first version required a token of at least 32 bytes. `MyCompanyWebsocketToken2026!!!!!` is 32 bytes and guessable, and over TCP a guesser needs only a network path and time. Throttling guesses does not help: a global back-off lets anyone who can reach the port lock the *real* worker out with one bad attempt a second, and a per-source back-off needs the peer address (which the daemon deliberately never keeps) and fails where every client shares one address (Docker's bridge). The control that works at any attempt rate is a token that cannot be guessed, so the daemon accepts over TCP **only** the form `wsrvd --generate-token` writes: `wsrv1_`, 64 hex digits of 32 random bytes, `_`, a CRC-32. The checksum is not a secret and not a defence against someone who forges a token on purpose; it catches the operator who retypes or edits one, and the start error prints the command to run. Requiring this costs nothing now, because nothing has shipped over TCP; after a release it would break every deployment.
+
 ## Pitfalls
+- A length requirement checks the one thing that is easy to measure. Make the secret *come from a generator* when its strength is the point.
+- A defence that locks out the attacker can lock out the owner: check what an attacker gains by triggering it on purpose.
 - A new transport is a new *threat model*, not just a new socket type: list what the old one guaranteed before you write the new one.
 - Renaming a PHP parameter breaks callers that use named arguments. `connect($socketPath, ...)` kept its name although it now also takes `tcp://...`.
 - "The caller retries anyway" is not a reason to leave a platform-specific failure in place: it turns an exact answer into a vague one.
@@ -53,4 +63,5 @@ PHP's `pcntl_fork` does not exist on Windows, and `stream_socket_pair` there acc
 2. Why must `look_now()` run before the replacement and not after?
 3. With the keepalive numbers above, how long until a vanished host frees the slot? What breaks if the idle time is two hours?
 4. Add TLS to this link on paper: who holds the certificate, who verifies it, and which of the three clients (C++, PHP, a future Node one) is hardest?
-5. Why is a 32-byte token acceptable over loopback TCP but a 6-character password is not, even though both are "secrets"?
+5. Why is a generated 256-bit token acceptable over loopback TCP but a 6-character password is not, even though both are "secrets"? And why is a 32-character passphrase *still* not?
+6. The waiting room holds 8. Argue for 4 and for 32. What does each number change for the attacker, for the daemon's memory, and for an operator reading `app_replaced`?
