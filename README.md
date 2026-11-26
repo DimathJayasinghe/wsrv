@@ -4,6 +4,10 @@ Hold thousands of WebSocket connections in one small daemon and write the logic 
 language that can call a C ABI). A from-scratch **RFC 6455** implementation in modern C++23: no Boost,
 no Asio, no third-party WebSocket library. Open source under the [Apache License 2.0](LICENSE).
 
+**New here?** [Get started in five minutes](docs/GETTING_STARTED.md) (a browser page, a PHP worker and a
+reconnect you can watch), see [what has been checked and how to check it yourself](docs/EVIDENCE.md), or read
+on to decide whether wsrv is the right tool.
+
 > Status: **1.0.0**, stable. The 1.0 line freezes the IPC protocol, the C ABI and the PHP API (see
 > [Stability](#stability)); what was checked before release, and what is known and accepted, is in
 > [docs/RELEASE.md](docs/RELEASE.md), and changes are in [CHANGELOG.md](CHANGELOG.md). The server is Linux only
@@ -22,7 +26,7 @@ no Asio, no third-party WebSocket library. Open source under the [Apache License
 - **Operations built in:** Prometheus metrics, `/healthz` and `/readyz`, graceful shutdown, and a
   [deployment guide](docs/DEPLOYMENT.md) (Docker, Compose, systemd, Kubernetes, reverse proxies).
 - **Tested hard:** Autobahn|Testsuite (517 cases, 0 failed, also over `wss://`), the whole suite under
-  ASan, UBSan and TSan, and 12 fuzz targets.
+  ASan, UBSan and TSan, and 14 fuzz targets. [What was checked, and how to check it yourself](docs/EVIDENCE.md).
 
 ```
 browser ──WebSocket──▶ wsrvd (C++: sockets, TLS, limits, rooms) ──Unix socket──▶ your PHP worker
@@ -33,12 +37,34 @@ controller / queue job ──HTTP POST /publish (token)
 PHP never runs on the daemon's I/O threads: a slow handler does not block the sockets (pings, handshakes and
 limits keep working), and a worker that stalls for good is cut off after a timeout and its clients are closed with 1001.
 
+## Is wsrv right for you?
+
+wsrv is not the only way to push messages to browsers from PHP, and for many apps it is not the best one.
+
+| Your situation | Probably the best fit |
+|---|---|
+| A Laravel app where `broadcast(new Event)` and Laravel Echo should work by changing environment variables | [Laravel Reverb](https://reverb.laravel.com). wsrv is not a Broadcasting driver (you call `Wsrv\Publisher` yourself; [guide](docs/LARAVEL.md)). |
+| A PHP app, a modest number of connections, and you want everything in one PHP process | [Workerman](https://github.com/walkor/workerman) or [Swoole](https://github.com/swoole/swoole-src): one process, one language, and faster per core on echo ([numbers](docs/BENCHMARKS.md)). |
+| A PHP app (Laravel, Symfony, plain) that wants connections, TLS, limits and metrics in a separate hardened daemon, a PHP worker that only reacts to events, and more throughput as cores are added | **wsrv** |
+| A language other than PHP | **wsrv**, through the [IPC protocol](docs/IPC_PROTOCOL.md) or the [C ABI](docs/BINDINGS.md). Only PHP has a ready-made worker client today. |
+
+What wsrv does not have yet, so you do not find out later: the server runs on Linux only (a native macOS
+server is planned), there is no built-in message backplane between several daemons (you publish to each),
+it has had no external security audit, and it is young. The evidence it does have is on one page:
+[docs/EVIDENCE.md](docs/EVIDENCE.md).
+
 ## Run it in 60 seconds (PHP, Docker; no C++ and no compiler)
 
 ```sh
 git clone https://github.com/DimathJayasinghe/wsrv && cd wsrv/examples/docker
-docker compose up -d                       # port 8080 busy? WSRV_PORT=18080 docker compose up -d
-npx wscat -c ws://localhost:8080/          # any WebSocket client works
+docker compose up -d                       # port 8080 or 8000 busy? WSRV_PORT=18080 WSRV_WEB_PORT=18000 docker compose up -d
+```
+
+Open <http://localhost:8000>, press **Connect** and **Send**: the PHP worker echoes your message. Press
+**Join** to enter `room.1`. Prefer a terminal? Any WebSocket client works:
+
+```sh
+npx wscat -c ws://localhost:8080/
 > hello                                    # < hello            (the PHP worker echoes)
 > join room.1                              # < joined room.1
 ```
@@ -49,6 +75,9 @@ In a second terminal, publish from a separate process, as a controller or a queu
 docker compose run --rm worker php /app/publish.php room.1 "hello from outside"
 # subscribers=1 accepted=1 refused=0   and the first terminal prints: hello from outside
 ```
+
+Then `docker compose restart wsrvd` and watch the page reconnect and join its room again by itself.
+Step by step, for every stack: [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md).
 
 Use it in your own project:
 
@@ -102,6 +131,8 @@ Security reports: [SECURITY.md](SECURITY.md).
 
 | You want to | Read |
 |---|---|
+| Get started, for your stack (Docker, PHP, Laravel, macOS and Windows, the browser client) | [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) |
+| See what was checked, and check it yourself | [docs/EVIDENCE.md](docs/EVIDENCE.md) |
 | Put it in production (Docker, systemd, Kubernetes, proxies, sizing, go-live checklist) | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
 | Configure, monitor and harden it (limits, TLS, metrics, shutdown) | [docs/OPERATIONS.md](docs/OPERATIONS.md) |
 | Use it from PHP | [bindings/php/README.md](bindings/php/README.md) |
@@ -126,6 +157,8 @@ The documents below are the contract the code satisfies; read them before changi
 
 | Document | Purpose | Read when |
 |---|---|---|
+| [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) | Five-minute quickstart and one path per stack | First time here |
+| [docs/EVIDENCE.md](docs/EVIDENCE.md) | Claims, the command that checks each, last results and limits | Deciding whether to trust it |
 | [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md) | Vision, scope, milestones, exit criteria, risks | Starting any work |
 | [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) | Functional & non-functional requirements, default limits | Designing/accepting a feature |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, modules, threading, data flow, public API | Adding/changing a component |
