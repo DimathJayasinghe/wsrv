@@ -1,6 +1,6 @@
 # Release readiness: 1.0-rc
 
-> **0.1.0 (2026-11-23)** is the first release meant for developers to build with: everything in section 2 holds for it, and the limits in section 3 apply. It is not the 1.0: the API may change in a minor version, and the unchecked boxes in section 4 are the gap. Pin the version you use.
+> **0.1.0 (2026-11-23)** is the latest release. The sources are at **1.0.0** since 2026-11-25 (project, PHP package and C ABI 1.0, ADR-0016 A4). It is published first as release candidates (`v1.0.0-rc.N`); the final `v1.0.0` waits for the owner's go. The unchecked boxes in section 4 are what is left. Until the final release, pin the version you use.
 
 What a 1.0 release candidate claims, the evidence for each claim, what is known to be missing, and the checklist that decides it. Written at the end of M10 (2026-11-14). A claim without evidence in the right-hand column is not a claim.
 
@@ -19,6 +19,7 @@ A C++23 RFC 6455 WebSocket server core: sans-I/O protocol, multi-loop server on 
 | No memory errors | The whole suite under ASan and UBSan in CI (1248 tests at this writing) | `ctest --preset dev` |
 | Static analysis clean | clang-tidy with warnings-as-errors on every file, banned-function and module-boundary checks | CI job "clang-tidy (libc++)", `tools/check_*` |
 | No leaks over time | 1 hour soak, 32 churning connections: descriptors flat (78-86), resident memory flat after warm-up | `docs/PERFORMANCE.md` "Soak" |
+| Survives restarts and outages | Chaos soak of the release image, 2 hours, 200 reconnecting JavaScript clients (on `node:22-slim`): 162 faults (37 graceful and 32 `kill -9` daemon restarts, 34 worker restarts and 29 worker kills, 30 network cuts of 3 to 10 s). After every fault all 200 clients were connected again; 26 400 reconnects in total; descriptors flat (217), daemon memory flat (4.0 MB at warm-up, 3.8 MB at the end), 0 replies that were never asked for, the daemon never crashed. It found and fixed a client bug on the way (ADR-0031 A1) | `tests/soak/` (`python3 tests/soak/soak.py --image <wsrvd image> --hours 2 --clients 200`) |
 | Scales across loops, fan-out cost known | Scaling table (1 to 8 loops) and pub/sub fan-out table, with their limits stated | `docs/PERFORMANCE.md` |
 | TLS is hardened | testssl.sh Overall Grade A+, Autobahn over wss 0 FAILED | ADR-0019 amendment 6 |
 | Resource limits hold | Per-IP caps and rate (ADR-0021), descriptor budget (ADR-0022), bounded every queue and table, decompression bombs refused (ADR-0020), admin port bounded (ADR-0023), broker bounds (ADR-0024) | `docs/SECURITY_DESIGN.md` threat table, tests named there |
@@ -51,7 +52,8 @@ Engineering
 - [x] Autobahn: 0 FAILED (517 cases), plain and wss
 - [x] Fuzzers run clean in CI; corpus committed
 - [x] Soak run of one hour passes (`wsrv_load --churn`)
-- [x] Benchmarks published with their limits (`docs/PERFORMANCE.md`)
+- [x] Chaos soak of two hours passes: restarts, `kill -9` and network cuts under 200 reconnecting clients, release image of `c460f79` (2026-11-25; `tests/soak/README.md`)
+- [x] Benchmarks published with their limits (`docs/PERFORMANCE.md`; against Workerman 5, Swoole and Reverb, one and four CPUs: `docs/BENCHMARKS.md`)
 - [x] Security review of the last milestone done, findings fixed or recorded
 - [x] The default limits of REQUIREMENTS section 4 exist in the configuration and are enforced (index: PROTOCOL_EDGE_CASES section 10)
 - [ ] A row-by-row audit of REQUIREMENTS section 4 against its tests for 1.0 (spot-checked, not exhaustive)
@@ -65,18 +67,18 @@ Engineering
 
 Repository and launch (M14, listed here so nothing is forgotten)
 - [x] Owner: final project name (`wsrv`, confirmed 2026-11-22; Composer name `wsrv/client`, found free on Packagist) and license confirmed
-- [ ] `NOTICE`, `CODE_OF_CONDUCT.md`, `CHANGELOG.md` added
+- [x] `NOTICE`, `CODE_OF_CONDUCT.md`, `CHANGELOG.md` added (repository root)
 - [ ] Owner: review of the git history (author e-mail addresses) and a full-history secret scan before the repository goes public
 - [ ] Owner: branch protection on `main`; secret scanning, push protection, private vulnerability reporting enabled
   - Recommendation (2026-11-22): block force pushes and branch deletion on `main`; do **not** require status checks while `ci.yml` uses `paths-ignore`, because a docs-only PR gets no status and would stay blocked forever. Required checks are an M14 decision. Not applied: a repository setting, and a private repository may need a paid plan for it.
-- [ ] Signed release artifacts and an SBOM
-- [ ] Versioning policy stated: the C ABI follows semantic versioning; the C++ headers are not stable before they move to `include/wsrv/`
+- [ ] Signed release artifacts and an SBOM: **built** (ADR-0033: vulnerability scan, cosign signature, SBOM, build attestation); the workflow has run for real only up to `0.1.0-rc.2` and runs with these steps for the first time on the next tag. Tick after `1.0.0-rc.1` is verified.
+- [x] Versioning policy stated: README "Stability" (IPC protocol 0.3 frozen for 1.x, C ABI 1.0 with ADR-0016 A4, PHP package follows semantic versioning; the C++ headers under `src/` are not promised)
 
 ## 5. Go / no-go
 
 **Release candidate for evaluation: yes.** The server core, TLS, deflate, limits, broker, metrics, C ABI and sidecar are built, tested under every sanitizer, fuzzed and reviewed three times; the claims in section 2 can be checked by running the named commands.
 
-**Public 1.0: not yet.** The unchecked boxes above are the gap. The engineering boxes are small (coverage figures, the three open review items); the repository boxes are owner decisions and the M14 work. This document does not change repository visibility; that is the owner's call.
+**Public 1.0: not yet.** What is left: the engineering boxes (coverage figures re-measured, the row-by-row audit of REQUIREMENTS section 4), verifying the signed artifacts and the SBOM on `1.0.0-rc.1`, and the owner's decisions (the history review, branch protection, and the go for `v1.0.0` and the `latest` tag). The three open review items of the second security review are closed (section 3). This document does not change repository visibility or publish a final release; that is the owner's call.
 
 ## 6. Going public (checklist, 2026-11-22)
 
@@ -85,7 +87,7 @@ Done in the repository: `LICENSE`, `NOTICE`, `CODE_OF_CONDUCT.md`, `CHANGELOG.md
 Owner decisions that cannot be made for the owner:
 - [x] **The project name**: `wsrv`, Composer package `wsrv/client` (owner, 2026-11-22; Packagist showed no `wsrv/` vendor).
 - [ ] **Commit history.** All commits carry the owner's personal email (`git log --format=%ae`). Rewriting history would break every PR and merge link; the alternative is to accept it. New commits use the noreply address. In GitHub, also tick "Block command line pushes that expose my email" (account settings, Emails).
-- [ ] **Flip the visibility** (settings, danger zone), or tell the assistant explicitly to.
+- [x] **Flip the visibility**: done, the repository is public (checked with `gh repo view`, 2026-11-25). Announcing is a separate step that waits for the final `v1.0.0`.
 
 Right after the flip (not available while the repository is private):
 - [ ] Settings, Code security: enable private vulnerability reporting, secret scanning, push protection, Dependabot alerts.
