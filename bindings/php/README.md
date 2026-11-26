@@ -92,7 +92,7 @@ No daemon, but you need `libwsrv.so` and PHP with `ext-ffi` (the CLI default all
 **Get the library.** On glibc Linux (x86_64 or aarch64, glibc 2.39 or newer, OpenSSL 3) a release has a prebuilt one. Install it on purpose, with a checksum check (Composer never downloads it for you, ADR-0026):
 
 ```sh
-composer require wsrv/client                      # the PHP code (the package name may change before the first release)
+composer require wsrv/client:^1.0@rc              # the PHP code (a plain `composer require wsrv/client` works once 1.0.0 is out)
 vendor/bin/wsrv-install-lib --dir=wsrv-lib        # downloads libwsrv.so of this package's version, checks SHA-256
 export WSRV_LIBRARY=$PWD/wsrv-lib/libwsrv.so      # the command prints this line
 ```

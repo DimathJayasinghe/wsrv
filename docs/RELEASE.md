@@ -90,8 +90,9 @@ Owner decisions that cannot be made for the owner:
 - [x] **Flip the visibility**: done, the repository is public (checked with `gh repo view`, 2026-11-25). Announcing is a separate step that waits for the final `v1.0.0`.
 
 Right after the flip (not available while the repository is private):
-- [ ] Settings, Code security: enable private vulnerability reporting, secret scanning, push protection, Dependabot alerts.
-- [ ] Confirm the Security tab shows "Report a vulnerability" (SECURITY.md and the issue template link depend on it).
-- [ ] Push an `-rc` tag to run `release.yml` for the first time (the arm runner and the attestation need a public repository), then submit the repository URL on packagist.org.
-- [ ] After the first tag that builds the container image: make the GHCR package `wsrvd` public (package page, settings, danger zone; a new package is private, so `docker pull` fails for everyone else) and link it to the repository.
+- [x] Settings, Code security: private vulnerability reporting, secret scanning, push protection and Dependabot alerts are on (checked with `gh api`, 2026-11-26). Dependabot security updates (automatic fix PRs) are off: optional, the owner's call.
+- [x] Private vulnerability reporting is enabled, so the Security tab offers "Report a vulnerability" (SECURITY.md and the issue template link depend on it).
+- [x] Pushed `v1.0.0-rc.1`: `release.yml` ran with the arm runner, the attestation and the signature (see the signed-artifact line above), and Packagist lists `wsrv/client` `v1.0.0-rc.1`.
+- [x] The GHCR package `wsrvd` is public (an anonymous manifest fetch of `1.0.0-rc.1` answers 200).
+- [ ] **When `1.0.0` is tagged**, switch the install lines from the release candidate to the final version: `README.md` (status line, the `wsrvd:` image and the `composer require` row), `docs/LARAVEL.md` and `bindings/php/README.md` (`composer require wsrv/client:^1.0@rc` becomes plain `composer require wsrv/client`), `examples/docker/compose.yaml` and `examples/docker/worker/Dockerfile` (`1.0.0-rc.1` becomes `1.0.0`; the Dockerfile may then use `^1.0`), and check `deploy/kubernetes/wsrv.yaml` (already `1.0.0`).
 - [ ] Optionally create the first "good first issue" labels and issues from CONTRIBUTING.md's list.
