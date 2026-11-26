@@ -61,9 +61,10 @@ Return `true` (accept), `false` (403), an int status (`400, 401, 403, 404, 429, 
 
 ## Rooms, and publishing from a controller or a job
 
-Start the daemon with the broker and the publish endpoint (the token is a file, mode 0600, at least 32 bytes):
+Start the daemon with the broker and the publish endpoint (the token is a file that `wsrvd --generate-token=/run/wsrv/publish.token` makes, mode 0600; from wsrv 1.1 the daemon accepts no other, ADR-0039):
 
 ```
+wsrvd --generate-token=/run/wsrv/publish.token
 wsrvd --ipc-socket=/run/wsrv/ipc.sock --broker=true --publish-port=9200 --publish-token-file=/run/wsrv/publish.token
 ```
 

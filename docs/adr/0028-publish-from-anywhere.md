@@ -1,6 +1,6 @@
 # ADR-0028: Publish from anywhere: rooms and an HTTP publish endpoint for `wsrvd`
 
-- Status: **Accepted** (2026-11-26, by the project owner; built and shipped in 1.0.0). Originally proposed 2026-11-23.
+- Status: **Accepted** (2026-11-26, by the project owner; built and shipped in 1.0.0). Originally proposed 2026-11-23. Section 3's token rule ("at least 32 bytes") is amended by ADR-0039: from 1.1 the token must be a generated one.
 - Date: 2026-11-23
 - Deciders: project owner, maintainer assistant
 

@@ -177,14 +177,14 @@ TEST_F(StartupTest, ANamedBinaryHasNoDefaultSocketUnlessItWasBuiltWithOne) {
 
 // ADR-0028: the publish endpoint. Its token is a file like the IPC token, never a key or a flag.
 TEST_F(StartupTest, ThePublishTokenIsReadFromItsFileAndGivenToTheEmbeddedConfig) {
-    const std::string token = write("publish", std::string(40, 'p') + "\n");
+    const std::string token = write("publish", std::string{kGenerated} + "\n");
     const auto startup = run({"--ipc-socket=/run/x.sock",
                               "--broker=true",
                               "--publish-port=9200",
                               "--publish-token-file=" + token});
     ASSERT_TRUE(startup.has_value());
     EXPECT_TRUE(startup->config.embedded().publish_requested());
-    EXPECT_EQ(startup->config.embedded().publish_token(), std::string(40, 'p'));
+    EXPECT_EQ(startup->config.embedded().publish_token(), std::string{kGenerated});
     EXPECT_TRUE(startup->config.embedded().check_publish().has_value());
 }
 
@@ -194,7 +194,7 @@ TEST_F(StartupTest, ThePublishTokenHasNoKeyAndNoFlag) {
 }
 
 TEST_F(StartupTest, APublishPortAndItsTokenFileComeAsAPair) {
-    const std::string token = write("publish", std::string(40, 'p'));
+    const std::string token = write("publish", std::string{kGenerated});
     EXPECT_FALSE(
         run({"--ipc-socket=/run/x.sock", "--broker=true", "--publish-port=9200"}).has_value());
     EXPECT_FALSE(run({"--ipc-socket=/run/x.sock", "--publish-token-file=" + token}).has_value());
@@ -202,7 +202,7 @@ TEST_F(StartupTest, APublishPortAndItsTokenFileComeAsAPair) {
 
 TEST_F(StartupTest, AShortOrUnsafePublishTokenStopsTheStartup) {
     const std::string shortened = write("short", std::string(31, 'p'));
-    const std::string open = write("open", std::string(40, 'p'), 0644);
+    const std::string open = write("open", std::string{kGenerated}, 0644);
     for (const std::string& file : {shortened, open}) {
         const auto startup = run({"--ipc-socket=/run/x.sock",
                                   "--broker=true",
@@ -211,6 +211,49 @@ TEST_F(StartupTest, AShortOrUnsafePublishTokenStopsTheStartup) {
         ASSERT_FALSE(startup.has_value()) << file;
         EXPECT_EQ(startup.error().code, ErrorCode::InvalidConfig);
     }
+}
+
+// ADR-0039: the publish endpoint is plain HTTP and reachable from the network, and a length floor
+// cannot tell a random token from a long guessable one, so only the generated form starts it. The
+// rule holds on loopback too, and the message says it is new in 1.1 (a 1.0 configuration that
+// worked must be told why it stops) and names the fix without printing the token.
+TEST_F(StartupTest, ALongButChosenPublishTokenStopsTheStartupAndTheMessageNamesTheFix) {
+    const std::string chosen = "MyCompanyWebsocketToken2026!!!!!MyCompany";  // 40 bytes, guessable
+    const std::string hex64 = write("hex64", std::string(64, 'a'));          // what 1.0 docs made
+    for (const std::string& file : {write("chosen", chosen), hex64}) {
+        for (const char* host : {"--publish-host=127.0.0.1", "--publish-host=0.0.0.0"}) {
+            const auto startup = run({"--ipc-socket=/run/x.sock",
+                                      "--broker=true",
+                                      "--publish-port=9200",
+                                      host,
+                                      "--publish-token-file=" + file});
+            ASSERT_FALSE(startup.has_value()) << file << " " << host;
+            EXPECT_EQ(startup.error().code, ErrorCode::InvalidConfig);
+            const std::string message{startup.error().context};
+            EXPECT_NE(message.find("--generate-token"), std::string::npos) << message;
+            EXPECT_NE(message.find("1.1"), std::string::npos) << message;
+            EXPECT_EQ(message.find(chosen), std::string::npos) << "the token must not be echoed";
+        }
+    }
+}
+
+TEST_F(StartupTest, ATypoInAGeneratedPublishTokenStopsTheStartup) {
+    std::string typo = std::string{kGenerated};
+    typo[10] = typo[10] == 'a' ? 'b' : 'a';
+    const auto startup = run({"--ipc-socket=/run/x.sock",
+                              "--broker=true",
+                              "--publish-port=9200",
+                              "--publish-token-file=" + write("typo", typo)});
+    ASSERT_FALSE(startup.has_value());
+    EXPECT_EQ(startup.error().code, ErrorCode::InvalidConfig);
+}
+
+// The Unix-socket IPC token keeps its old rules: the publish rule must not leak into it.
+TEST_F(StartupTest, TheUnixSocketIpcTokenStillAcceptsAnyToken) {
+    const auto startup = run({"--ipc-socket=/run/x.sock",
+                              "--ipc-token-file=" + write("ipc", "s3cret-chosen-by-a-person\n")});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_EQ(startup->token, "s3cret-chosen-by-a-person");
 }
 
 TEST_F(StartupTest, BadInputIsRefusedBeforeAnythingStarts) {

@@ -338,10 +338,22 @@ use Wsrv\Publisher;
 $roomDir = sys_get_temp_dir() . '/wsrv-php-room-' . bin2hex(random_bytes(4));
 mkdir($roomDir, 0700) || fail('mkdir');
 $roomSocket = $roomDir . '/ipc.sock';
-$publishToken = bin2hex(random_bytes(24));  // 48 characters
 $tokenFile = $roomDir . '/publish.token';
-file_put_contents($tokenFile, $publishToken . "\n");
-chmod($tokenFile, 0600);
+// ADR-0039: the publish token must be one the daemon made. A token a person chose (here 48 hex
+// characters, what the 1.0 guides told people to make) is refused at start, with a message that
+// names the fix and does not print the token.
+$chosenFile = $roomDir . '/chosen.token';
+file_put_contents($chosenFile, bin2hex(random_bytes(24)) . "\n");
+chmod($chosenFile, 0600);
+exec(escapeshellarg($daemonPath) . ' --ipc-socket=' . escapeshellarg($roomDir . '/refused.sock')
+    . ' --listen-port=0 --broker=true --publish-port=0 --publish-token-file=' . escapeshellarg($chosenFile) . ' 2>&1', $refusedOut, $refusedCode);
+$refusedCode !== 0 || fail('wsrvd started with a publish token that --generate-token did not make');
+str_contains(implode("\n", $refusedOut), '--generate-token') || fail('the refusal does not name --generate-token');
+exec(escapeshellarg($daemonPath) . ' --generate-token=' . escapeshellarg($tokenFile) . ' 2>&1', $genOut, $genCode);
+$genCode === 0 || fail('--generate-token failed: ' . implode(' ', $genOut));
+$publishToken = trim((string) file_get_contents($tokenFile));
+preg_match('/^wsrv1_[0-9a-f]{64}_[0-9a-f]{8}$/', $publishToken) === 1 || fail('the generated token has an unexpected form');
+@unlink($chosenFile);
 $roomProcess = proc_open(
     [$daemonPath, "--ipc-socket=$roomSocket", '--listen-port=0', '--allow-origin=https://app.example.com',
         '--shutdown-grace-ms=1500', '--broker=true', '--publish-port=0', "--publish-token-file=$tokenFile"],

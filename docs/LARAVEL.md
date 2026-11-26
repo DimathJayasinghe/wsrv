@@ -29,7 +29,7 @@ wsrvd --ipc-socket=/run/wsrv/ipc.sock --listen-port=8080 \
       --broker=true --publish-port=9200 --publish-token-file=/run/wsrv/publish.token
 ```
 
-The publish token is a file of at least 32 random bytes, mode `0600`, owned by the daemon's user (for example `openssl rand -hex 32 > /run/wsrv/publish.token`). Your app reads the same file. Never put the token in `.env` of a world-readable path, and never expose port 9200 to the internet: it is for your app servers only.
+The publish token is a file that `wsrvd` makes itself (`wsrvd --generate-token=/run/wsrv/publish.token`: 256 random bits, mode `0600`, owned by the user who ran it, never overwrites). From wsrv 1.1 the daemon accepts no other token, because one you chose, however long, can be guessed (ADR-0039). Your app reads the same file. Never put the token in `.env` of a world-readable path, and never expose port 9200 to the internet: it is for your app servers only.
 
 ## 2. Config and the publisher
 

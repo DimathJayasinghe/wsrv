@@ -1,29 +1,33 @@
 # wsrv quickstart: the daemon and a PHP worker, no compiler, no C++.
-#   docker compose up -d           # pulls ghcr.io/dimathjayasinghe/wsrvd:1.0.0 and builds the tiny PHP worker
+#   docker compose up -d           # pulls ghcr.io/dimathjayasinghe/wsrvd:1.1.0 and builds the tiny PHP worker
 #   docker compose up --build      # same, but also rebuilds the daemon image from this repository's source
-#   WSRV_VERSION=1.0.0 docker compose up -d   # another published version (WSRV_CLIENT sets the PHP package's, below)
+#   WSRV_VERSION=1.1.0 docker compose up -d   # another published version (1.1 or newer: see the token below; WSRV_CLIENT sets the PHP package's)
 #   then connect any WebSocket client to ws://localhost:8080/ and send a message: the worker echoes it.
 #
 # Rooms and publishing (ADR-0028): the daemon also runs the pub/sub broker and an HTTP publish endpoint on
-# port 9200 that only the other containers can reach (`expose:`, never `ports:`). `token-init` writes a random
-# token once into the shared volume, mode 0600, and the daemon and the worker both read it from there.
+# port 9200 that only the other containers can reach (`expose:`, never `ports:`). `token-init` runs
+# `wsrvd --generate-token` once (ADR-0039: from 1.1 the daemon accepts no other publish token) into the shared
+# volume, mode 0600, and the daemon and the worker both read it from there. A token a 1.0 run left in the
+# volume is replaced.
 #
 # The services share /run/wsrv (the daemon's private IPC socket directory). The socket is mode 0600
 # and the daemon checks the peer uid (ADR-0017), so both containers run as the same uid, 10001.
 services:
-  # Runs once and exits: creates /run/wsrv/publish.token (64 hex characters) if it does not exist yet.
+  # Runs once and exits: makes /run/wsrv/publish.token with `wsrvd --generate-token` unless a generated one is
+  # already there. The generator never overwrites, so a file of another form (a 1.0 token, which 1.1 refuses)
+  # is removed first; a generated token is kept, so a second `up` does not rotate it.
   token-init:
-    image: ghcr.io/dimathjayasinghe/wsrvd:${WSRV_VERSION:-1.0.0}
+    image: ghcr.io/dimathjayasinghe/wsrvd:${WSRV_VERSION:-1.1.0}
     user: "10001:10001"
     entrypoint: ["/bin/sh", "-c"]
     command:
-      - umask 077; [ -s /run/wsrv/publish.token ] || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > /run/wsrv/publish.token
+      - grep -Eqs '^wsrv1_[0-9a-f]{64}_[0-9a-f]{8}$$' /run/wsrv/publish.token || { rm -f /run/wsrv/publish.token && exec /usr/local/bin/wsrvd --generate-token=/run/wsrv/publish.token; }
     volumes:
       - ipc:/run/wsrv
     restart: "no"
 
   wsrvd:
-    image: ghcr.io/dimathjayasinghe/wsrvd:${WSRV_VERSION:-1.0.0}
+    image: ghcr.io/dimathjayasinghe/wsrvd:${WSRV_VERSION:-1.1.0}
     build:
       context: ../..
       dockerfile: docker/wsrvd.Dockerfile
