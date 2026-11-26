@@ -6,7 +6,7 @@ How to run `wsrvd` and your PHP worker in production: Docker, Compose, systemd, 
 |---|---|
 | One Docker host | [`examples/docker/compose.yaml`](../examples/docker/compose.yaml) (the 60-second quickstart is the same file) |
 | A Linux VM | [`deploy/systemd/`](../deploy/systemd/) |
-| Kubernetes | [`deploy/kubernetes/wsrv.yaml`](../deploy/kubernetes/wsrv.yaml) |
+| Kubernetes | [`deploy/kubernetes/wsrv.yaml`](../deploy/kubernetes/wsrv.yaml) (applied to a kind cluster by CI on every change) |
 
 ## 1. The shape of a deployment
 
@@ -29,7 +29,7 @@ Everything is a key. Put it where your platform keeps configuration:
 |---|---|
 | Docker / Compose | `environment: {WSRVD_ALLOW_ORIGIN: "https://app.example.com"}` |
 | systemd | `EnvironmentFile=/etc/wsrv/wsrvd.env`, lines `WSRVD_KEY=value` |
-| Kubernetes | a ConfigMap and `envFrom` |
+| Kubernetes | a ConfigMap and `envFrom`; set `enableServiceLinks: false` in the pod spec (a Service called `wsrvd` would otherwise add `WSRVD_SERVICE_HOST`, `WSRVD_PORT=tcp://...`; the daemon ignores those exact names, ADR-0030 A1, but you need not carry them) |
 | A config file | `--config=/etc/wsrv/wsrvd.conf`, lines `key = value` |
 | Flags | `--max-connections=20000` |
 
@@ -60,6 +60,8 @@ The settings most deployments need:
 - **The worker leaving closes the browsers.** When the application disconnects (a deploy of the worker, a crash), the daemon closes the browser connections it knew about with **1012** (service restart) after `shutdown_grace_ms`, so a worker restart looks to the client like a daemon restart: it reconnects, re-joins its rooms and the new worker answers. Those sockets are closed after the grace period even if a new worker has already connected (it never sees their old traffic: IPC_PROTOCOL.md section 6), so plan for clients to reconnect on every worker deploy.
 - **`SIGHUP`** re-reads the TLS certificate and key without dropping anyone (OPERATIONS section 7).
 - A **rolling update** (Kubernetes `maxUnavailable: 0`, or one VM at a time) turns over the pairs one after another; each pair's clients reconnect, to the others while it restarts.
+- **Give the ingress a few seconds to forget a pod.** The daemon stops accepting at SIGTERM, while an ingress controller or load balancer may route new upgrades to a terminating pod for a few seconds more. The reference manifest runs `sleep 5` in a `preStop` hook (before SIGTERM; `terminationGracePeriodSeconds` 30 covers it plus the 10 s grace). Behind a cloud load balancer, also lower its deregistration delay to a few seconds, or clients that connect during a deploy are refused.
+- **The token file must be yours.** `wsrvd` refuses a `publish_token_file` or `ipc_token_file` that group or others can read, or that another user owns (root excepted), and a Kubernetes Secret volume or a Docker/Swarm `secrets:` mount is root-owned and world- or group-readable, so it is refused as mounted. Copy it first: an init container (the reference manifest) or `install -m 0600 -o <uid> /run/secrets/token /run/wsrv/token` in an entrypoint (`examples/docker/compose.yaml` does the same in its `token-init` service), and point the key at the copy.
 
 ## 5. Behind a reverse proxy
 

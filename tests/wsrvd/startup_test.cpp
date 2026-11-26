@@ -211,6 +211,45 @@ TEST_F(EnvironmentTest, AnUnknownWsrvdVariableStopsTheStartupAndIsNamed) {
         << "a typo must not start a server without an Origin list";
 }
 
+// ADR-0030 A1: for every Service in its namespace Kubernetes injects <SERVICE>_SERVICE_HOST,
+// <SERVICE>_SERVICE_PORT[_<NAME>], <SERVICE>_PORT and
+// <SERVICE>_PORT_<n>_<PROTO>[_PROTO|_PORT|_ADDR]. A Service named "wsrvd" (the natural name) makes
+// WSRVD_* names that are not settings; they must not stop the daemon or its --healthcheck, which
+// reads the same environment.
+TEST_F(EnvironmentTest, TheVariablesKubernetesInjectsForAServiceNamedWsrvdAreNotSettings) {
+    const auto startup = run_with({"--ipc-socket=/run/a.sock"},
+                                  {"WSRVD_SERVICE_HOST=10.96.0.12",
+                                   "WSRVD_SERVICE_PORT=8080",
+                                   "WSRVD_SERVICE_PORT_WS=8080",
+                                   "WSRVD_SERVICE_PORT_ADMIN_METRICS=9101",
+                                   "WSRVD_PORT=tcp://10.96.0.12:8080",
+                                   "WSRVD_PORT_8080_TCP=tcp://10.96.0.12:8080",
+                                   "WSRVD_PORT_8080_TCP_PROTO=tcp",
+                                   "WSRVD_PORT_8080_TCP_PORT=8080",
+                                   "WSRVD_PORT_8080_TCP_ADDR=10.96.0.12",
+                                   "WSRVD_LISTEN_PORT=9100"});
+    ASSERT_TRUE(startup.has_value()) << detail;
+    EXPECT_EQ(startup->config.embedded().port(), 9100)
+        << "a real setting beside them still applies";
+}
+
+TEST_F(EnvironmentTest, OnlyTheExactShapesOfServiceLinksAreIgnoredATypoStillStops) {
+    for (const char* entry : {"WSRVD_PORT=8080",  // a person meaning the listen port
+                              "WSRVD_PORT=",      // empty: skipped like any empty value
+                              "WSRVD_SERVICE_HOSTS=10.0.0.1",  // not the injected name
+                              "WSRVD_SERVICE=x",
+                              "WSRVD_PORT_8080=x",                 // no protocol
+                              "WSRVD_PORT_X_TCP=tcp://1.2.3.4:5",  // the port is a number
+                              "WSRVD_PORT_8080_TCP_EXTRA=x"}) {
+        const auto startup = run_with({"--ipc-socket=/run/a.sock"}, {entry});
+        if (std::string_view{entry}.ends_with('=')) {
+            EXPECT_TRUE(startup.has_value()) << entry;
+        } else {
+            EXPECT_FALSE(startup.has_value()) << entry << " must still be an error";
+        }
+    }
+}
+
 TEST_F(EnvironmentTest, ABadValueStopsTheStartupAndNamesTheVariable) {
     const auto startup = run_with({"--ipc-socket=/run/a.sock"}, {"WSRVD_LISTEN_PORT=99999"});
     ASSERT_FALSE(startup.has_value());

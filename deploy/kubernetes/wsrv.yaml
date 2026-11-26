@@ -2,8 +2,11 @@
 # (a daemon serves ONE application connection), sharing the IPC socket through an emptyDir. Scale by
 # replicas; rooms are per pod (see "Using more than one node"), so publish to every pod.
 #
-# Replace: the image names, WSRVD_ALLOW_ORIGIN, the worker command and the Secret. These manifests were
-# reviewed against the daemon's behaviour but are not applied to a live cluster by CI.
+# Replace: the image names, WSRVD_ALLOW_ORIGIN, the worker command and the Secret. Every change to this file
+# (or to the daemon or the image) is applied to a kind cluster by .github/workflows/kubernetes.yml, with the
+# image built from the same commit and a stand-in worker: pods ready, token copy private, publish port
+# answering, service links harmless, rolling restart. Not covered there: your ingress, your CNI's
+# NetworkPolicy enforcement, your worker.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -19,7 +22,9 @@ data:
   WSRVD_BROKER: "true"
   WSRVD_PUBLISH_HOST: "0.0.0.0"
   WSRVD_PUBLISH_PORT: "9200"
-  WSRVD_PUBLISH_TOKEN_FILE: "/etc/wsrv-secret/publish-token"
+  # The init container below copies the Secret here (wsrvd refuses a token file that group or others can read
+  # or that another user owns, and a Secret volume is root-owned): a private copy, in memory, mode 0600.
+  WSRVD_PUBLISH_TOKEN_FILE: "/run/wsrv/ipc/publish.token"
 ---
 apiVersion: v1
 kind: Secret
@@ -47,6 +52,9 @@ spec:
     spec:
       # A pod gets Close 1001 sent to its clients at SIGTERM, then exits within shutdown_grace (10 s).
       terminationGracePeriodSeconds: 30
+      # Kubernetes puts <SERVICE>_SERVICE_HOST, <SERVICE>_PORT ... in every pod for every Service of the
+      # namespace. wsrvd ignores those exact shapes, but you need not carry them at all.
+      enableServiceLinks: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001        # the daemon checks that the application's uid equals its own
@@ -54,11 +62,18 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       initContainers:
         # An emptyDir is world-writable, and wsrvd refuses a socket directory that others can write:
-        # make a private subdirectory (mode 0700) and put the socket there.
+        # make a private subdirectory (mode 0700) and put the socket there. The same step copies the publish
+        # token out of the Secret (root-owned, so wsrvd would refuse it) into that directory, owned by this uid
+        # with mode 0600; wsrvd and the worker read the copy and the Secret is mounted nowhere else.
         - name: ipc-dir
           image: ghcr.io/dimathjayasinghe/wsrvd:1.0.0
-          command: ["sh", "-c", "mkdir -p -m 0700 /run/wsrv/ipc"]
-          volumeMounts: [{name: ipc, mountPath: /run/wsrv}]
+          command:
+            - sh
+            - -c
+            - mkdir -p -m 0700 /run/wsrv/ipc && install -m 0600 /etc/wsrv-secret/publish-token /run/wsrv/ipc/publish.token
+          volumeMounts:
+            - {name: ipc, mountPath: /run/wsrv}
+            - {name: secret, mountPath: /etc/wsrv-secret, readOnly: true}
           securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
       containers:
         - name: wsrvd
@@ -72,7 +87,11 @@ spec:
             - {name: publish, containerPort: 9200}
           volumeMounts:
             - {name: ipc, mountPath: /run/wsrv}
-            - {name: secret, mountPath: /etc/wsrv-secret, readOnly: true}
+          # The ingress controller keeps sending new upgrades to a pod for a few seconds after it starts
+          # terminating; the daemon stops accepting at SIGTERM, so wait first (5 s + the 10 s grace < 30 s).
+          lifecycle:
+            preStop:
+              exec: {command: ["sleep", "5"]}
           # The same command Docker's HEALTHCHECK runs; it reads the environment above.
           livenessProbe:
             exec: {command: ["/usr/local/bin/wsrvd", "--healthcheck"]}
@@ -90,19 +109,19 @@ spec:
         - name: worker
           image: registry.example.com/your-app-worker:latest   # your PHP worker (docs/LARAVEL.md, examples/docker/worker)
           # Connect the worker to /run/wsrv/ipc/ipc.sock (Client::connect) and publish to
-          # http://127.0.0.1:9200 with the token in /etc/wsrv-secret/publish-token (Publisher).
+          # http://127.0.0.1:9200 with the token in /run/wsrv/ipc/publish.token (Publisher).
           env:
             - {name: WSRV_PUBLISH_URL, value: "http://127.0.0.1:9200"}
           volumeMounts:
             - {name: ipc, mountPath: /run/wsrv}
-            - {name: secret, mountPath: /etc/wsrv-secret, readOnly: true}
           securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
       volumes:
-        - {name: ipc, emptyDir: {}}
+        # In memory: the token copy never reaches the node's disk. It counts against the containers' memory.
+        - {name: ipc, emptyDir: {medium: Memory, sizeLimit: 1Mi}}
         - name: secret
           secret:
             secretName: wsrv-secret
-            defaultMode: 0440
+            defaultMode: 0444   # read by the init container, whatever uid it runs as
 ---
 # The browsers' door. The publish port (9200) and the admin port (9101) are deliberately NOT here.
 apiVersion: v1
