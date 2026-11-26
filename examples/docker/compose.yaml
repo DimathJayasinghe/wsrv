@@ -1,5 +1,5 @@
 # wsrv quickstart: the daemon and a PHP worker, no compiler, no C++.
-#   docker compose up -d           # pulls ghcr.io/dimathjayasinghe/wsrvd:1.0.0-rc.1 and builds the tiny PHP worker
+#   docker compose up -d           # pulls ghcr.io/dimathjayasinghe/wsrvd:1.0.0 and builds the tiny PHP worker
 #   docker compose up --build      # same, but also rebuilds the daemon image from this repository's source
 #   WSRV_VERSION=1.0.0 docker compose up -d   # another published version (WSRV_CLIENT sets the PHP package's, below)
 #   then connect any WebSocket client to ws://localhost:8080/ and send a message: the worker echoes it.
@@ -13,7 +13,7 @@
 services:
   # Runs once and exits: creates /run/wsrv/publish.token (64 hex characters) if it does not exist yet.
   token-init:
-    image: ghcr.io/dimathjayasinghe/wsrvd:${WSRV_VERSION:-1.0.0-rc.1}
+    image: ghcr.io/dimathjayasinghe/wsrvd:${WSRV_VERSION:-1.0.0}
     user: "10001:10001"
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -23,7 +23,7 @@ services:
     restart: "no"
 
   wsrvd:
-    image: ghcr.io/dimathjayasinghe/wsrvd:${WSRV_VERSION:-1.0.0-rc.1}
+    image: ghcr.io/dimathjayasinghe/wsrvd:${WSRV_VERSION:-1.0.0}
     build:
       context: ../..
       dockerfile: docker/wsrvd.Dockerfile
@@ -50,7 +50,7 @@ services:
     build:
       context: ./worker
       args:
-        WSRV_CLIENT: ${WSRV_CLIENT:-1.0.0-rc.1}   # pin another version of the PHP package here
+        WSRV_CLIENT: ${WSRV_CLIENT:-1.0.0}   # pin another version of the PHP package here
     user: "10001:10001"
     depends_on:
       - wsrvd

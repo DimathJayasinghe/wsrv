@@ -29,9 +29,9 @@ One decision per file, immutable once *Accepted* (supersede with a new ADR). Use
 | [0023](0023-metrics-and-admin-endpoint.md) | Metrics and the admin endpoint | Accepted |
 | [0024](0024-pub-sub-broker.md) | Pub/sub broker (topics and rooms) | Accepted |
 | [0025](0025-php-ffi-binding.md) | PHP embedded binding over FFI | Accepted |
-| [0026](0026-php-package-and-native-library-distribution.md) | Composer package and distribution of `libwsrv.so` | Proposed |
-| [0027](0027-broker-through-the-c-abi.md) | Topics and rooms through the C ABI (ABI 0.5) | Proposed |
-| [0028](0028-publish-from-anywhere.md) | Publish from anywhere: rooms and an HTTP publish endpoint for `wsrvd` | Proposed |
+| [0026](0026-php-package-and-native-library-distribution.md) | Composer package and distribution of `libwsrv.so` | Accepted |
+| [0027](0027-broker-through-the-c-abi.md) | Topics and rooms through the C ABI (ABI 0.5) | Accepted |
+| [0028](0028-publish-from-anywhere.md) | Publish from anywhere: rooms and an HTTP publish endpoint for `wsrvd` | Accepted |
 | [0029](0029-client-address-behind-a-proxy.md) | The client address behind a reverse proxy | Accepted |
 | [0030](0030-container-configuration-and-healthcheck.md) | Environment configuration and a built-in healthcheck for containers | Accepted |
 | [0031](0031-browser-and-node-client.md) | A small JavaScript client with reconnect (browser and Node) | Accepted |

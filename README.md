@@ -4,8 +4,8 @@ Hold thousands of WebSocket connections in one small daemon and write the logic 
 language that can call a C ABI). A from-scratch **RFC 6455** implementation in modern C++23: no Boost,
 no Asio, no third-party WebSocket library. Open source under the [Apache License 2.0](LICENSE).
 
-> Status: **release candidate for 1.0** (`1.0.0-rc.1`; the install lines below name it, because tools skip release candidates unless asked). The 1.0 line freezes the IPC protocol, the C
-> ABI and the PHP API (see [Stability](#stability)); what stands between this and a 1.0 is in
+> Status: **1.0.0**, stable. The 1.0 line freezes the IPC protocol, the C ABI and the PHP API (see
+> [Stability](#stability)); what was checked before release, and what is known and accepted, is in
 > [docs/RELEASE.md](docs/RELEASE.md), and changes are in [CHANGELOG.md](CHANGELOG.md). The server is Linux only
 > (x86-64 and aarch64); on macOS and Windows develop with Docker or WSL2 ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) section 11). A native macOS server and TCP IPC are planned for a future 1.x release.
 
@@ -54,8 +54,8 @@ Use it in your own project:
 
 | You want | Do this |
 |---|---|
-| The daemon | `docker run ghcr.io/dimathjayasinghe/wsrvd:1.0.0-rc.1` (amd64 and arm64), or the checksummed binary from the [releases](https://github.com/DimathJayasinghe/wsrv/releases) |
-| The PHP client | `composer require wsrv/client:^1.0@rc` (PHP 8.2 or newer, no extension needed for the sidecar; a plain `composer require wsrv/client` works once 1.0.0 is out) |
+| The daemon | `docker run ghcr.io/dimathjayasinghe/wsrvd:1.0.0` (amd64 and arm64), or the checksummed binary from the [releases](https://github.com/DimathJayasinghe/wsrv/releases) |
+| The PHP client | `composer require wsrv/client` (PHP 8.2 or newer, no extension needed for the sidecar) |
 | Rooms and push from a controller or job | `Wsrv\Publisher`, see [bindings/php/README.md](bindings/php/README.md) |
 | Laravel | [docs/LARAVEL.md](docs/LARAVEL.md) (ticket login, an Artisan worker, queued publishing; tried against Laravel 13) |
 | Production notes | TLS, limits, metrics, hardening: [docs/OPERATIONS.md](docs/OPERATIONS.md) |
@@ -88,9 +88,12 @@ From 1.0, across every 1.x release:
   or changed, and minors only add;
 - the **C ABI** (`include/wsrv/wsrv.h`), which CI checks against the exported symbols;
 - the **PHP package** follows [semantic versioning](https://semver.org/), and the daemon and the package
-  are versioned together, so you can upgrade them one at a time (daemon first).
+  are versioned together, so you can upgrade them one at a time (daemon first);
+- the **names of the log fields and events** ([docs/OPERATIONS.md](docs/OPERATIONS.md) section 2): new ones
+  may appear, none is renamed or removed; the message text is not promised.
 
-Not promised: the C++ headers under `src/`, metrics marked experimental in
+Not promised: the JavaScript client in `clients/js` (you copy its one file into your project; it is not on
+npm), the C++ headers under `src/`, metrics marked experimental in
 [docs/OPERATIONS.md](docs/OPERATIONS.md), and anything under `bench/` or `tests/`. How to upgrade a
 running system with no more than a reconnect: [docs/DEPLOYMENT.md, section 10](docs/DEPLOYMENT.md#10-upgrading).
 Security reports: [SECURITY.md](SECURITY.md).

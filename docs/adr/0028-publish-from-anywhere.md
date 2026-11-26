@@ -1,6 +1,6 @@
 # ADR-0028: Publish from anywhere: rooms and an HTTP publish endpoint for `wsrvd`
 
-- Status: **Proposed** (2026-11-23; the owner delegated the build order on 2026-11-23, the owner moves it to Accepted)
+- Status: **Accepted** (2026-11-26, by the project owner; built and shipped in 1.0.0). Originally proposed 2026-11-23.
 - Date: 2026-11-23
 - Deciders: project owner, maintainer assistant
 

@@ -58,7 +58,7 @@ Engineering
 - [x] Security review of the last milestone done, findings fixed or recorded
 - [x] The default limits of REQUIREMENTS section 4 exist in the configuration and are enforced (index: PROTOCOL_EDGE_CASES section 10)
 - [x] A row-by-row audit of REQUIREMENTS section 4 against its code and tests (2026-11-26, [LIMITS_AUDIT.md](LIMITS_AUDIT.md)): all 19 limits are enforced with the documented default and answer; three defaults had no test (now asserted); two rows describe the design differently from the code (the global connection cap closes without a 503, the read buffer is one shared 16 KiB per loop): the code was the safer side, so the requirements text now follows it (owner, 2026-11-26)
-- [x] Operations guide covers config, metrics, shutdown, hardening, runbook (OPERATIONS)
+- [x] Operations guide covers config, logging, metrics, shutdown, hardening, runbook (OPERATIONS; sections 1 to 6 were rewritten on 2026-11-26 to match the code: there is no TOML file and no `WSRV_*` variable)
 - [x] ABI checks in CI
 - [x] Coverage re-measured against the NFR-M4 thresholds (2026-11-26, develop at `7aad5fd`, GCC 14 `coverage` preset with TLS and deflate on, 1425 tests, all passing): **92.3 % of the lines and 85.4 % of the branches of `src/`, every module above its threshold.** `protocol` 96.5 % / 90.5 %, `http` 96.1 % / 91.5 %, `base` 97.4 % / 89.0 %, `crypto` 99.4 % / 100 % (needed 90 / 85); `capi` 90.3 %, `server` 90.0 %, `net` 89.8 %, `tls` 91.3 %, `ipc` 98.7 %, `extensions` 81.8 % lines (needed 75). Reproduce with `tools/coverage.sh`. Caveats: only `src/` is measured (not `apps/wsrvd`, the bindings or the examples); branches that exist only for exceptions or can never be taken are excluded; gcov's non-atomic counters can go negative in threaded tests and are read as zero, which only understates; coverage is checked on demand, it is not a CI gate
 - [x] Autobahn through the C consumer (`examples/echo_c`, plain and wss, 517 cases, 0 FAILED; `tests/autobahn/EXCLUDED.md`)
@@ -77,9 +77,9 @@ Repository and launch (M14, listed here so nothing is forgotten)
 
 ## 5. Go / no-go
 
-**Release candidate for evaluation: yes.** The server core, TLS, deflate, limits, broker, metrics, C ABI and sidecar are built, tested under every sanitizer, fuzzed and reviewed three times; the claims in section 2 can be checked by running the named commands.
+**Go for `1.0.0`: yes, given by the owner on 2026-11-26** (a request to release the final stable version), after: all CI jobs green on `develop` (gcc, clang with TSan and fuzz, clang-tidy, the container, Kubernetes (kind) and macOS jobs), the evidence of section 2, the coverage and limits audits, the runtime logger (ADR-0037) and the operations guide corrected to match the code. The server core, TLS, deflate, limits, broker, metrics, logging, C ABI and sidecar are built, tested under every sanitizer, fuzzed and reviewed; the claims in section 2 can be checked by running the named commands.
 
-**Public 1.0: not yet.** What is left: the coverage figures re-measured (section 4), and the owner's decisions (the history review, branch protection, and the go for `v1.0.0` and the `latest` tag). After the final release: the Docker Hub overview text (`docker/HUB.md` pulls `latest`, which exists only then) and switching the install lines from the release candidate (the checklist line above). The three open review items of the second security review are closed (section 3). This document does not change repository visibility or publish a final release; that is the owner's call.
+What this release does not do is stated in section 3 (Linux only, TCP IPC and a native macOS server planned for 1.x, histograms and a loop-lag watchdog after 1.0). Still open and the owner's alone: the review of the git history for the personal e-mail address, branch protection on `main`, Dependabot security updates. After the release: the Docker Hub overview text (`docker/HUB.md`, which pulls `latest`).
 
 ## 6. Going public (checklist, 2026-11-22)
 
@@ -95,5 +95,5 @@ Right after the flip (not available while the repository is private):
 - [x] Private vulnerability reporting is enabled, so the Security tab offers "Report a vulnerability" (SECURITY.md and the issue template link depend on it).
 - [x] Pushed `v1.0.0-rc.1`: `release.yml` ran with the arm runner, the attestation and the signature (see the signed-artifact line above), and Packagist lists `wsrv/client` `v1.0.0-rc.1`.
 - [x] The GHCR package `wsrvd` is public (an anonymous manifest fetch of `1.0.0-rc.1` answers 200).
-- [ ] **When `1.0.0` is tagged**, switch the install lines from the release candidate to the final version: `README.md` (status line, the `wsrvd:` image and the `composer require` row), `docs/LARAVEL.md` and `bindings/php/README.md` (`composer require wsrv/client:^1.0@rc` becomes plain `composer require wsrv/client`), `examples/docker/compose.yaml` and `examples/docker/worker/Dockerfile` (`1.0.0-rc.1` becomes `1.0.0`; the Dockerfile may then use `^1.0`), and check `deploy/kubernetes/wsrv.yaml` (already `1.0.0`).
+- [x] **When `1.0.0` was tagged**, the install lines were switched from the release candidate to the final version (`README.md`, `docs/LARAVEL.md`, `bindings/php/README.md`, `examples/docker`; `deploy/kubernetes/wsrv.yaml` already named `1.0.0`).
 - [ ] Optionally create the first "good first issue" labels and issues from CONTRIBUTING.md's list.

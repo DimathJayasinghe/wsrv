@@ -1,6 +1,6 @@
 # ADR-0027: Topics and rooms through the C ABI (ABI 0.5)
 
-- Status: **Proposed** (2026-11-22; the owner moves it to Accepted)
+- Status: **Accepted** (2026-11-26, by the project owner; built and shipped in 1.0.0). Originally proposed 2026-11-22.
 - Date: 2026-11-22
 - Deciders: project owner, maintainer assistant
 
