@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cerrno>
+#include <exception>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -86,6 +87,7 @@ public:
             server_.loop_.run_after(server_.config_.hello_timeout, [this] {
                 hello_timer_.reset();
                 if (state_ == State::AwaitHello) {
+                    server_.note(LogLevel::Warn, "app_rejected", "ipc: no HELLO in time, closing");
                     close();  // a peer that stays silent must not hold the only slot
                 }
             });
@@ -228,11 +230,16 @@ private:
         if (state_ == State::AwaitHello) {
             const Handshake::Outcome outcome = server_.handshake_.on_first_message(message);
             if (!outcome.accepted) {
+                // Which of version, token or format failed is not said: it would help a guesser.
+                server_.note(LogLevel::Warn,
+                             "app_rejected",
+                             "ipc: the first message was refused (version, token or format)");
                 closing_after_flush_ = true;  // one STATUS, then goodbye
                 send(outcome.reply);
                 return;
             }
             state_ = State::Ready;
+            server_.note(LogLevel::Info, "app_connected", "ipc: application connected");
             peer_minor_ = outcome.peer_minor;
             if (hello_timer_) {
                 server_.loop_.cancel(*hello_timer_);
@@ -410,6 +417,11 @@ private:
         closed_ = true;
         teardown();
         if (state_ == State::Ready) {
+            if (stalled_) {
+                server_.note(LogLevel::Warn, "app_disconnected", "ipc: application stopped reading, cut off");
+            } else {
+                server_.note(LogLevel::Info, "app_disconnected", "ipc: application disconnected");
+            }
             server_.application_lost(stalled_);  // it had been told about connections
         }
         server_.release(this);
@@ -614,6 +626,7 @@ void IpcServer::admit(Fd client) noexcept {
     // 1. Who is on the other end, according to the kernel, before a single byte is read.
     std::uint32_t uid = 0;
     if (sys_.peer_uid(client.get(), uid).err != 0 || uid != sys_.effective_uid()) {
+        note(LogLevel::Warn, "app_rejected", "ipc: a connection from another user was dropped");
         return;  // closing the descriptor is the whole answer to a stranger
     }
     // 2. One application at a time. First let the current one show that it is gone, if it is.
@@ -624,6 +637,7 @@ void IpcServer::admit(Fd client) noexcept {
         peer_.reset();
     }
     if (peer_ != nullptr) {
+        note(LogLevel::Warn, "app_rejected", "ipc: a second application was refused, one is already connected");
         reject_busy(std::move(client));
         return;
     }
@@ -664,6 +678,16 @@ void IpcServer::schedule_retry() noexcept {
         });
     if (timer) {
         retry_ = *timer;
+    }
+}
+
+void IpcServer::note(LogLevel level, std::string_view event, std::string_view message) const noexcept {
+    if (config_.logger == nullptr) {
+        return;
+    }
+    try {
+        config_.logger->log(level, event, message);
+    } catch (const std::exception&) {  // NOLINT(bugprone-empty-catch): logging never fails the daemon
     }
 }
 

@@ -111,6 +111,7 @@ jobs:
           echo "health after wait: $status"
           docker logs wsrvd-smoke
           [ "$status" = healthy ]
+          docker logs wsrvd-smoke 2>&1 | grep -Eq '^ts=[0-9T:.Z-]+ level=info event=listening msg="'
       - name: Scan the image, fixable HIGH and CRITICAL findings stop the release
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:

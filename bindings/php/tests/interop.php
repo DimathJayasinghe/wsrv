@@ -358,10 +358,10 @@ while (($roomPort === 0 || $publishPort === 0) && microtime(true) < $deadline) {
     if (stream_select($r, $w, $e, 0, 200000) > 0) {
         $line = fgets($roomPipes[2]);
         $roomLog .= (string) $line;
-        if ($line !== false && preg_match('/websocket server listening on port (\d+)/', $line, $m)) {
+        if ($line !== false && preg_match('/event=listening .*listening on port (\d+)/', $line, $m)) {
             $roomPort = (int) $m[1];
         }
-        if ($line !== false && preg_match('/publish endpoint listening on port (\d+)/', $line, $m)) {
+        if ($line !== false && preg_match('/event=publish_listening .*:(\d+)"/', $line, $m)) {
             $publishPort = (int) $m[1];
         }
     }

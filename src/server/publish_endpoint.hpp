@@ -2,6 +2,7 @@
 #pragma once
 
 #include "base/error.hpp"
+#include "base/logger.hpp"
 #include "base/metrics.hpp"
 #include "net/acceptor.hpp"
 #include "net/endpoint.hpp"
@@ -33,6 +34,7 @@ struct PublishDeps {
     const PublishSources& sources;    ///< the token and the action
     IMetrics& metrics;                ///< where the answers are counted
     std::function<bool()> accepting;  ///< false while the server shuts down: the answer is 503
+    ILogger* logger = nullptr;  ///< refused requests are logged here (ADR-0037); null = silent
 };
 
 /// The publish listener (ADR-0028 section 3): `POST /publish` with a bearer token, on the loop
@@ -82,6 +84,7 @@ private:
     const PublishSources& sources_;
     IMetrics& metrics_;
     const std::function<bool()> accepting_;
+    ILogger* const logger_;
     std::unique_ptr<TcpListener> listener_;
     std::unique_ptr<Acceptor> acceptor_;
     std::vector<std::unique_ptr<Client>> clients_;  // at most max_connections live + not yet swept

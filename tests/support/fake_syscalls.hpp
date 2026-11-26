@@ -21,6 +21,7 @@ enum class Call : std::size_t {
     Accept4,
     Read,
     Write,
+    Poll,
     Send,
     Shutdown,
     SetSockOpt,
@@ -117,6 +118,12 @@ public:
             return *injected;
         }
         return real_.write(fd, buf, n);
+    }
+    SysResult poll(pollfd* fds, nfds_t count, int timeout_ms) override {
+        if (const auto injected = scripted(Call::Poll)) {
+            return *injected;
+        }
+        return real_.poll(fds, count, timeout_ms);
     }
     SysResult send(int fd, const void* buf, std::size_t n, int flags) override {
         if (const auto injected = scripted(Call::Send)) {

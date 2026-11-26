@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "capi/embedded_server.hpp"
 
+#include "support/stderr_capture.hpp"
 #include "support/tcp_client.hpp"
 
 #include <gtest/gtest.h>
@@ -42,6 +43,59 @@ std::string as_string(const std::vector<std::byte>& bytes) {
         out.push_back(static_cast<char>(b));
     }
     return out;
+}
+
+// ADR-0037: what an operator sees. These read the process's real stderr.
+
+TEST(EmbeddedServerLogging, StartingWritesOneListeningLineWithTheActualPort) {
+    StderrCapture capture;
+    auto server = started();
+    const std::string text = capture.wait_for("event=listening");
+    capture.restore();
+    EXPECT_NE(text.find(" level=info event=listening "), std::string::npos) << text;
+    EXPECT_NE(text.find("port " + std::to_string(server->port()) + "\""), std::string::npos)
+        << text;
+    EXPECT_EQ(text.rfind("ts=", 0), 0U) << "the line starts with its timestamp";
+}
+
+TEST(EmbeddedServerLogging, TheLevelKeepsInfoOut) {
+    StderrCapture capture;
+    EmbeddedConfig config = base_config();
+    ASSERT_TRUE(config.set("log_level", "warn").has_value());
+    auto server = started(config);
+    const std::string text = capture.take(200ms);
+    capture.restore();
+    EXPECT_EQ(text, "") << "a quiet server at warn level writes nothing while healthy";
+}
+
+TEST(EmbeddedServerLogging, ARefusedOriginIsLoggedWithoutTheAddressUnlessAsked) {
+    StderrCapture capture;
+    auto server = started();
+    {
+        TcpClient client{server->port()};
+        EXPECT_FALSE(client.upgrade("https://evil.example.x"));
+    }
+    const std::string text = capture.wait_for("event=origin_refused");
+    capture.restore();
+    EXPECT_NE(text.find(" level=warn event=origin_refused conn="), std::string::npos) << text;
+    EXPECT_EQ(text.find("peer="), std::string::npos)
+        << "an address is personal data: off by default";
+    EXPECT_EQ(text.find("evil.example.x"), std::string::npos)
+        << "what the peer sent is never logged";
+}
+
+TEST(EmbeddedServerLogging, WithLogPeerTheClientAddressIsNamed) {
+    StderrCapture capture;
+    EmbeddedConfig config = base_config();
+    ASSERT_TRUE(config.set("log_peer", "true").has_value());
+    auto server = started(config);
+    {
+        TcpClient client{server->port()};
+        EXPECT_FALSE(client.upgrade("https://evil.example.x"));
+    }
+    const std::string text = capture.wait_for("event=origin_refused");
+    capture.restore();
+    EXPECT_NE(text.find(" peer=127.0.0.1:"), std::string::npos) << text;
 }
 
 #ifndef WSRV_TEST_HAS_TLS

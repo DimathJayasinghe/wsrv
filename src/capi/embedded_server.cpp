@@ -2,8 +2,10 @@
 #include "capi/embedded_server.hpp"
 
 #include <algorithm>
+#include <exception>
 #include <new>
 #include <optional>
+#include <string>
 #include <utility>
 
 #include <poll.h>
@@ -21,21 +23,32 @@ namespace wsrv {
 namespace {
 
 /// Keeps the first error line the TLS context logged since the last clear() (which file, and why),
-/// so start() and reload_tls() can hand it to the host: the library never prints on its own, and
-/// an operator needs more than "the certificate could not be read". The first line is the specific
-/// one; the context follows it with a generic summary ("reload failed, keeping ...").
+/// so start() and reload_tls() can hand it to the host, which needs more than "the certificate
+/// could not be read". The first line is the specific one; the context follows it with a generic
+/// summary
+/// ("reload failed, keeping ..."). Every record also goes on to the server's logger, so the
+/// operator sees the same lines on stderr (ADR-0037).
 /// Thread-safe: reload runs on any thread.
 class DetailLogger final : public ILogger {
 public:
-    void log(LogLevel level, std::string_view message) override {
-        if (level < LogLevel::Error) {
+    /// Every record also goes to `downstream`, the server's own logger (ADR-0037).
+    explicit DetailLogger(ILogger& downstream) noexcept : downstream_{downstream} {}
+
+    using ILogger::log;
+    void log(const LogRecord& record) override {
+        downstream_.log(record);
+        if (record.level < LogLevel::Error) {
             return;
         }
+        const std::string_view message = record.message;
         constexpr std::size_t kMaxDetail = 512;  // a path plus OpenSSL's reason fits easily
         const std::lock_guard lock{mutex_};
         if (last_.empty()) {
             last_.assign(message.substr(0, kMaxDetail));
         }
+    }
+    [[nodiscard]] bool enabled(LogLevel level) const noexcept override {
+        return downstream_.enabled(level) || level >= LogLevel::Error;
     }
     void clear() {
         const std::lock_guard lock{mutex_};
@@ -47,6 +60,7 @@ public:
     }
 
 private:
+    ILogger& downstream_;
     mutable std::mutex mutex_;
     std::string last_;
 };
@@ -54,6 +68,7 @@ private:
 }  // namespace
 
 struct EmbeddedServer::TlsState {
+    explicit TlsState(ILogger& downstream) noexcept : logger{downstream} {}
     DetailLogger logger;
     std::unique_ptr<TlsServerContext> context;
     std::unique_ptr<TlsTransportWrapper> wrapper;
@@ -83,7 +98,8 @@ Result<std::unique_ptr<EmbeddedServer>> EmbeddedServer::create(const EmbeddedCon
 }
 
 EmbeddedServer::EmbeddedServer(Key /*unused*/, EmbeddedConfig config)
-    : owner_pid_{::getpid()}, config_{std::move(config)} {}
+    : owner_pid_{::getpid()}, config_{std::move(config)},
+      logger_{sys_, wall_, clock_, STDERR_FILENO, config_.log_level()} {}
 
 EmbeddedServer::~EmbeddedServer() {
     if (!thread_) {
@@ -145,7 +161,19 @@ Result<void> EmbeddedServer::start() {
     port_.store(*result.port);
     admin_port_.store(result.admin_port);
     publish_port_.store(result.publish_port);
+    announce_listening(*result.port);
     return {};
+}
+
+/// ADR-0037: the line that says the server is up and where. Never fails start().
+void EmbeddedServer::announce_listening(std::uint16_t port) noexcept {
+    try {
+        logger_.log(LogLevel::Info,
+                    "listening",
+                    "server: websocket listening on port " + std::to_string(port));
+        // NOLINTNEXTLINE(bugprone-empty-catch): an optional line, not an error
+    } catch (const std::exception&) {
+    }
 }
 
 /// The publish endpoint's token and action (ADR-0028). The action is the bridge's broker publish:
@@ -194,7 +222,7 @@ Result<void> EmbeddedServer::prepare_tls() {
     }
 #if defined(WSRV_HAS_TLS)
     try {
-        auto state = std::make_unique<TlsState>();
+        auto state = std::make_unique<TlsState>(logger_);
         TlsConfig tls{config_.tls_cert(), config_.tls_key(), {}};
         tls.sni.reserve(config_.tls_sni().size());
         for (const TlsSniSetting& setting : config_.tls_sni()) {
@@ -252,6 +280,7 @@ void EmbeddedServer::io_thread_main(std::promise<Started>& ready) {
             builder.publish(config_.publish_host(), config_.publish_port(), publish_sources_);
         }
         builder.handler_factory(*bridge_);
+        builder.logger(logger_);
         if (config_.handshake_hook()) {
             builder.handshake_decider(*bridge_);
         }

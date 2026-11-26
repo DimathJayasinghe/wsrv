@@ -5,6 +5,8 @@
 #include "server/client_ip.hpp"
 
 #include <algorithm>
+#include <array>
+#include <charconv>
 #include <exception>
 #include <new>
 #include <utility>
@@ -16,6 +18,24 @@ namespace {
 /// ProtocolSession::tick() wants to be called at least once a second: its rate-limit windows are
 /// measured in ticks.
 constexpr std::chrono::milliseconds kTickInterval{1000};
+
+/// The status code of a response we rendered ourselves ("HTTP/1.1 403 Forbidden..."), or 0. Bounded
+/// reads of three digits at a fixed offset: the response is ours, but nothing is assumed.
+int status_of(std::string_view response) noexcept {
+    constexpr std::string_view kPrefix = "HTTP/1.1 ";
+    if (response.size() < kPrefix.size() + 3 || response.substr(0, kPrefix.size()) != kPrefix) {
+        return 0;
+    }
+    int status = 0;
+    for (std::size_t i = 0; i < 3; ++i) {
+        const char digit = response[kPrefix.size() + i];
+        if (digit < '0' || digit > '9') {
+            return 0;
+        }
+        status = status * 10 + (digit - '0');
+    }
+    return status;
+}
 
 /// How a connection ended, as a class of the close code: a closed set, so the number of time
 /// series never depends on the peer (ADR-0023 section 1). 1005/1006/1015 are never sent on the
@@ -77,7 +97,7 @@ void Connection::guarded(Call&& call) {
         call();
         return;
     } catch (...) {
-        log(LogLevel::Error, "handler threw an exception");
+        log(LogLevel::Error, "handler_exception", "handler threw an exception");
     }
     close(CloseCode::InternalError, "internal error");
 }
@@ -135,7 +155,7 @@ void Connection::on_event(PollEvents events) noexcept {
     } catch (const std::exception&) {
         // The loop boundary: most likely an allocation failure while serving this one client.
         // Dropping it is the safe answer; the server and its other clients carry on.
-        log(LogLevel::Error, "internal error, dropping the connection");
+        log(LogLevel::Error, "internal_error", "internal error, dropping the connection");
         drop_transport();
     }
 }
@@ -222,6 +242,17 @@ void Connection::on_handshake_bytes(MutableByteView chunk) {
         return;
     case HandshakeStep::Rejected:
         count(Metric::HandshakeFailed);
+        // 403 is the Origin check (the negotiator has no other reason for it). The texts are fixed:
+        // what the peer sent is never logged (T14).
+        if (status_of(outcome.response) == 403) {
+            log(LogLevel::Warn,
+                "origin_refused",
+                "handshake refused: the Origin header is not allowed");
+        } else {
+            log(LogLevel::Info,
+                "handshake_refused",
+                "handshake refused: not a valid WebSocket upgrade request");
+        }
         disarm(handshake_timer_);
         head_out_ = std::move(outcome.response);
         close_after_head_ = true;
@@ -259,7 +290,9 @@ bool Connection::resolve_client() {
         const Admission verdict = ctx_.ip_limits->admit(client);
         if (verdict != Admission::Admitted) {
             count(refusal_metric(verdict));
-            log(LogLevel::Warn, "per-IP limit reached behind a trusted proxy, refusing");
+            log(LogLevel::Warn,
+                "ip_limit",
+                "per-IP limit reached behind a trusted proxy, refusing");
             refuse(verdict == Admission::TableFull ? 503 : 429);
             return false;
         }
@@ -283,9 +316,10 @@ void Connection::establish(HandshakeOutcome& outcome, MutableByteView leftover) 
     guarded([&] { handler_ = ctx_.factory.create(info); });
     if (handler_) {
         opened_ = true;  // from here on_close is owed, even if on_open throws
+        log(LogLevel::Debug, "conn_open", "connection established");
         guarded([&] { handler_->on_open(*this); });
     } else {
-        log(LogLevel::Error, "no handler for the connection");
+        log(LogLevel::Error, "no_handler", "no handler for the connection");
         close(CloseCode::InternalError, "internal error");
     }
     if (phase_ == Phase::Finished) {
@@ -309,7 +343,9 @@ void Connection::await_decision(HandshakeOutcome& outcome, ByteView leftover) {
     std::optional<PendingSlot> slot =
         ctx_.pending != nullptr ? ctx_.pending->try_enter() : std::optional<PendingSlot>{};
     if (!slot) {
-        log(LogLevel::Warn, "too many upgrades waiting for a decision, refusing");  // EC-H31
+        log(LogLevel::Warn,
+            "decision_queue_full",
+            "too many upgrades waiting for a decision, refusing");  // EC-H31
         refuse(503);
         return;
     }
@@ -317,7 +353,9 @@ void Connection::await_decision(HandshakeOutcome& outcome, ByteView leftover) {
         make_handshake_request(HandshakeFacts{id_, client_, driver_.request(), outcome.subprotocol},
                                ctx_.config.handshake_forward_headers);
     if (!request) {
-        log(LogLevel::Info, "handshake header over the forwarding cap, refusing");  // EC-H34
+        log(LogLevel::Info,
+            "handshake_refused",
+            "handshake header over the forwarding cap, refusing");  // EC-H34
         refuse(431);
         return;
     }
@@ -341,7 +379,9 @@ void Connection::await_decision(HandshakeOutcome& outcome, ByteView leftover) {
     if (const Result<void> asked =
             ctx_.decider->request(std::move(*request), PendingHandle{ctx_.link, id_, offered});
         !asked) {
-        log(LogLevel::Warn, "nobody can decide the handshake, refusing");  // fail closed
+        log(LogLevel::Warn,
+            "handshake_refused",
+            "nobody can decide the handshake, refusing");  // fail closed
         refuse(503);
     } else if (pending_) {
         pending_->asked = true;  // (an answer already delivered inside request() cleared pending_)
@@ -409,7 +449,9 @@ void Connection::refuse(int status) {
 void Connection::on_decision_timeout() {
     handshake_timer_ = TimerHandle{};
     if (phase_ == Phase::AwaitingDecision) {
-        log(LogLevel::Warn, "handshake decision timed out, refusing");  // EC-H29
+        log(LogLevel::Warn,
+            "handshake_decision_timeout",
+            "handshake decision timed out, refusing");  // EC-H29
         refuse(503);
         settle();
     }
@@ -450,7 +492,9 @@ void Connection::dispatch(const SessionEvent& event) {
     case SessionEvent::Kind::Pong:
         return;
     case SessionEvent::Kind::ProtocolError:
-        log(LogLevel::Info, "peer broke the protocol");  // the close code travels in CloseInfo
+        log(LogLevel::Info,
+            "protocol_error",
+            "peer broke the protocol");  // the close code travels in CloseInfo
         return;
     case SessionEvent::Kind::Closed:
         finish(CloseInfo{event.code, std::string{event.reason}, event.clean});
@@ -689,7 +733,7 @@ Result<void> Connection::apply_send_policy(Result<void> result) {
         return result;
     }
     if (ctx_.config.slow_consumer == SlowConsumerPolicy::Close) {
-        log(LogLevel::Warn, "slow consumer, closing");
+        log(LogLevel::Warn, "slow_consumer", "slow consumer, closing");
         count(Metric::SlowConsumerDrops);
         close(CloseCode::PolicyViolation, "slow consumer");  // the Close has its own queue slot
     } else {
@@ -786,7 +830,7 @@ void Connection::stream_abandon() noexcept {
     if (phase_ != Phase::Established || !session_ || !session_->message_open()) {
         return;
     }
-    log(LogLevel::Warn, "handler dropped an unfinished message, closing");
+    log(LogLevel::Warn, "handler_misuse", "handler dropped an unfinished message, closing");
     close(CloseCode::InternalError, "unfinished message");
 }
 
@@ -799,9 +843,11 @@ void Connection::close(CloseCode code, std::string_view reason) {
     if (session_->close(code, reason)) {
         return;
     }
-    log(LogLevel::Warn, "handler asked for a close code that cannot be sent");
+    log(LogLevel::Warn, "handler_misuse", "handler asked for a close code that cannot be sent");
     if (!session_->close(CloseCode::InternalError, "internal error")) {
-        log(LogLevel::Error, "cannot close with 1011");  // 1011 is always sendable: unreachable
+        log(LogLevel::Error,
+            "internal_error",
+            "cannot close with 1011");  // 1011 is always sendable: unreachable
     }
 }
 
@@ -839,10 +885,26 @@ void Connection::finish(const std::optional<CloseInfo>& info) {
     if (opened_) {
         opened_ = false;
         const CloseInfo reported = info.value_or(CloseInfo{});
+        log_closed(reported.code);
         count(close_metric(reported.code));
         guarded([&] { handler_->on_close(*this, reported); });
     }
     ctx_.host.retire(id_);
+}
+
+void Connection::log_closed(CloseCode code) const {
+    if (!ctx_.host.log_enabled(LogLevel::Debug)) {
+        return;
+    }
+    // "connection closed, code 1001": fixed text and a number, built on the stack.
+    constexpr std::string_view kPrefix = "connection closed, code ";
+    std::array<char, 40> text{};
+    char* const end = std::ranges::copy(kPrefix, text.begin()).out;
+    const auto converted =
+        std::to_chars(end, text.data() + text.size(), static_cast<unsigned>(code));
+    log(LogLevel::Debug,
+        "conn_close",
+        std::string_view{text.data(), static_cast<std::size_t>(converted.ptr - text.data())});
 }
 
 void Connection::release() noexcept {
@@ -885,7 +947,7 @@ bool Connection::arm(TimerHandle& slot,
         ctx_.host.run_after(delay, [this, action] { (this->*action)(); });
     if (!timer) {
         slot = TimerHandle{};
-        log(LogLevel::Error, "cannot arm a timer");
+        log(LogLevel::Error, "timer_failure", "cannot arm a timer");
         return false;
     }
     slot = *timer;
@@ -902,7 +964,9 @@ void Connection::disarm(TimerHandle& slot) noexcept {
 void Connection::on_handshake_timeout() {
     handshake_timer_ = TimerHandle{};
     if (phase_ == Phase::Handshaking) {
-        log(LogLevel::Info, "handshake timeout");  // EC-H20: no response is owed
+        log(LogLevel::Info,
+            "handshake_timeout",
+            "handshake timeout");  // EC-H20: no response is owed
         finish(std::nullopt);
     }
 }
@@ -940,7 +1004,7 @@ void Connection::on_reread() {
 void Connection::on_write_stall() {
     stall_timer_ = TimerHandle{};
     if (phase_ != Phase::Finished) {
-        log(LogLevel::Warn, "peer accepts no data, dropping the connection");
+        log(LogLevel::Warn, "peer_stalled", "peer accepts no data, dropping the connection");
         count(Metric::SlowConsumerDrops);
         drop_transport();
     }
@@ -952,8 +1016,20 @@ void Connection::count(Metric metric, std::uint64_t amount) const noexcept {
     }
 }
 
-void Connection::log(LogLevel level, std::string_view message) const {
-    ctx_.host.log(level, id_, message);
+void Connection::log(LogLevel level, std::string_view event, std::string_view message) const {
+    if (!ctx_.host.log_enabled(level)) {
+        return;  // nothing below is worth its cost for a line nobody wants
+    }
+    // The address is personal data: only with log_peer (ADR-0037 section 4). Formatting it costs an
+    // allocation, which a rate-limited warning can afford.
+    std::string peer;
+    if (ctx_.config.log_peer) {
+        try {
+            peer = format_endpoint(client_);
+        } catch (const std::exception&) {  // NOLINT(bugprone-empty-catch): a log line is optional
+        }
+    }
+    ctx_.host.log(LogRecord{level, event, message, id_, peer});
 }
 
 }  // namespace wsrv

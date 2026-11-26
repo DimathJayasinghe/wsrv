@@ -24,6 +24,29 @@ public:
     [[nodiscard]] virtual TimePoint now() const noexcept = 0;
 };
 
+/// Calendar time, for labels only (a log line's timestamp). Never for a deadline: it can jump
+/// (EC-N16).
+using WallTime = std::chrono::system_clock::time_point;
+
+class IWallClock {
+public:
+    IWallClock() = default;
+    IWallClock(const IWallClock&) = delete;
+    IWallClock& operator=(const IWallClock&) = delete;
+    IWallClock(IWallClock&&) = delete;
+    IWallClock& operator=(IWallClock&&) = delete;
+    virtual ~IWallClock() = default;
+
+    [[nodiscard]] virtual WallTime now() const noexcept = 0;
+};
+
+class SystemWallClock final : public IWallClock {
+public:
+    [[nodiscard]] WallTime now() const noexcept override {
+        return std::chrono::system_clock::now();
+    }
+};
+
 /// The real clock.
 class SteadyClock final : public IClock {
 public:

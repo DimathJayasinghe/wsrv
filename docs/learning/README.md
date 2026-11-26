@@ -55,5 +55,6 @@ We teach as we build. Each lesson answers three questions: **What** are we build
 | 48 | [One task per connection does not scale](48-one-task-per-connection-does-not-scale.md) | 1.0 | written |
 | 49 | [A wake-up per message](49-a-wake-up-per-message-and-how-to-find-it.md) | 1.0 | written |
 | 50 | [Two system calls that carry no information](50-the-read-that-only-says-no-and-the-pid-that-never-changes.md) | 1.0 | written |
+| 51 | [A log line that cannot be forged and cannot stall the server](51-a-log-line-that-cannot-be-forged-and-cannot-stall-the-server.md) | 1.0 | written |
 
 Lesson template: *Goal → Background (the problem) → Design (why this way) → Walkthrough (code, small steps) → Tests (what proves it works) → Pitfalls → Exercises.*

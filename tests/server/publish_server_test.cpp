@@ -4,6 +4,7 @@
 // reaches the action or a body buffer, a long head, a body that never ends, bytes smuggled after
 // the body, a transfer coding, too many clients, and off unless asked for.
 #include "server/server_builder.hpp"
+#include "support/fakes.hpp"
 #include "support/raw_socket.hpp"
 #include "support/running_server.hpp"
 #include "support/tcp_client.hpp"
@@ -78,11 +79,13 @@ private:
 
 struct Fixture {
     SilentFactory factory;
+    wsrv::test::SharedLogger logs;
     Recorder recorder;
     wsrv::PublishSources sources = recorder.sources();
     wsrv::ServerBuilder builder;
     Fixture() {
         builder.listen("127.0.0.1", 0).handler_factory(factory).admin("127.0.0.1", 0);
+        builder.logger(logs);
         builder.publish("127.0.0.1", 0, sources);
         builder.config().handshake.allowed_origins = {"https://app.example.com"};
         builder.config().publish_request_timeout = 400ms;
@@ -163,6 +166,30 @@ TEST(PublishServer, AWrongTokenNeverReachesTheActionAndANeverEndingBodyIsNeverWa
     EXPECT_LT(std::chrono::steady_clock::now() - start, 300ms) << "answered before the deadline";
     EXPECT_TRUE(f.recorder.calls().empty());
     EXPECT_NE(response.find("WWW-Authenticate: Bearer\r\n"), std::string::npos);
+}
+
+TEST(PublishServer, ARefusedPublishIsALoggedWarningThatNeverRepeatsTheCredential) {  // ADR-0037
+    Fixture f;
+    RunningServer running{f.builder};
+    const std::string wrong(40, 'x');
+    const std::string response = round_trip(publish_port(running), post("?topic=t", "hi", wrong));
+    ASSERT_TRUE(starts_with(response, "HTTP/1.1 401 ")) << response;
+    const auto line = f.logs.wait_for("publish_rejected");
+    ASSERT_TRUE(line.has_value());
+    EXPECT_EQ(line->level, wsrv::LogLevel::Warn);
+    EXPECT_NE(line->message.find("401"), std::string::npos) << line->message;
+    const std::string all = f.logs.everything();
+    EXPECT_EQ(all.find(wrong), std::string::npos) << "the credential the peer sent is never logged";
+    EXPECT_EQ(all.find(kToken), std::string::npos) << "nor the real one";
+}
+
+TEST(PublishServer,
+     AnAcceptedPublishWritesNoWarning) {  // ADR-0037: success is a counter, not a line
+    Fixture f;
+    RunningServer running{f.builder};
+    const std::string response = round_trip(publish_port(running), post("?topic=room.7", "hello"));
+    ASSERT_TRUE(starts_with(response, "HTTP/1.1 200 OK")) << response;
+    EXPECT_FALSE(f.logs.wait_for("publish_rejected", 200ms).has_value());
 }
 
 TEST(PublishServer, ATokenThatIsAPrefixOrLongerOrEmptyIsRefusedToo) {

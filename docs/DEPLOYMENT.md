@@ -45,6 +45,7 @@ The settings most deployments need:
 | `admin_port` | `/healthz`, `/readyz` and `/metrics` (loopback, no authentication). |
 | `broker`, `publish_port`, `publish_token_file` | Rooms and HTTP publishing from other processes. |
 | `tls_cert`, `tls_key` | TLS on `wsrvd` itself; or terminate TLS at the proxy and leave these out. |
+| `log_level`, `log_peer` | One structured line per event on stderr (`docker logs`, `kubectl logs`, `journalctl -u wsrvd`), at `info` by default; the client address is left out unless `log_peer` is on (OPERATIONS 2). |
 
 ## 3. Health
 
@@ -125,6 +126,7 @@ Rooms and subscriptions live inside each `wsrvd`. To reach every subscriber, **p
 - [ ] `trusted_proxy` is your proxy; per-IP limits are on (not `0`).
 - [ ] The IPC socket directory is mode 0700 and the worker runs as the daemon's user.
 - [ ] The publish port and the admin port are not reachable from outside.
+- [ ] Your log collection reads the container's or unit's stderr, and an alert exists for `level=error` and for a burst of `event=app_rejected` (OPERATIONS 2.3). The default does not log client addresses; decide whether you want `log_peer`.
 - [ ] The healthcheck/readiness probe is wired; `SIGTERM` reaches the daemon (not a shell wrapper).
 - [ ] Clients reconnect with backoff (`clients/js`, or your own loop); the worker runs under `Supervisor` and your process supervisor restarts it.
 - [ ] `max_connections` is below the descriptor limit and the memory you have.

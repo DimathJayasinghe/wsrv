@@ -42,12 +42,37 @@ jobs:
           echo "health after wait: $status"
           docker logs wsrvd-env
           [ "$status" = healthy ]
+      - name: The daemon says what it is doing, one structured line per event (ADR-0037)
+        run: |
+          logs="$(docker logs wsrvd-env 2>&1)"
+          echo "$logs" | grep -Eq '^ts=[0-9T:.Z-]+ level=info event=ipc_ready msg="'
+          echo "$logs" | grep -Eq '^ts=[0-9T:.Z-]+ level=info event=listening msg="'
+          # Every line on stderr is a log line: nothing unstructured has crept back in.
+          ! echo "$logs" | grep -Ev '^ts=[0-9T:.Z-]+ level=(error|warn|info|debug) event=[a-z_]+ ' | grep .
       - name: Reports unhealthy once the daemon is gone
         run: |
           # The probe is the binary's own mode: ask it directly with the container's environment.
           docker exec wsrvd-env /usr/local/bin/wsrvd --healthcheck
           docker kill wsrvd-env
           ! docker run --rm -e WSRVD_IPC_SOCKET=/nonexistent/ipc.sock wsrvd:ci --healthcheck
+      - name: The log level is honoured and a misspelled one stops the start
+        run: |
+          docker run -d --name wsrvd-quiet -e WSRVD_LOG_LEVEL=warn wsrvd:ci
+          for i in $(seq 1 30); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' wsrvd-quiet)" = healthy ] && break
+            sleep 2
+          done
+          quiet="$(docker logs wsrvd-quiet 2>&1)"
+          echo "at warn level: $quiet"
+          echo "$quiet" | grep -q 'event=ipc_no_token'      # a warning is still said
+          ! echo "$quiet" | grep -q 'event=listening'       # info is not
+          docker kill wsrvd-quiet
+          set +e
+          out=$(docker run --rm -e WSRVD_LOG_LEVEL=loud wsrvd:ci 2>&1)
+          code=$?
+          echo "$out" | head -3
+          [ "$code" -ne 0 ]
+          echo "$out" | grep -q WSRVD_LOG_LEVEL
       - name: A mistyped WSRVD_ variable stops the start and names itself
         run: |
           set +e

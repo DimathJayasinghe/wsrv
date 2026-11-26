@@ -164,6 +164,24 @@ TEST_F(EnvironmentTest, AnEnvironmentAloneIsEnoughAndNamesAreTheUpperCasedKeys) 
     EXPECT_EQ(startup->config.embedded().server().max_connections_per_ip, 7U);
 }
 
+TEST_F(EnvironmentTest, TheLogSettingsAreFlagsAndVariablesLikeAnyOther) {  // ADR-0037
+    const auto from_env = run_with(
+        {}, {"WSRVD_IPC_SOCKET=/run/a.sock", "WSRVD_LOG_LEVEL=debug", "WSRVD_LOG_PEER=true"});
+    ASSERT_TRUE(from_env.has_value());
+    EXPECT_EQ(from_env->config.embedded().log_level(), wsrv::LogLevel::Debug);
+    EXPECT_TRUE(from_env->config.embedded().server().log_peer);
+
+    const auto flag =
+        run_with({"--log-level=error"}, {"WSRVD_IPC_SOCKET=/run/a.sock", "WSRVD_LOG_LEVEL=debug"});
+    ASSERT_TRUE(flag.has_value());
+    EXPECT_EQ(flag->config.embedded().log_level(), wsrv::LogLevel::Error)
+        << "a flag wins over the environment";
+
+    const auto misspelled =
+        run_with({}, {"WSRVD_IPC_SOCKET=/run/a.sock", "WSRVD_LOG_LEVEL=verbose"});
+    EXPECT_FALSE(misspelled.has_value()) << "a level that does not exist is not silently info";
+}
+
 TEST_F(EnvironmentTest, ArgumentsAndFilesOverrideTheEnvironmentAndFlagsStillWinOverFiles) {
     const std::string file = write("wsrvd.conf", "listen_port = 7000\n");
     const std::vector<std::string> env{"WSRVD_IPC_SOCKET=/run/a.sock", "WSRVD_LISTEN_PORT=9100"};

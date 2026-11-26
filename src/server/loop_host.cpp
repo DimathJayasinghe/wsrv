@@ -6,11 +6,13 @@
 
 namespace wsrv {
 
-void LoopHost::log(LogLevel level, ConnectionId id, std::string_view message) {
+bool LoopHost::log_enabled(LogLevel level) const noexcept {
+    return logger_.enabled(level);
+}
+
+void LoopHost::log(const LogRecord& record) {
     try {
-        std::string line = "conn=" + std::to_string(id) + " ";
-        line.append(message);
-        logger_.log(level, line);
+        logger_.log(record);
     } catch (const std::exception&) {  // NOLINT(bugprone-empty-catch): logging must never fail a
                                        // connection
     }

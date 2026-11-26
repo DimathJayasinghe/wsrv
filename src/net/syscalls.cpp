@@ -50,6 +50,10 @@ SysResult LinuxSyscalls::write(int fd, const void* buf, std::size_t count) {
     return captured(::write(fd, buf, count));
 }
 
+SysResult LinuxSyscalls::poll(pollfd* fds, nfds_t count, int timeout_ms) {
+    return captured(::poll(fds, count, timeout_ms));
+}
+
 SysResult LinuxSyscalls::send(int fd, const void* buf, std::size_t count, int flags) {
     return captured(::send(fd, buf, count, flags));
 }

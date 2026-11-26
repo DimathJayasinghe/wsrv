@@ -12,7 +12,7 @@ TEST(Logger, NullLoggerAcceptsEveryLevel) {
                        wsrv::LogLevel::Info,
                        wsrv::LogLevel::Warn,
                        wsrv::LogLevel::Error}) {
-        logger.log(level, "message");
+        logger.log(level, "event", "message");
     }
     SUCCEED();
 }
@@ -20,8 +20,8 @@ TEST(Logger, NullLoggerAcceptsEveryLevel) {
 TEST(Logger, RecordingLoggerKeepsLevelAndMessageInOrder) {
     wsrv::test::RecordingLogger logger;
     wsrv::ILogger& as_interface = logger;
-    as_interface.log(wsrv::LogLevel::Warn, "first");
-    as_interface.log(wsrv::LogLevel::Error, "second");
+    as_interface.log(wsrv::LogLevel::Warn, "first_event", "first");
+    as_interface.log(wsrv::LogLevel::Error, "second_event", "second");
     ASSERT_EQ(logger.entries.size(), 2U);
     EXPECT_EQ(logger.entries[0].level, wsrv::LogLevel::Warn);
     EXPECT_EQ(logger.entries[0].message, "first");

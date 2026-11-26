@@ -90,7 +90,7 @@ refuse(ILogger& logger, std::string_view what, const std::string& path, std::str
     line += path;
     line += "': ";
     line += take_openssl_reason();
-    logger.log(LogLevel::Error, line);
+    logger.log(LogLevel::Error, "tls_config", line);
     return fail(ErrorCode::InvalidConfig, context);
 }
 
@@ -183,6 +183,7 @@ Result<UniqueSslCtx>
 build_context(const std::string& chain_file, const std::string& key_file, ILogger& logger) {
     if (chain_file.empty() || key_file.empty()) {
         logger.log(LogLevel::Error,
+                   "tls_config",
                    "tls: a certificate chain file and a private key file are required");
         return fail(ErrorCode::InvalidConfig, "tls: a certificate and a key file are required");
     }
@@ -248,7 +249,7 @@ int select_certificate(SSL* ssl, int* /*alert*/, void* arg) {
 /// certificate held to the rules of the default one.
 Result<void> build_entries(const TlsConfig& config, ILogger& logger, TlsMaterial& material) {
     if (config.sni.size() > kMaxSniEntries) {
-        logger.log(LogLevel::Error, "tls: too many SNI entries");
+        logger.log(LogLevel::Error, "tls_config", "tls: too many SNI entries");
         return fail(ErrorCode::InvalidConfig, "tls: too many SNI entries");
     }
     std::unordered_set<std::string> seen;
@@ -256,11 +257,13 @@ Result<void> build_entries(const TlsConfig& config, ILogger& logger, TlsMaterial
     for (const TlsSniEntry& entry : config.sni) {
         auto pattern = sni::normalise_pattern(entry.name);
         if (!pattern) {
-            logger.log(LogLevel::Error, "tls: an SNI name is not a host name or a *.wildcard");
+            logger.log(LogLevel::Error,
+                       "tls_config",
+                       "tls: an SNI name is not a host name or a *.wildcard");
             return fail(ErrorCode::InvalidConfig, "tls: an SNI name is not valid");
         }
         if (!seen.insert(*pattern).second) {
-            logger.log(LogLevel::Error, "tls: the same SNI name is configured twice");
+            logger.log(LogLevel::Error, "tls_config", "tls: the same SNI name is configured twice");
             return fail(ErrorCode::InvalidConfig, "tls: an SNI name is listed twice");
         }
         auto ctx = build_context(entry.certificate_chain_file, entry.private_key_file, logger);
@@ -322,11 +325,16 @@ Result<void> TlsServerContext::reload() {
     try {
         auto material = build(config_, *logger_);
         if (!material) {
-            logger_->log(LogLevel::Error, "tls: reload failed, keeping the certificate in use");
+            logger_->log(LogLevel::Error,
+                         "tls_reload_failed",
+                         "tls: reload failed, keeping the certificate in use");
             return std::unexpected{material.error()};
         }
-        const std::lock_guard lock{mutex_};
-        current_ = std::move(*material);
+        {
+            const std::lock_guard lock{mutex_};
+            current_ = std::move(*material);
+        }
+        logger_->log(LogLevel::Info, "tls_reloaded", "tls: certificate reloaded");
         return {};
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::ResourceExhausted, "tls: out of memory");

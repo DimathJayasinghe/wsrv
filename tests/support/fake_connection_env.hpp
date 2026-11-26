@@ -178,8 +178,15 @@ public:
     [[nodiscard]] TimePoint now() const noexcept override {
         return clock.now();
     }
-    void log(LogLevel level, ConnectionId /*id*/, std::string_view message) override {
-        logs.push_back({level, std::string{message}});
+    [[nodiscard]] bool log_enabled(LogLevel level) const noexcept override {
+        return level >= min_level;
+    }
+    void log(const LogRecord& record) override {
+        logs.push_back({record.level,
+                        std::string{record.event},
+                        std::string{record.message},
+                        record.conn,
+                        std::string{record.peer}});
     }
     void retire(ConnectionId id) override {
         retired.push_back(id);
@@ -201,6 +208,10 @@ public:
         });
     }
 
+    [[nodiscard]] bool logged_event(std::string_view event) const {
+        return std::ranges::any_of(logs, [&](const auto& entry) { return entry.event == event; });
+    }
+
     FakeClock clock;
     bool watching = false;
     PollEvents interest_now = PollEvents::None;
@@ -208,6 +219,7 @@ public:
     bool fail_rewatch = false;  // the loop refuses to change the registration (EC-N, memory)
     std::vector<ConnectionId> retired;
     std::vector<RecordingLogger::Entry> logs;
+    LogLevel min_level = LogLevel::Trace;  ///< what the (fake) logger wants
 
 private:
     struct Timer {

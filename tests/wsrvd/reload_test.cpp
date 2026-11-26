@@ -31,6 +31,7 @@ TEST(Reload, WithoutTlsThereIsNothingToReloadAndTheDaemonSaysSo) {
     ASSERT_TRUE((*server)->start().has_value());
     const auto outcome = reload_tls_on_hangup(**server);
     EXPECT_FALSE(outcome.reloaded);
+    EXPECT_TRUE(outcome.skipped);
     EXPECT_NE(outcome.line.find("not enabled"), std::string::npos) << outcome.line;
 }
 
@@ -79,6 +80,7 @@ TEST(Reload, ABrokenRenewalKeepsTheOldCertificateAndTheLineNamesTheFile) {
     material.dir.write("chain.pem", "garbage", kPublic);
     const auto outcome = reload_tls_on_hangup(**server);
     EXPECT_FALSE(outcome.reloaded);
+    EXPECT_FALSE(outcome.skipped) << "a failure is not 'nothing to do'";
     EXPECT_NE(outcome.line.find("chain.pem"), std::string::npos) << outcome.line;
     EXPECT_NE(outcome.line.find("keeping"), std::string::npos) << outcome.line;
 

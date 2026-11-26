@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <string_view>
 
+#include <poll.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 
@@ -72,6 +73,9 @@ public:
     virtual SysResult accept4(int fd, sockaddr* peer, socklen_t* peer_len, int flags) = 0;
     virtual SysResult read(int fd, void* buf, std::size_t count) = 0;
     virtual SysResult write(int fd, const void* buf, std::size_t count) = 0;
+    /// poll(2). The logger asks with a zero timeout whether a descriptor can take a line
+    /// (ADR-0037).
+    virtual SysResult poll(pollfd* fds, nfds_t count, int timeout_ms) = 0;
     virtual SysResult send(int fd, const void* buf, std::size_t count, int flags) = 0;
     virtual SysResult shutdown(int fd, int how) = 0;
     virtual SysResult setsockopt(int fd, SockOpt option, const void* value, socklen_t len) = 0;
@@ -118,6 +122,7 @@ public:
     SysResult accept4(int fd, sockaddr* peer, socklen_t* peer_len, int flags) override;
     SysResult read(int fd, void* buf, std::size_t count) override;
     SysResult write(int fd, const void* buf, std::size_t count) override;
+    SysResult poll(pollfd* fds, nfds_t count, int timeout_ms) override;
     SysResult send(int fd, const void* buf, std::size_t count, int flags) override;
     SysResult shutdown(int fd, int how) override;
     SysResult setsockopt(int fd, SockOpt option, const void* value, socklen_t len) override;

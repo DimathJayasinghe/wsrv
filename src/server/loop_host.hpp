@@ -50,7 +50,8 @@ public:
     [[nodiscard]] TimePoint now() const noexcept override {
         return clock_.now();
     }
-    void log(LogLevel level, ConnectionId id, std::string_view message) override;
+    void log(const LogRecord& record) override;
+    [[nodiscard]] bool log_enabled(LogLevel level) const noexcept override;
     void retire(ConnectionId id) override {
         sink_.retire(id);
     }

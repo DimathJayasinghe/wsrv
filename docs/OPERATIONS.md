@@ -122,12 +122,76 @@ None of them has an "off" value; a refused value changes nothing and `wsrv_confi
 
 ## 2. Logging
 
-- Structured, one event per line. Fields: `ts` (RFC 3339 UTC), `level`, `conn` (ID), `peer`, `event`, `code`, `msg`.
-- Levels: `error` (server cannot do its job), `warn` (peer misbehaviour at scale, config oddities), `info` (lifecycle: start, stop, reload), `debug` (per-connection events), `trace` (frames; compiled out in release).
-- Peer-supplied data is quoted and control-char-escaped; length-capped.
-- Rate-limited logs for noisy events (bad handshakes, resets) with a suppression counter.
-- No secrets, tokens, cookies, or payloads at any level above `trace`; `trace` payload logging requires an explicit unsafe flag.
-- Logging is asynchronous or non-blocking relative to the loop: a slow log sink must not stall I/O (bounded queue; drop-with-counter on overflow).
+`wsrvd` and the embedded server (PHP FFI) write **one line per event to stderr**. Nothing else is written there while the server runs, and nothing is ever written to a file by wsrv: systemd (`journalctl -u wsrvd`), Docker (`docker logs`) and Kubernetes (`kubectl logs`) already collect, rotate and ship stderr. Decision record: ADR-0037.
+
+```
+ts=2026-11-26T12:00:00.123Z level=info event=listening msg="server: websocket listening on port 8080"
+ts=2026-11-26T12:00:07.884Z level=warn event=origin_refused conn=17 msg="handshake refused: the Origin header is not allowed"
+ts=2026-11-26T12:00:09.001Z level=warn event=ip_limit suppressed=412 msg="server: per-IP limit reached, refusing clients"
+```
+
+### 2.1 The line
+
+| Field | Meaning |
+|---|---|
+| `ts` | RFC 3339, UTC, milliseconds |
+| `level` | `error`, `warn`, `info` or `debug` |
+| `event` | a stable name (section 2.3): match on this in alerts, not on the text |
+| `conn` | the connection number, to follow one connection through its lines; absent when the line is not about one (the same number the application sees as the connection id) |
+| `peer` | the client address, **only with `log_peer`** (section 2.2) |
+| `suppressed` | present when the line stands for more than one: how many of this event were held back since the last line (section 2.4) |
+| `dropped` | present when earlier lines could not be written (section 2.4) |
+| `msg` | a short sentence for people, always in double quotes |
+
+Field names and event names are stable within 1.x (new ones may be added; a parser must ignore what it does not know). The `msg` text is not: do not match on it.
+
+One event is exactly one line, whatever a client sent: `msg` is quoted, `\` `"` and every control character and byte above 0x7e are escaped (`\n`, `\xNN`), so a hostile client cannot forge a line or smuggle a terminal escape. A line is at most 512 bytes. In practice the message is fixed text and carries nothing the client sent.
+
+### 2.2 Settings
+
+| Key | Default | |
+|---|---|---|
+| `log_level` | `info` | `error`, `warn`, `info` or `debug`. A value below the level costs one comparison. Any other word is a startup error (a typo does not silently mean `info`). |
+| `log_peer` | `false` | Put the client's address in the lines about a connection. An IP address is personal data (GDPR), so it is off unless you decide you need it: turn it on to find out who is hitting a limit, leave it off to keep the logs free of personal data. |
+
+Flags, `--config` lines and environment: `--log-level=warn`, `log_level = warn`, `WSRVD_LOG_LEVEL=warn`, `WSRVD_LOG_PEER=true`. In the embedded server they are ordinary keys (`log_level`, `log_peer`).
+
+Never logged at any level: tokens and credentials, cookies and other headers, message payloads, anything the client chose (an Origin, a path, a close reason). The line says that the Origin was refused, not which one it was.
+
+### 2.3 Events
+
+| Event | Level | Meaning and what to do |
+|---|---|---|
+| `listening` | info | the WebSocket port is open (`msg` has the port) |
+| `publish_listening`, `admin_listening` | info | the publish / admin endpoint is open (`msg` has the address) |
+| `publish_exposed`, `admin_exposed` | warn | that endpoint is not on loopback: keep it on a private network (sections 3.1 and 3.1.1) |
+| `ipc_ready` | info | `wsrvd` is ready for the application on its socket |
+| `ipc_no_token` | warn | no `ipc_token_file`: only the peer uid check protects the socket |
+| `app_connected`, `app_disconnected` | info (warn if cut off for not reading) | the application's link came and went: connections it knew are closed with 1012 after `shutdown_grace_ms` unless a new one connects |
+| `app_rejected` | warn | an application was refused: another user, a second one, a wrong token or version, no HELLO in time. Many of these: a misconfigured worker (compare tokens and the socket path) |
+| `tls_reloaded` | info | SIGHUP picked up a new certificate |
+| `tls_reload_skipped` | info | SIGHUP, but TLS is off |
+| `tls_reload_failed`, `tls_config` | error | the certificate or key cannot be used; `tls_config` lines name the file and the reason. The old certificate stays in use |
+| `conn_limit`, `ip_limit`, `loop_overloaded` | warn | a limit refused a client (section 1.2 and `max_connections`) |
+| `origin_refused` | warn | the Origin header is not in `allow_origin`. A wrong list shows up here at once; scanners show up as a rate-limited stream |
+| `handshake_refused` | info or warn | the upgrade was refused for another reason (malformed, too large, no one to decide) |
+| `handshake_timeout`, `handshake_decision_timeout` | info, warn | the upgrade was not completed in time (slow clients; the application did not answer the handshake hook) |
+| `decision_queue_full` | warn | too many upgrades waiting for the application's decision |
+| `slow_consumer`, `peer_stalled` | warn | a connection was closed for not reading what was sent to it |
+| `protocol_error` | info | the peer broke RFC 6455 |
+| `handler_misuse` | warn | the application's handler did something not allowed (an unfinished message, a close code that cannot be sent) |
+| `publish_rejected` | warn | the publish endpoint refused a request; `msg` has the status (401: wrong token) |
+| `conn_open`, `conn_close` | debug | each connection, and its close code |
+| `descriptor_limit` | error | the start failed: `ulimit -n` is below what `max_connections` needs |
+| `descriptor_limit_raised` | info | the soft descriptor limit was raised to what is needed |
+| `start_failed`, `internal_error`, `out_of_memory`, `poller_failure`, `timer_failure`, `transport_failed`, `handler_exception`, `no_handler`, `shutdown_failed` | error | the server could not do its job for this connection or loop; a steady stream is a bug or an exhausted machine: collect the lines and report them |
+| `shutdown` | info | the stop signal arrived |
+
+### 2.4 It never stalls the server, and it cannot be flooded
+
+- **Per event, a burst then a trickle.** Each event may write 10 lines at once, then one a second. What was held back is counted and the next line of that event says `suppressed=N`. A client causing a million refused handshakes costs about one line a second. This holds at every level, `debug` too: on a busy server `conn_open` and `conn_close` are a sample, and `suppressed=` tells you how many there were (the connection counters on `/metrics` are exact).
+- **A stuck destination costs lines, never time.** Each line goes out in one non-blocking write after a check that the descriptor can take it. If stderr is a pipe that nobody reads (a hung log driver), the line is dropped and counted, the I/O loop never waits, and the next line that gets out says `dropped=N`. The counters on `/metrics` are the record that does not depend on the log.
+- **No log thread**, no file, no rotation: stderr is the interface.
 
 ## 3. Metrics (Prometheus text exposition on a separate admin listener, loopback by default)
 
@@ -252,14 +316,14 @@ wsrvd --ipc-socket=/run/wsrv/ipc.sock --ipc-token-file=/etc/wsrv/ipc.token \
 - `--config=FILE` reads `key = value` lines; later arguments override earlier ones. Keys: `ipc_socket`, `ipc_token_file`, `ipc_max_frame`, `ipc_hello_timeout_ms`, `ipc_stall_ms`, the handshake-hook keys below, plus every embedded-server key (`listen_host`, `listen_port`, `threads`, `tls_cert`, `tls_key`, `allow_origin`, `allow_missing_origin`, `max_message_size`, `max_connections`, `shutdown_grace_ms`, ...).
 - **wss:// (TLS)**: add `--tls-cert=/etc/wsrv/cert.pem --tls-key=/etc/wsrv/key.pem` (PEM; the certificate file holds the server certificate first, then any intermediates). Setting either makes the port TLS-only (TLS 1.2 and 1.3, forward-secret AEAD suites only, ALPN `http/1.1`); plain `ws://` is not served on that port. The key file must not be readable by "others" (mode `0640` or `0600`) and must have no passphrase; an expired certificate, a key that does not match, a missing file, only one of the two options, or a build without TLS (`WSRV_ENABLE_TLS=OFF`) all stop the start-up with the reason on stderr: the daemon never falls back to plain text. Details and the threat model: ADR-0019.
 - **Several certificates (SNI)**: repeat `--tls-sni=NAME=CERT_FILE:KEY_FILE` (at most 64), for example `--tls-sni=app.example.com=/etc/wsrv/app.pem:/etc/wsrv/app.key --tls-sni='*.example.org=/etc/wsrv/org.pem:/etc/wsrv/org.key'`. The client names the host it wants in its TLS hello; matching ignores case, an exact name beats a wildcard, and `*.example.org` covers exactly one label (`a.example.org`, not `example.org` or `a.b.example.org`; `*.org` is refused). A client that sends no name (or an IP address, or an unknown name) receives the `--tls-cert` certificate, so that one is required and acts as the default. Every certificate is held to the same rules as the default (valid now, key matches, key file not open to others), and all of them are re-read on `SIGHUP`; if any one fails, nothing changes. Paths must not contain `:`.
-- The daemon prints `ipc socket ... ready` and `websocket server listening on port N` on stderr when it is ready.
+- The daemon logs `event=ipc_ready` and `event=listening` on stderr when it is ready (section 2). Mistakes in the command line itself are printed plainly with the usage text, before any logger exists.
 
 ### Signals and exit codes
 - `SIGTERM` / `SIGINT`: graceful stop. The IPC server closes first (the socket file is removed), then the WebSocket server sends Close 1001 to every connection, waits up to `shutdown_grace_ms`, closes the rest and joins its threads. Exit code 0.
 - A **second** signal during the graceful stop is not treated specially today (it does not force an immediate exit); use `SIGKILL` if a stop hangs. A stale socket file left by `SIGKILL` is recovered by the next start (it probes the socket and removes it only if nothing answers and it is ours).
 - `wsrvd` installs its signal handling before it creates any other thread (signals are read from a descriptor), so every thread it starts inherits the mask.
 - Exit code 1: bad configuration, unusable socket path or token file, bind failure, or an event-loop error. The reason is printed on stderr.
-- `SIGHUP`: re-read the TLS certificate and key (`tls_cert`, `tls_key`) and use them for new connections; open connections keep the old one. Nothing else is reloaded yet. The daemon logs `tls certificate reloaded`, or `tls reload failed, keeping the old certificate: <file and reason>`, or `tls is not enabled, nothing to reload`. A failed reload never stops the server. Typical use: after the certificate renewal tool (certbot, acme.sh) writes the new files, run `kill -HUP $(pidof wsrvd)` (for systemd: `ExecReload=/bin/kill -HUP $MAINPID`).
+- `SIGHUP`: re-read the TLS certificate and key (`tls_cert`, `tls_key`) and use them for new connections; open connections keep the old one. Nothing else is reloaded yet. The daemon logs `event=tls_reloaded`, or `event=tls_config` lines naming the file and the reason followed by `event=tls_reload_failed` (the old certificate stays), or `event=tls_reload_skipped` when TLS is off. A failed reload never stops the server. Typical use: after the certificate renewal tool (certbot, acme.sh) writes the new files, run `kill -HUP $(pidof wsrvd)` (for systemd: `ExecReload=/bin/kill -HUP $MAINPID`).
 
 ### Fork and process rules
 - `wsrvd` never forks. Run it under a supervisor (systemd, supervisord, a container runtime).
