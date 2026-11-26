@@ -7,9 +7,11 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <mutex>
 #include <optional>
+#include <vector>
 
 namespace wsrv::test {
 
@@ -79,6 +81,19 @@ public:
         const std::lock_guard<std::mutex> lock{mutex_};
         return count_[index(call)];
     }
+    /// One setsockopt(2) call whose value was an int (all the options the server sets are).
+    struct SockOptCall {
+        int level = 0;
+        int name = 0;
+        int value = 0;
+        friend bool operator==(const SockOptCall&, const SockOptCall&) = default;
+    };
+    /// Every int-valued setsockopt call so far, in order (a test checks what the server asked for;
+    /// the kernel still gets the call, so the option really is set).
+    [[nodiscard]] std::vector<SockOptCall> sockopt_calls() const {
+        const std::lock_guard<std::mutex> lock{mutex_};
+        return sockopts_;
+    }
     [[nodiscard]] std::size_t pending_script(Call call) const {
         const std::lock_guard<std::mutex> lock{mutex_};
         return script_[index(call)].size();
@@ -139,6 +154,12 @@ public:
         return real_.shutdown(fd, how);
     }
     SysResult setsockopt(int fd, SockOpt option, const void* v, socklen_t len) override {
+        if (len == sizeof(int)) {
+            int value = 0;
+            std::memcpy(&value, v, sizeof(int));
+            const std::lock_guard<std::mutex> lock{mutex_};
+            sockopts_.push_back(SockOptCall{option.level, option.name, value});
+        }
         if (const auto injected = scripted(Call::SetSockOpt)) {
             return *injected;
         }
@@ -298,6 +319,7 @@ private:
     mutable std::mutex mutex_;
     std::array<std::deque<SysResult>, static_cast<std::size_t>(Call::Count)> script_;
     std::array<std::size_t, static_cast<std::size_t>(Call::Count)> count_{};
+    std::vector<SockOptCall> sockopts_;
     std::optional<FdLimits> pretended_;
 };
 

@@ -150,6 +150,26 @@ TEST(Healthcheck, ADeadWebSocketPortOrAMissingIpcSocketIsUnhealthy) {
     EXPECT_NE(std::string{ipc_result.error().context}.find("ipc"), std::string::npos);
 }
 
+// ADR-0038 section 6: the TCP IPC port is never probed (a probe would be refused as a second
+// application and logged every interval), so a target without an IPC socket only needs the
+// websocket port.
+TEST(Healthcheck, TheTcpTransportHasNoIpcSocketToProbe) {
+    TcpListener websocket;
+    HealthTarget target;
+    target.ws_host = "127.0.0.1";
+    target.ws_port = websocket.port();
+    EXPECT_TRUE(target.ipc_socket.empty());
+    EXPECT_TRUE(check_health(target, 2s).has_value());
+}
+
+TEST(Healthcheck, ATcpConfigurationDescribesNoIpcSocket) {
+    wsrv::wsrvd::DaemonConfig config;
+    ASSERT_TRUE(config.set("ipc_port", "9300").has_value());
+    ASSERT_TRUE(config.set("ipc_token_file", "/run/secrets/ipc.token").has_value());
+    ASSERT_TRUE(config.finish().has_value());
+    EXPECT_TRUE(wsrv::wsrvd::health_target(config).ipc_socket.empty());
+}
+
 TEST(Healthcheck, AnUnspecifiedListenAddressIsProbedOnLoopback) {
     TcpListener websocket;
     UnixListener ipc;

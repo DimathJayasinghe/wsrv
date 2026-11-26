@@ -25,7 +25,7 @@ RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
  && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
 WORKDIR /src
 COPY . .
-RUN cmake --preset release && cmake --build --preset release -j"$(nproc)" --target wsrvd wsrv_shared \
+RUN cmake --preset release -DWSRVD_DEFAULT_IPC_SOCKET=/run/wsrv/ipc.sock && cmake --build --preset release -j"$(nproc)" --target wsrvd wsrv_shared \
  && install -d /out \
  && install -m 0755 "$(find build/release -name wsrvd -type f -perm -u+x | head -1)" /out/wsrvd \
  && install -m 0755 "$(find build/release -name 'libwsrv.so.*.*.*' -type f | head -1)" /out/libwsrv.so
@@ -58,8 +58,9 @@ VOLUME ["/run/wsrv"]
 USER 10001:10001
 # The admin listener (/healthz, /readyz, /metrics) stays on the container's loopback: the healthcheck below
 # can reach it, nothing else can. Bind it wider only behind a network policy (OPERATIONS section 3.1).
-ENV WSRVD_IPC_SOCKET=/run/wsrv/ipc.sock \
-    WSRVD_LISTEN_HOST=0.0.0.0 \
+# The IPC socket's default path is built in (-DWSRVD_DEFAULT_IPC_SOCKET) rather than set here, so that
+# `-e WSRVD_IPC_PORT=9300` alone selects the TCP transport (ADR-0038); setting both is an error.
+ENV WSRVD_LISTEN_HOST=0.0.0.0 \
     WSRVD_LISTEN_PORT=8080 \
     WSRVD_ADMIN_PORT=9101
 EXPOSE 8080

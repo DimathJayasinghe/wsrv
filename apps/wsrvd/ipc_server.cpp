@@ -15,6 +15,8 @@
 #include <utility>
 #include <variant>
 
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 
 #include "ipc/frame_decoder.hpp"
@@ -26,6 +28,14 @@ namespace wsrv::wsrvd {
 namespace {
 
 constexpr int kBacklog = 4;  // one consumer: a handful of waiting connects is plenty
+/// A TCP port can be reached by more than the one application; a longer queue absorbs a burst of
+/// connects (each costs one descriptor and is replaced by the next, see admit()).
+constexpr int kTcpBacklog = 32;
+/// Keepalive for the IPC link (ADR-0038 section 5): a vanished host frees the single application
+/// slot after about idle + interval x count = 60 s instead of the TCP stack's hours.
+constexpr int kKeepIdleSeconds = 30;
+constexpr int kKeepIntervalSeconds = 10;
+constexpr int kKeepProbes = 3;
 constexpr std::size_t kMaxAcceptsPerEvent = 16;
 constexpr std::size_t kMaxReadsPerEvent = 16;   // fairness budget (EC-N07, EC-N08)
 constexpr std::size_t kMaxEventsPerFill = 256;  // events encoded before the buffer is flushed
@@ -42,6 +52,36 @@ constexpr std::uint16_t kCloseServiceRestart = 1012;
 /// one 16 KiB read can produce at most this much (the read loop checks the high-water mark first).
 constexpr std::size_t kAnswerReserve = 16384;
 constexpr int kStatusUnavailable = 503;
+
+/// 127.0.0.0/8 or ::1: an address only this machine can reach.
+bool is_loopback(const Endpoint& endpoint) noexcept {
+    if (!endpoint.v6) {
+        return endpoint.address[0] == 127;
+    }
+    for (std::size_t i = 0; i + 1 < endpoint.address.size(); ++i) {
+        if (endpoint.address[i] != 0) {
+            return false;
+        }
+    }
+    return endpoint.address.back() == 1;
+}
+
+Result<IpcListener> open_listener(ISyscalls& sys, const IpcServerConfig& config) {
+    if (config.tcp) {
+        Result<TcpListener> tcp = TcpListener::open(
+            sys, ListenerConfig{.endpoint = *config.tcp, .backlog = kTcpBacklog, .reuse_port = false});
+        if (!tcp) {
+            return std::unexpected{tcp.error()};
+        }
+        return IpcListener{std::in_place_type<TcpListener>, std::move(*tcp)};
+    }
+    Result<UnixListener> unix_socket = UnixListener::open(
+        sys, UnixListenerConfig{.path = config.socket_path, .backlog = kBacklog});
+    if (!unix_socket) {
+        return std::unexpected{unix_socket.error()};
+    }
+    return IpcListener{std::in_place_type<UnixListener>, std::move(*unix_socket)};
+}
 
 }  // namespace
 
@@ -73,6 +113,10 @@ public:
 
     [[nodiscard]] bool closed() const noexcept {
         return closed_;
+    }
+    /// Connected but not yet through HELLO: it holds no state, so over TCP it may be replaced.
+    [[nodiscard]] bool awaiting_hello() const noexcept {
+        return !closed_ && state_ == State::AwaitHello;
     }
 
     /// Start watching the socket and the HELLO deadline.
@@ -453,15 +497,30 @@ IpcServer::create(EventLoop& loop, ISyscalls& sys, IBackend& backend, IpcServerC
     if (config.max_frame < ipc::kFrameHeaderSize + 1) {
         return fail(ErrorCode::InvalidConfig, "ipc max_frame is too small");
     }
-    Result<UnixListener> listener = UnixListener::open(
-        sys, UnixListenerConfig{.path = config.socket_path, .backlog = kBacklog});
+    if (config.socket_path.empty() == !config.tcp.has_value()) {
+        // Both, or neither: the daemon's configuration already refuses this; a caller that builds
+        // the config by hand must not get an ambiguous server.
+        return fail(ErrorCode::InvalidConfig, "ipc: exactly one of socket_path and tcp");
+    }
+    if (config.tcp && config.token.empty()) {
+        return fail(ErrorCode::InvalidConfig, "ipc: the TCP transport needs a token");
+    }
+    Result<IpcListener> listener = open_listener(sys, config);
     if (!listener) {
         return std::unexpected{listener.error()};
     }
     auto server = std::make_unique<IpcServer>(
         Key{}, loop, sys, backend, std::move(config), std::move(*listener));
+    if (const std::optional<Endpoint>& bound = server->config_.tcp; bound && !is_loopback(*bound)) {
+        // Allowed (a container must bind its own interface so that a published port arrives), but
+        // said out loud: the messages and the token cross this link unencrypted (ADR-0038 section 4).
+        server->note(LogLevel::Warn,
+                     "ipc_plaintext",
+                     "ipc: the TCP link is not encrypted and is not bound to loopback; reach it only "
+                     "over a private network, a tunnel or a published loopback port");
+    }
     server->open_intake(false);  // until an application says HELLO, nobody can answer
-    const Result<WatchHandle> watch = loop.watch(server->listener_.fd(), PollEvents::Read, *server);
+    const Result<WatchHandle> watch = loop.watch(server->listener_fd(), PollEvents::Read, *server);
     if (!watch) {
         return std::unexpected{watch.error()};
     }
@@ -480,7 +539,7 @@ IpcServer::IpcServer(Key /*unused*/,
                      ISyscalls& sys,
                      IBackend& backend,
                      IpcServerConfig config,
-                     UnixListener listener)
+                     IpcListener listener)
     : loop_{loop}, sys_{sys}, backend_{backend}, config_{std::move(config)},
       handshake_{config_.token, config_.max_frame, config_.handshake_hook}, relay_{backend},
       listener_{std::move(listener)} {}
@@ -507,6 +566,43 @@ IpcServer::~IpcServer() {
 
 bool IpcServer::has_consumer() const noexcept {
     return peer_ != nullptr && !peer_->closed();
+}
+
+std::optional<Endpoint> IpcServer::tcp_endpoint() const noexcept {
+    if (const auto* tcp = std::get_if<TcpListener>(&listener_)) {
+        return tcp->local_endpoint();
+    }
+    return std::nullopt;
+}
+
+int IpcServer::listener_fd() const noexcept {
+    if (const auto* tcp = std::get_if<TcpListener>(&listener_)) {
+        return tcp->fd();
+    }
+    const auto* unix_socket = std::get_if<UnixListener>(&listener_);
+    return unix_socket != nullptr ? unix_socket->fd() : -1;
+}
+
+bool IpcServer::is_tcp() const noexcept {
+    return std::holds_alternative<TcpListener>(listener_);
+}
+
+void IpcServer::tune_tcp(const Fd& client) noexcept {
+    // Best effort: a failure costs latency, or a slower notice that a host has vanished, never
+    // correctness. Keepalive failing is worth one line because the slot depends on it.
+    const auto set = [&](int level, int name, int value) noexcept {
+        return sys_.setsockopt(client.get(), {level, name}, &value, sizeof(value)).err == 0;
+    };
+    static_cast<void>(set(IPPROTO_TCP, TCP_NODELAY, 1));
+    const bool keepalive = set(SOL_SOCKET, SO_KEEPALIVE, 1) &&
+                           set(IPPROTO_TCP, TCP_KEEPIDLE, kKeepIdleSeconds) &&
+                           set(IPPROTO_TCP, TCP_KEEPINTVL, kKeepIntervalSeconds) &&
+                           set(IPPROTO_TCP, TCP_KEEPCNT, kKeepProbes);
+    if (!keepalive) {
+        note(LogLevel::Warn,
+             "ipc_keepalive",
+             "ipc: TCP keepalive could not be enabled; a vanished host may hold the slot for long");
+    }
 }
 
 void IpcServer::on_event(PollEvents /*events*/) noexcept {
@@ -603,7 +699,7 @@ void IpcServer::rearm_event_source() noexcept {
 void IpcServer::accept_burst() noexcept {
     for (std::size_t accepted = 0; accepted < kMaxAcceptsPerEvent; ++accepted) {
         const SysResult result =
-            sys_.accept4(listener_.fd(), nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
+            sys_.accept4(listener_fd(), nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
         if (result.err == EINTR || result.err == ECONNABORTED) {
             continue;
         }
@@ -623,17 +719,32 @@ void IpcServer::accept_burst() noexcept {
 }
 
 void IpcServer::admit(Fd client) noexcept {
-    // 1. Who is on the other end, according to the kernel, before a single byte is read.
-    std::uint32_t uid = 0;
-    if (sys_.peer_uid(client.get(), uid).err != 0 || uid != sys_.effective_uid()) {
-        note(LogLevel::Warn, "app_rejected", "ipc: a connection from another user was dropped");
-        return;  // closing the descriptor is the whole answer to a stranger
+    // 1. Who is on the other end. On a Unix socket the kernel says so, before a single byte is
+    // read. Over TCP nobody can say: the token authenticates (HELLO), so there is nothing to check
+    // yet, only the socket to prepare.
+    const bool tcp = is_tcp();
+    if (tcp) {
+        tune_tcp(client);
+    } else {
+        std::uint32_t uid = 0;
+        if (sys_.peer_uid(client.get(), uid).err != 0 || uid != sys_.effective_uid()) {
+            note(LogLevel::Warn, "app_rejected", "ipc: a connection from another user was dropped");
+            return;  // closing the descriptor is the whole answer to a stranger
+        }
     }
-    // 2. One application at a time. First let the current one show that it is gone, if it is.
+    // 2. One application at a time. First let the current one show that it is gone, if it is (and
+    // process a HELLO that has already arrived, so a real application is never thrown away).
     if (peer_ != nullptr && !peer_->closed()) {
         peer_->look_now();
     }
     if (peer_ != nullptr && peer_->closed()) {
+        peer_.reset();
+    }
+    // Over TCP, anyone who can reach the port can connect and stay silent. A connection that has
+    // not said HELLO holds no state, so it must not keep the real application out: replace it
+    // (ADR-0038 section 5). An authenticated application is never displaced.
+    if (tcp && peer_ != nullptr && peer_->awaiting_hello()) {
+        note(LogLevel::Debug, "app_replaced", "ipc: a connection that had not said HELLO was replaced");
         peer_.reset();
     }
     if (peer_ != nullptr) {

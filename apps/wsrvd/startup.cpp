@@ -181,6 +181,18 @@ Result<void> apply_arguments(Startup& startup, std::span<const std::string_view>
     return {};
 }
 
+/// The built-in default Unix socket: set only for the official image (CMake option
+/// WSRVD_DEFAULT_IPC_SOCKET), so that `-e WSRVD_IPC_PORT=...` alone selects TCP there (ADR-0038).
+#ifdef WSRVD_DEFAULT_IPC_SOCKET
+constexpr std::string_view kBuiltInSocket = WSRVD_DEFAULT_IPC_SOCKET;
+#else
+constexpr std::string_view kBuiltInSocket{};
+#endif
+
+/// Over TCP the token is the only authentication and can be guessed from the network: the same
+/// floor as the publish token (ADR-0028, ADR-0038 section 3).
+constexpr std::size_t kMinTcpTokenBytes = 32;
+
 /// The IPC token and the publish token, each read from its file with the permission checks of
 /// read_token_file. The publish token goes straight into the embedded config, never through the key
 /// table, and has the length floor of set_publish_token().
@@ -189,6 +201,10 @@ Result<void> read_secrets(Startup& startup, ISyscalls& sys) {
         Result<std::string> token = read_token_file(sys, startup.config.token_file());
         if (!token) {
             return std::unexpected{token.error()};
+        }
+        if (startup.config.tcp() && token->size() < kMinTcpTokenBytes) {
+            return fail(ErrorCode::InvalidConfig,
+                        "config: the ipc token needs at least 32 bytes over TCP");
         }
         startup.token = std::move(*token);
     }
@@ -202,43 +218,16 @@ Result<void> read_secrets(Startup& startup, ISyscalls& sys) {
     return {};
 }
 
-}  // namespace
-
-Result<Startup> prepare(std::span<const std::string_view> args, ISyscalls& sys) {
-    return prepare(args, {}, sys);
-}
-
-Result<Startup> prepare(std::span<const std::string_view> args,
-                        std::span<const std::string_view> environment,
-                        ISyscalls& sys,
-                        std::string* detail) {
-    Startup startup;
-    if (std::ranges::any_of(args, is_help)) {
-        startup.help = true;  // help wins over a bad variable or flag: it is how one finds out
-        return startup;
-    }
-    if (const Result<void> done = apply_environment(startup.config, environment, detail); !done) {
-        return std::unexpected{done.error()};
-    }
-    if (const Result<void> done = apply_arguments(startup, args); !done) {
-        return std::unexpected{done.error()};
-    }
-    if (const Result<void> done = startup.config.finish(); !done) {
-        return std::unexpected{done.error()};
-    }
-    if (startup.healthcheck) {
-        return startup;  // it only looks at the sockets: no secret needs reading
-    }
-    if (const Result<void> done = read_secrets(startup, sys); !done) {
-        return std::unexpected{done.error()};
-    }
-    return startup;
-}
-
-std::string_view usage() noexcept {
-    return "usage: wsrvd --ipc-socket=PATH [options]\n"
+/// The text printed for --help and after a usage error (data, not one long function).
+constexpr std::string_view kUsageText =
+    "usage: wsrvd --ipc-socket=PATH [options]   (or --ipc-port=PORT, below)\n"
            "\n"
-           "  --ipc-socket=PATH          Unix socket the application connects to (required)\n"
+           "  --ipc-socket=PATH          Unix socket the application connects to\n"
+           "  --ipc-port=PORT  --ipc-host=ADDR (127.0.0.1)  TCP instead of the Unix socket, for a\n"
+           "                             worker on another host or outside Docker; needs\n"
+           "                             --ipc-token-file with a token of at least 32 bytes; the\n"
+           "                             link is plaintext: loopback, a private network or a\n"
+           "                             tunnel only (docs/DEPLOYMENT.md section 11)\n"
            "  --ipc-token-file=FILE      shared token; FILE must be mode 0600 and yours\n"
            "  --ipc-max-frame=BYTES      largest IPC frame (default: max_message_size + 64 KiB)\n"
            "  --ipc-hello-timeout-ms=MS  time allowed for HELLO (default 5000)\n"
@@ -249,7 +238,7 @@ std::string_view usage() noexcept {
            "                             key=value; see docs/OPERATIONS.md section 2\n"
            "  --log-peer=BOOL (false)    put the client address in log lines (personal data)\n"
            "  --healthcheck              probe the running daemon (GET /healthz on the admin port,\n"
-           "                             else connect to the websocket port and the IPC socket);\n"
+           "                             else connect to the websocket port and, for a Unix socket, the IPC socket);\n"
            "                             exit 0 = healthy, 1 = not; reads the same settings\n"
            "  --listen-host=ADDR  --listen-port=PORT  --threads=N  --allow-origin=ORIGIN\n"
            "  --max-message-size=BYTES  --max-connections=N  --shutdown-grace-ms=MS\n"
@@ -281,6 +270,43 @@ std::string_view usage() noexcept {
            "\n"
            "The token is never accepted on the command line or in the environment: it would show\n"
            "in `ps` and /proc. Use ipc_token_file / publish_token_file.\n";
+
+}  // namespace
+
+Result<Startup> prepare(std::span<const std::string_view> args, ISyscalls& sys) {
+    return prepare(args, {}, sys);
+}
+
+Result<Startup> prepare(std::span<const std::string_view> args,
+                        std::span<const std::string_view> environment,
+                        ISyscalls& sys,
+                        std::string* detail) {
+    Startup startup;
+    startup.config.set_default_socket(std::string{kBuiltInSocket});
+    if (std::ranges::any_of(args, is_help)) {
+        startup.help = true;  // help wins over a bad variable or flag: it is how one finds out
+        return startup;
+    }
+    if (const Result<void> done = apply_environment(startup.config, environment, detail); !done) {
+        return std::unexpected{done.error()};
+    }
+    if (const Result<void> done = apply_arguments(startup, args); !done) {
+        return std::unexpected{done.error()};
+    }
+    if (const Result<void> done = startup.config.finish(); !done) {
+        return std::unexpected{done.error()};
+    }
+    if (startup.healthcheck) {
+        return startup;  // it only looks at the sockets: no secret needs reading
+    }
+    if (const Result<void> done = read_secrets(startup, sys); !done) {
+        return std::unexpected{done.error()};
+    }
+    return startup;
+}
+
+std::string_view usage() noexcept {
+    return kUsageText;
 }
 
 }  // namespace wsrv::wsrvd

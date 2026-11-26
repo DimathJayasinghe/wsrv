@@ -78,6 +78,29 @@ std::optional<Result<void>> DaemonConfig::set_publish_key(std::string_view key,
     return std::nullopt;
 }
 
+/// The TCP transport keys (ADR-0038), apart from `set` so it stays within the size the linter
+/// allows. @return nothing when `key` is not one of them.
+std::optional<Result<void>> DaemonConfig::set_transport_key(std::string_view key,
+                                                            std::string_view value) {
+    if (key == "ipc_port") {
+        const auto number = parse_number(value);
+        if (!number || *number > 65535) {
+            return fail(ErrorCode::InvalidConfig, "config: ipc_port must be a number from 0 to 65535");
+        }
+        ipc_port_ = static_cast<std::uint16_t>(*number);
+        return Result<void>{};  // handled
+    }
+    if (key == "ipc_host") {
+        if (value.empty()) {
+            return fail(ErrorCode::InvalidConfig, "config: ipc_host needs an address");
+        }
+        ipc_host_ = std::string{value};  // an address literal; finish() parses it
+        ipc_host_set_ = true;
+        return Result<void>{};  // handled
+    }
+    return std::nullopt;
+}
+
 Result<void> DaemonConfig::set(std::string_view key, std::string_view value) {
     if (key == "ipc_socket") {
         if (value.empty()) {
@@ -100,6 +123,9 @@ Result<void> DaemonConfig::set(std::string_view key, std::string_view value) {
     }
     if (const std::optional<Result<void>> publish = set_publish_key(key, value)) {
         return *publish;
+    }
+    if (const std::optional<Result<void>> transport = set_transport_key(key, value)) {
+        return *transport;
     }
     if (key == "ipc_max_frame") {
         const auto number = parse_number(value);
@@ -160,9 +186,43 @@ Result<void> DaemonConfig::apply_file_text(std::string_view text) {
     return {};
 }
 
+Result<void> DaemonConfig::check_transport() {
+    if (ipc_port_ && !socket_path_.empty()) {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: set only one of ipc_socket (a Unix socket) and ipc_port (TCP)");
+    }
+    if (!ipc_port_ && socket_path_.empty()) {
+        if (ipc_host_set_) {
+            return fail(ErrorCode::InvalidConfig, "config: ipc_host needs ipc_port");
+        }
+        if (default_socket_.empty()) {
+            return fail(ErrorCode::InvalidConfig, "config: ipc_socket or ipc_port is required");
+        }
+        socket_path_ = default_socket_;
+    }
+    if (ipc_host_set_ && !ipc_port_) {
+        return fail(ErrorCode::InvalidConfig, "config: ipc_host needs ipc_port");
+    }
+    if (ipc_port_) {
+        // No peer uid over TCP: the token is the only authentication, so it is not optional.
+        if (token_file_.empty()) {
+            return fail(ErrorCode::InvalidConfig,
+                        "config: ipc_port needs ipc_token_file (over TCP the token is the only "
+                        "authentication)");
+        }
+        const Result<Endpoint> bind = parse_endpoint(ipc_host_, *ipc_port_);
+        if (!bind) {
+            return fail(ErrorCode::InvalidConfig,
+                        "config: ipc_host must be an IPv4 or IPv6 address literal, not a name");
+        }
+        ipc_endpoint_ = *bind;
+    }
+    return {};
+}
+
 Result<void> DaemonConfig::finish() {
-    if (socket_path_.empty()) {
-        return fail(ErrorCode::InvalidConfig, "config: ipc_socket is required");
+    if (const Result<void> transport = check_transport(); !transport) {
+        return transport;
     }
     // The endpoint and its secret come as a pair: a port without a token file would serve nobody,
     // and a token file without a port is most likely a mistyped key.

@@ -6,6 +6,13 @@ wsrv_add_module(NAME wsrvd SOURCES handshake.cpp config.cpp token_file.cpp ipc_s
 # Headers are included as "wsrvd/<file>.hpp" (include root: apps/).
 target_include_directories(wsrv_wsrvd PUBLIC "${PROJECT_SOURCE_DIR}/apps")
 
+# The official container image names its default IPC socket here, so that `-e WSRVD_IPC_PORT=...` alone
+# selects the TCP transport there (ADR-0038). Every other build has no default.
+set(WSRVD_DEFAULT_IPC_SOCKET "" CACHE STRING "Unix socket used when neither ipc_socket nor ipc_port is set")
+if(WSRVD_DEFAULT_IPC_SOCKET)
+    target_compile_definitions(wsrv_wsrvd PRIVATE "WSRVD_DEFAULT_IPC_SOCKET=\"${WSRVD_DEFAULT_IPC_SOCKET}\"")
+endif()
+
 add_executable(wsrvd main.cpp)
 target_link_libraries(wsrvd PRIVATE wsrv::wsrvd)
 wsrv_apply_warnings(wsrvd)

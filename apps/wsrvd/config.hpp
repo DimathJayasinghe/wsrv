@@ -12,6 +12,7 @@
 
 #include "capi/embedded_config.hpp"
 #include "ipc/message.hpp"
+#include "net/endpoint.hpp"
 
 namespace wsrv::wsrvd {
 
@@ -19,7 +20,12 @@ namespace wsrv::wsrvd {
 /// here; every other key goes to EmbeddedConfig::set, so the WebSocket settings (listen_host,
 /// max_message_size, ...) have exactly one parser and one set of rules.
 ///
-///   ipc_socket           path of the Unix socket (required)
+///   ipc_socket           path of the Unix socket
+///   ipc_port, ipc_host   the TCP transport instead (ADR-0038): a port 0..65535 (0 = the kernel
+///                        chooses) and an address literal to bind (default 127.0.0.1). Needs
+///                        ipc_token_file: over TCP the token is the only authentication.
+///                        At most one of ipc_socket and ipc_port; with neither, a build-time default
+///                        socket (the official image's) if there is one, otherwise an error.
 ///   ipc_token_file       file holding the shared token; must be readable by its owner only
 ///   publish_token_file   file holding the publish token (ADR-0028), same rules, at least 32 bytes;
 ///                        required with publish_port, and there is no publish_token key
@@ -57,14 +63,32 @@ public:
     [[nodiscard]] Result<void> apply_file_text(std::string_view text);
 
     /// Check the whole configuration and fill in what was left to defaults.
-    /// @return Error{InvalidConfig} if ipc_socket is missing or the frame limit cannot work.
+    /// @return Error{InvalidConfig} if the transport is missing, doubled or lacks its token file,
+    /// or the frame limit cannot work.
     [[nodiscard]] Result<void> finish();
+
+    /// The Unix socket to use when neither ipc_socket nor ipc_port is set. The official image is
+    /// built with one (WSRVD_DEFAULT_IPC_SOCKET) so that `-e WSRVD_IPC_PORT=...` alone selects TCP;
+    /// every other build has none. Takes effect in finish().
+    void set_default_socket(std::string path) {
+        default_socket_ = std::move(path);
+    }
 
     [[nodiscard]] const EmbeddedConfig& embedded() const noexcept {
         return embedded_;
     }
+    /// The Unix socket path; empty when the TCP transport is configured.
     [[nodiscard]] const std::string& socket_path() const noexcept {
         return socket_path_;
+    }
+    /// True when the IPC link is TCP (ADR-0038). Valid after finish().
+    [[nodiscard]] bool tcp() const noexcept {
+        return ipc_port_.has_value();
+    }
+    /// The address to bind for the TCP transport (port 0 = the kernel chooses). Valid after
+    /// finish() when tcp() is true.
+    [[nodiscard]] const Endpoint& ipc_endpoint() const noexcept {
+        return ipc_endpoint_;
     }
     /// Empty when no token file is configured.
     [[nodiscard]] const std::string& token_file() const noexcept {
@@ -93,8 +117,18 @@ public:
 private:
     [[nodiscard]] std::optional<Result<void>> set_publish_key(std::string_view key,
                                                              std::string_view value);
+    /// ipc_port and ipc_host (ADR-0038). @return nothing when `key` is neither.
+    [[nodiscard]] std::optional<Result<void>> set_transport_key(std::string_view key,
+                                                               std::string_view value);
+    /// Which IPC transport, its token file and its address: the rules of ADR-0038 section 2 and 3.
+    [[nodiscard]] Result<void> check_transport();
     EmbeddedConfig embedded_;
     std::string socket_path_;
+    std::string default_socket_;
+    std::optional<std::uint16_t> ipc_port_;
+    std::string ipc_host_ = "127.0.0.1";
+    bool ipc_host_set_ = false;
+    Endpoint ipc_endpoint_;
     std::string token_file_;
     std::string publish_token_file_;
     std::uint64_t explicit_max_frame_ = 0;  // 0 = not set

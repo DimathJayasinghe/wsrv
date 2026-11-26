@@ -2,6 +2,7 @@
 // wsrvd: the WebSocket sidecar daemon (ADR-0017). This file is the composition root: it is the one
 // place that creates the concrete loop, signal handling and IPC server and wires them together.
 #include "base/clock.hpp"
+#include "net/endpoint.hpp"
 #include "net/event_loop.hpp"
 #include "net/signal_watcher.hpp"
 #include "net/syscalls.hpp"
@@ -11,6 +12,7 @@
 #include <csignal>
 #include <exception>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -33,7 +35,11 @@ int fail_with(std::string_view what, const wsrv::Error& error) {
 wsrv::wsrvd::IpcServerConfig ipc_config(const wsrv::wsrvd::Startup& startup, wsrv::ILogger& logger) {
     wsrv::wsrvd::IpcServerConfig ipc;
     ipc.logger = &logger;
-    ipc.socket_path = startup.config.socket_path();
+    if (startup.config.tcp()) {
+        ipc.tcp = startup.config.ipc_endpoint();  // ADR-0038; the token is mandatory (checked at start)
+    } else {
+        ipc.socket_path = startup.config.socket_path();
+    }
     ipc.token = startup.token;
     ipc.max_frame = startup.config.max_frame();
     ipc.hello_timeout = startup.config.hello_timeout();
@@ -58,7 +64,7 @@ int run_daemon(wsrv::EventLoop& loop,
     wsrv::ILogger& log = (*embedded)->logger();
     wsrv::wsrvd::EmbeddedBackend backend{**embedded};
     reloadable = embedded->get();  // SIGHUP may reload TLS from now on (see serve())
-    if (startup.token.empty()) {
+    if (startup.token.empty() && !startup.config.tcp()) {
         log.log(wsrv::LogLevel::Warn,
                 "ipc_no_token",
                 "wsrvd: no ipc_token_file; only the peer uid check protects the socket");
@@ -68,9 +74,15 @@ int run_daemon(wsrv::EventLoop& loop,
     if (!server) {
         return fail_with("cannot open the IPC socket", server.error());
     }
-    log.log(wsrv::LogLevel::Info,
-            "ipc_ready",
-            "wsrvd: ipc socket " + startup.config.socket_path() + " ready");
+    if (const std::optional<wsrv::Endpoint> bound = (*server)->tcp_endpoint()) {
+        log.log(wsrv::LogLevel::Info,
+                "ipc_ready",
+                "wsrvd: ipc tcp " + wsrv::format_endpoint(*bound) + " ready");
+    } else {
+        log.log(wsrv::LogLevel::Info,
+                "ipc_ready",
+                "wsrvd: ipc socket " + startup.config.socket_path() + " ready");
+    }
 
     // Only now spawn the WebSocket threads: the signal mask is already set (see serve()), the IPC
     // socket is listening, and an application can connect before the first browser does.

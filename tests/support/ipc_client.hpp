@@ -25,6 +25,8 @@
 #include <variant>
 #include <vector>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/un.h>
@@ -89,6 +91,37 @@ public:
         address.sun_family = AF_UNIX;
         std::memcpy(address.sun_path, path.c_str(), path.size() + 1);
         connected_ = ::connect(fd_, as_generic(address), sizeof(address)) == 0;
+        timeval tv{};
+        tv.tv_sec = static_cast<time_t>(timeout.count() / 1000);
+        tv.tv_usec = static_cast<suseconds_t>((timeout.count() % 1000) * 1000);
+        ::setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    }
+    /// The same over TCP (ADR-0038): `host` is an IPv4 or IPv6 literal.
+    struct Tcp {};
+    Client(Tcp /*tag*/,
+           const std::string& host,
+           std::uint16_t port,
+           std::chrono::milliseconds timeout = std::chrono::milliseconds{3000})
+        : fd_{-1}, decoder_{1U << 20U} {
+        sockaddr_storage storage{};
+        socklen_t length = 0;
+        const bool v6 = host.find(':') != std::string::npos;
+        if (v6) {
+            auto* address = reinterpret_cast<sockaddr_in6*>(&storage);  // NOLINT
+            address->sin6_family = AF_INET6;
+            address->sin6_port = htons(port);
+            ::inet_pton(AF_INET6, host.c_str(), &address->sin6_addr);
+            length = sizeof(sockaddr_in6);
+        } else {
+            auto* address = reinterpret_cast<sockaddr_in*>(&storage);  // NOLINT
+            address->sin_family = AF_INET;
+            address->sin_port = htons(port);
+            ::inet_pton(AF_INET, host.c_str(), &address->sin_addr);
+            length = sizeof(sockaddr_in);
+        }
+        fd_ = ::socket(v6 ? AF_INET6 : AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        connected_ =
+            ::connect(fd_, reinterpret_cast<const sockaddr*>(&storage), length) == 0;  // NOLINT
         timeval tv{};
         tv.tv_sec = static_cast<time_t>(timeout.count() / 1000);
         tv.tv_usec = static_cast<suseconds_t>((timeout.count() % 1000) * 1000);

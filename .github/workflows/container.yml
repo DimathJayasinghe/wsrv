@@ -55,6 +55,61 @@ jobs:
           docker exec wsrvd-env /usr/local/bin/wsrvd --healthcheck
           docker kill wsrvd-env
           ! docker run --rm -e WSRVD_IPC_SOCKET=/nonexistent/ipc.sock wsrvd:ci --healthcheck
+      - name: The TCP IPC transport (ADR-0038) is chosen by the environment alone and needs its token
+        run: |
+          token="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"   # 48 hex characters
+          echo "::add-mask::$token"
+          docker volume create wsrv-ci-secret >/dev/null
+          # The token file keeps its rules (mode 0600, owned by the daemon's uid 10001): the volume is
+          # prepared as root, the way the Kubernetes manifest's init container does it.
+          docker run --rm --user 0 --entrypoint sh -v wsrv-ci-secret:/s -e T="$token" wsrvd:ci -c \
+            'printf %s "$T" > /s/ipc.token && chown 10001:10001 /s/ipc.token && chmod 0600 /s/ipc.token'
+          # Only the port is chosen: the image has no WSRVD_IPC_SOCKET set, so there is no "both" error.
+          docker run -d --name wsrvd-tcp -p 127.0.0.1:19300:9300 -v wsrv-ci-secret:/run/secrets:ro \
+            -e WSRVD_IPC_PORT=9300 -e WSRVD_IPC_HOST=0.0.0.0 \
+            -e WSRVD_IPC_TOKEN_FILE=/run/secrets/ipc.token wsrvd:ci
+          for i in $(seq 1 30); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' wsrvd-tcp)" = healthy ] && break
+            sleep 2
+          done
+          logs="$(docker logs wsrvd-tcp 2>&1)"
+          echo "$logs"
+          [ "$(docker inspect -f '{{.State.Health.Status}}' wsrvd-tcp)" = healthy ]
+          echo "$logs" | grep -Eq 'event=ipc_ready msg="wsrvd: ipc tcp 0\.0\.0\.0:9300 ready"'
+          echo "$logs" | grep -Eq 'level=warn event=ipc_plaintext '   # not loopback: said out loud
+          ! echo "$logs" | grep -q 'event=ipc_no_token'               # TCP always has a token
+          # From the host, through the published port: the right token is welcome, the wrong one is not.
+          python3 - "$token" <<'PY'
+          import socket, struct, sys
+          def hello(token):
+              body = struct.pack(">HHH", 0, 3, len(token)) + token
+              return struct.pack(">IBB", 2 + len(body), 1, 0) + body
+          def first_frame_type(token):
+              with socket.create_connection(("127.0.0.1", 19300), timeout=5) as s:
+                  s.sendall(hello(token))
+                  data = s.recv(64)
+                  return struct.unpack(">IBB", data[:6])[1]
+          good = first_frame_type(sys.argv[1].encode())
+          bad = first_frame_type(b"x" * 48)
+          print("right token: frame type", good, "(2 = HELLO_OK); wrong token: frame type", bad, "(9 = STATUS)")
+          assert good == 2 and bad == 9
+          PY
+          docker kill wsrvd-tcp >/dev/null
+      - name: Both transports at once, or a TCP port without a token, stop the start
+        run: |
+          set +e
+          out=$(docker run --rm -e WSRVD_IPC_PORT=9300 -e WSRVD_IPC_SOCKET=/run/wsrv/ipc.sock \
+                  -e WSRVD_IPC_TOKEN_FILE=/nonexistent wsrvd:ci 2>&1)
+          code=$?
+          echo "$out" | head -3
+          [ "$code" -ne 0 ] || exit 1
+          echo "$out" | grep -q ipc_socket || exit 1
+          echo "$out" | grep -q ipc_port || exit 1
+          out=$(docker run --rm -e WSRVD_IPC_PORT=9300 wsrvd:ci 2>&1)
+          code=$?
+          echo "$out" | head -3
+          [ "$code" -ne 0 ] || exit 1
+          echo "$out" | grep -q ipc_token_file
       - name: The log level is honoured and a misspelled one stops the start
         run: |
           docker run -d --name wsrvd-quiet -e WSRVD_LOG_LEVEL=warn wsrvd:ci
