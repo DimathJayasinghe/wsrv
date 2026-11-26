@@ -1,6 +1,6 @@
 # ADR-0042: Laravel Echo support, spoken by the PHP worker, not by the daemon
 
-- Status: **Proposed** (2026-11-27). Not Accepted until the project owner says so in chat. Amends ADR-0028 section 4 (see "What changed since ADR-0028").
+- Status: **Accepted** (2026-11-27, by the project owner in chat: "yeah go ahead, accepted, and also we should ship a completed production on the first release"). Amends ADR-0028 section 4 (see "What changed since ADR-0028"). Amendment A1 records what "completed" means for the first release.
 - Date: 2026-11-27
 - Deciders: project owner, maintainer assistant
 
