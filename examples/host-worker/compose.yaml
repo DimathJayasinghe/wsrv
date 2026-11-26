@@ -1,0 +1,47 @@
+# wsrv on a Mac or a Windows PC: the daemon in Docker, YOUR PHP worker on the host (ADR-0038, wsrv 1.1).
+#   docker compose up -d
+#   export WSRV_TOKEN="$(docker compose run --rm --no-deps --entrypoint cat token-init /run/wsrv/ipc.token)"
+#   composer require wsrv/client && php worker.php
+#   then connect any WebSocket client to ws://localhost:8080/ and send a message: the worker echoes it.
+#
+# The IPC link is TCP here, because a Unix socket cannot cross from the host into Docker Desktop's Linux VM.
+# It is NOT encrypted, so the port is published on the host's loopback only ("127.0.0.1:9300:9300"); never
+# change that to a bare "9300:9300" (every device on your network could then try to reach it). The token is
+# the only authentication over TCP: `token-init` writes 64 random hex characters once, mode 0600, owned by the
+# daemon's uid, into a volume (the token file keeps the rules it has everywhere: Docker Desktop shows a file
+# bind-mounted from your drive as root-owned and world-readable, and the daemon would rightly refuse it).
+services:
+  # Runs once and exits: creates /run/wsrv/ipc.token if it does not exist yet.
+  token-init:
+    image: ghcr.io/dimathjayasinghe/wsrvd:${WSRV_VERSION:-1.1.0}
+    user: "10001:10001"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - umask 077; [ -s /run/wsrv/ipc.token ] || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > /run/wsrv/ipc.token
+    volumes:
+      - secrets:/run/wsrv
+    restart: "no"
+
+  wsrvd:
+    image: ghcr.io/dimathjayasinghe/wsrvd:${WSRV_VERSION:-1.1.0}
+    build:
+      context: ../..
+      dockerfile: docker/wsrvd.Dockerfile
+    environment:
+      WSRVD_ALLOW_ORIGIN: http://localhost:8000      # the page that opens the WebSocket
+      WSRVD_ALLOW_MISSING_ORIGIN: "true"             # command-line clients (wscat, websocat); remove in production
+      WSRVD_IPC_PORT: "9300"                         # TCP instead of the Unix socket
+      WSRVD_IPC_HOST: 0.0.0.0                        # inside the container, so the published port arrives
+      WSRVD_IPC_TOKEN_FILE: /run/wsrv/ipc.token
+    depends_on:
+      token-init:
+        condition: service_completed_successfully
+    ports:
+      - "${WSRV_PORT:-8080}:8080"
+      - "127.0.0.1:${WSRV_IPC_PORT:-9300}:9300"      # loopback of YOUR machine only
+    volumes:
+      - secrets:/run/wsrv
+    restart: unless-stopped
+
+volumes:
+  secrets:

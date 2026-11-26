@@ -34,7 +34,7 @@ Protocol: [`docs/IPC_PROTOCOL.md`](../../docs/IPC_PROTOCOL.md). Lesson: [`docs/l
 
 | | |
 |---|---|
-| `Client::connect($socket, $token = '', $timeout = 5.0)` | connect and run the HELLO handshake |
+| `Client::connect($socketOrTcp, $token = '', $timeout = 5.0)` | connect and run the HELLO handshake; the first argument is the daemon's Unix socket path, or `tcp://host:port` (1.1, the only form on Windows; the token is then required, 32 bytes or more, and the link is not encrypted: loopback, VPN or tunnel only) |
 | `$client->poll($timeout)` | next `Event` / `StatusReply` / `Pong`, or `null` on timeout |
 | `$client->sendText($conn, $text)`, `sendBinary`, `closeConnection($conn, $code, $reason)` | commands; return the request id |
 | `Worker::on('open'\|'message'\|'close'\|'error'\|'status'\|'authenticate', $fn)` | callbacks (signatures in `src/Worker.php`) |
@@ -43,7 +43,7 @@ Protocol: [`docs/IPC_PROTOCOL.md`](../../docs/IPC_PROTOCOL.md). Lesson: [`docs/l
 | `Connection::subscribe($topic)` / `unsubscribe($topic)`, `Worker::publish($topic, $payload, $binary = false, $except = 0)` | rooms over IPC (daemon with `--broker=true`) |
 | `new Publisher($url, $token)` then `->publish($topic, $payload, $binary = false, $except = 0)` | publish from any process over HTTP; returns `PublishResult`, throws `PublishFailed` |
 | `new ClusterPublisher([$url1, $url2], $token)` then the same `->publish(...)` | publish to every daemon of a multi-node deployment; returns `ClusterPublishResult` (summed counts, `->failures` per node), throws `PublishFailed` only when no node took it |
-| `Supervisor::forSocket($socket, $token)->run(fn (Worker $w) => ...)` | the production loop: reconnects to the daemon with backoff and jitter, retries `BACKPRESSURE`, fails fast on a wrong token, reports throwing handlers without dropping the link, stops on `SIGTERM` (`installSignalHandlers()`) |
+| `Supervisor::forSocket($socketOrTcp, $token)->run(fn (Worker $w) => ...)` | the production loop: reconnects to the daemon with backoff and jitter, retries `BACKPRESSURE`, fails fast on a wrong token, reports throwing handlers without dropping the link, stops on `SIGTERM` (`installSignalHandlers()`) |
 | `Upgrade::accept($subprotocol = null)` / `reject($status = 403)` | answer a waiting upgrade (`authenticate`) |
 | `HandshakeRequest::cookie($name)` / `header($name)` / `headers($name)` | read the request in `authenticate` |
 
