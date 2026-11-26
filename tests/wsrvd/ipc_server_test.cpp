@@ -1160,7 +1160,10 @@ TEST_F(TcpIpcTest, AConnectionThatHasNotSaidHelloDoesNotHoldTheSlotAgainstANewco
     const auto reply = application->receive();
     ASSERT_TRUE(reply);
     EXPECT_EQ(reply->kind, Reply::Kind::HelloOk) << "the idle connection kept the slot";
-    EXPECT_TRUE(idle->closed_by_server());
+    // The replaced connection is told why, like any application the daemon turns away.
+    const auto told = idle->receive();
+    ASSERT_TRUE(told);
+    EXPECT_EQ(told->status, kBackpressure);
 }
 
 TEST_F(TcpIpcTest, AHelloThatAlreadyArrivedIsProcessedBeforeAnyDisplacement) {
@@ -1186,6 +1189,97 @@ TEST_F(TcpIpcTest, ManySilentConnectionsCostOneAtATimeAndTheApplicationStillGets
     const auto application = connect(server);
     application->send_hello(kToken);
     EXPECT_EQ(application->receive()->kind, Reply::Kind::HelloOk);
+}
+
+// Why the daemon lingers (ADR-0038 section 5). Closing a TCP socket that holds unread data, or that
+// receives data after the close, makes the operating system send RST, and Windows (and possibly
+// macOS) then throws away what the peer had already received: the status the daemon just sent. So
+// after its last word the daemon sends FIN, keeps the socket, discards what arrives, and closes
+// when the peer does or after a short deadline. On Linux the status survives either way, so the
+// tests see the difference through what a write does afterwards (server_still_holds_connection).
+TEST_F(TcpIpcTest, ARefusedSecondApplicationCanStillWriteItsHelloWithoutAResetWipingTheStatus) {
+    const RunningServer server{sys, backend, tcp_config()};
+    const auto first = connect(server);
+    first->send_hello(kToken);
+    ASSERT_EQ(first->receive()->kind, Reply::Kind::HelloOk);
+
+    const auto second =
+        connect(server);  // reads before it writes: its HELLO comes after the refusal
+    const auto reply = second->receive();
+    ASSERT_TRUE(reply);
+    EXPECT_EQ(reply->status, kBackpressure);
+    EXPECT_TRUE(second->closed_by_server());  // FIN: the daemon said all it will say
+    EXPECT_TRUE(second->server_still_holds_connection())
+        << "the daemon closed with our HELLO coming";
+}
+
+TEST_F(TcpIpcTest, ARejectedHelloIsAlsoFollowedByALingeringCloseNotAReset) {
+    const RunningServer server{sys, backend, tcp_config()};
+    const auto client = connect(server);
+    client->send_hello(std::string(32, 'x'));
+    const auto reply = client->receive();
+    ASSERT_TRUE(reply);
+    EXPECT_EQ(reply->status, kInvalidArgument);
+    EXPECT_TRUE(client->closed_by_server());
+    EXPECT_TRUE(client->server_still_holds_connection());
+}
+
+TEST_F(TcpIpcTest, ALingeringSocketIsHeldUntilItsDeadlineAndThenClosedWhateverThePeerDoes) {
+    IpcServerConfig c = tcp_config();
+    c.linger_timeout = std::chrono::milliseconds{600};
+    const RunningServer server{sys, backend, c};
+    const auto first = connect(server);
+    first->send_hello(kToken);
+    ASSERT_EQ(first->receive()->kind, Reply::Kind::HelloOk);
+    const auto early = connect(server);
+    const auto late = connect(server);
+    ASSERT_TRUE(early->receive());
+    ASSERT_TRUE(late->receive());
+    ASSERT_TRUE(early->closed_by_server());
+    ASSERT_TRUE(late->closed_by_server());
+    // Well inside the deadline the daemon still holds the socket (this is what makes the test
+    // fail when lingering is switched off, not only when the deadline is missing)...
+    EXPECT_TRUE(early->server_still_holds_connection());
+    // ...and past it, with the peer silent the whole time, the descriptor is gone.
+    std::this_thread::sleep_for(std::chrono::milliseconds{900});
+    EXPECT_FALSE(late->server_still_holds_connection())
+        << "a silent peer held a descriptor for ever";
+}
+
+TEST_F(TcpIpcTest, ALingeringSocketEndsWhenThePeerClosesSoManyRefusalsInARowAreAllAnswered) {
+    const RunningServer server{sys, backend, tcp_config()};
+    const auto first = connect(server);
+    first->send_hello(kToken);
+    ASSERT_EQ(first->receive()->kind, Reply::Kind::HelloOk);
+    // Each refused connection closes at once, so the daemon lets go of it at once (EOF, not the 2 s
+    // deadline). Far more refusals than the cap allows at a time, one after the other, all
+    // answered.
+    for (int i = 0; i < 100; ++i) {
+        const auto extra = connect(server);
+        const auto answer = extra->receive();
+        ASSERT_TRUE(answer) << "refusal " << i;
+        ASSERT_EQ(answer->status, kBackpressure) << "refusal " << i;
+    }
+    first->send_message(ipc::Ping{});
+    EXPECT_EQ(first->receive()->kind, Reply::Kind::Pong);
+}
+
+TEST_F(TcpIpcTest, MoreRefusalsThanTheLingerCapAreAllAnsweredAndTheApplicationIsUnharmed) {
+    const RunningServer server{sys, backend, tcp_config()};
+    const auto first = connect(server);
+    first->send_hello(kToken);
+    ASSERT_EQ(first->receive()->kind, Reply::Kind::HelloOk);
+    std::vector<std::unique_ptr<Client>> held;  // none of them closes: all would linger
+    for (int i = 0; i < 80; ++i) {
+        held.push_back(connect(server));
+        const auto answer = held.back()->receive();
+        ASSERT_TRUE(answer) << "refusal " << i;
+        ASSERT_EQ(answer->status, kBackpressure) << "refusal " << i;
+    }
+    EXPECT_FALSE(logs.wait_for("ipc_linger_full").empty())
+        << "the cap was never reached, or is not enforced";
+    first->send_message(ipc::Ping{});
+    EXPECT_EQ(first->receive()->kind, Reply::Kind::Pong);
 }
 
 TEST_F(IpcServerTest,

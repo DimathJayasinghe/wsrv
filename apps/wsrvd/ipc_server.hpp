@@ -9,6 +9,7 @@
 #include "net/tcp_listener.hpp"
 #include "net/unix_listener.hpp"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -36,6 +37,11 @@ struct IpcServerConfig {
     std::string token;            ///< empty = no token required on a Unix socket (never over TCP)
     std::uint32_t max_frame = 0;  ///< largest frame after HELLO; also the outbound buffer's unit
     std::chrono::milliseconds hello_timeout{5000};
+    /// Over TCP, after the daemon's last word to a peer it turned away (a busy refusal, a rejected
+    /// HELLO): how long it keeps the half-closed socket, discarding input, so that a reset cannot
+    /// wipe the status the peer has not read yet (Windows drops received data on RST). It ends
+    /// sooner when the peer closes. ADR-0038 section 5.
+    std::chrono::milliseconds linger_timeout{2000};
     /// How long the application may leave our output unread before the link is closed.
     std::chrono::milliseconds stall_timeout{10000};
     /// After an application disconnects, how long its connections may wait for a replacement
@@ -114,6 +120,11 @@ public:
 
 private:
     class Peer;
+    class Lingering;
+    /// Sockets kept open after our last word (linger()). Each is a descriptor and a small object
+    /// for at most `linger_timeout`; a flood of refused connections can fill this, and the rest are
+    /// then closed at once (the status was sent; only a Windows peer may lose it to a reset).
+    static constexpr std::size_t kMaxLingering = 32;
 
     /// The backend's event_fd became readable: events are waiting.
     class EventSource final : public IEventHandler {
@@ -146,7 +157,15 @@ private:
     [[nodiscard]] bool is_tcp() const noexcept;
     /// TCP_NODELAY and keepalive probes on an accepted TCP socket (ADR-0038 section 5).
     void tune_tcp(const Fd& client) noexcept;
+    /// Answer BACKPRESSURE to a connection we cannot take, then linger() it.
     void reject_busy(Fd client) noexcept;
+    /// Over TCP, keep a socket we have finished talking to (FIN already sent) until its peer closes
+    /// or `linger_timeout` passes, discarding what arrives, so that closing it cannot make the
+    /// operating system send RST and wipe the last status from a peer that has not read it yet
+    /// (Windows does). At most kMaxLingering at a time; beyond that the socket is closed at once.
+    /// A Unix socket has no such problem: this does nothing for one (the Fd closes).
+    void linger(Fd fd) noexcept;
+    void release_lingering(const Lingering* entry) noexcept;
     void schedule_retry() noexcept;
     /// Close every stale connection; those a loop refuses are tried again shortly (ADR-0034).
     void close_stale_connections(std::uint16_t code, std::string_view reason);
@@ -168,6 +187,7 @@ private:
     std::optional<TimerHandle> grace_timer_;  ///< armed while stale connections await 1012
     std::optional<TimerHandle> close_retry_;  ///< armed while a loop has refused a stale close
     std::unique_ptr<Peer> peer_;
+    std::array<std::unique_ptr<Lingering>, kMaxLingering> lingering_;  ///< fixed slots: no allocation
     /// Lifetime token for tasks handed to the loop: they hold a weak_ptr, so a task that outlives
     /// the server does nothing.
     std::shared_ptr<char> epoch_ = std::make_shared<char>();

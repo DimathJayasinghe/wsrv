@@ -21,6 +21,11 @@ public:
     [[nodiscard]] int fd() const noexcept override {
         return fd_.get();
     }
+    /// Give the descriptor to someone else (a lingering close, ADR-0038); this transport is then
+    /// closed. The caller must have unregistered it from any poller first.
+    [[nodiscard]] Fd release_fd() noexcept {
+        return std::move(fd_);
+    }
     [[nodiscard]] bool short_read_means_drained() const noexcept override {
         return true;  // a stream socket hands out everything it has, up to the buffer
     }

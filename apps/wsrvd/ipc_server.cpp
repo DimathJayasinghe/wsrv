@@ -6,6 +6,7 @@
 #include "net/plain_transport.hpp"
 #include "wsrv/wsrv.h"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <exception>
@@ -36,6 +37,7 @@ constexpr int kTcpBacklog = 32;
 constexpr int kKeepIdleSeconds = 30;
 constexpr int kKeepIntervalSeconds = 10;
 constexpr int kKeepProbes = 3;
+
 constexpr std::size_t kMaxAcceptsPerEvent = 16;
 constexpr std::size_t kMaxReadsPerEvent = 16;   // fairness budget (EC-N07, EC-N08)
 constexpr std::size_t kMaxEventsPerFill = 256;  // events encoded before the buffer is flushed
@@ -117,6 +119,14 @@ public:
     /// Connected but not yet through HELLO: it holds no state, so over TCP it may be replaced.
     [[nodiscard]] bool awaiting_hello() const noexcept {
         return !closed_ && state_ == State::AwaitHello;
+    }
+
+    /// Stop being the application's connection and hand its socket over, still open and unwatched:
+    /// used to tell a replaced pre-HELLO connection why before it goes (admit()).
+    [[nodiscard]] Fd surrender() noexcept {
+        closed_ = true;
+        stop_watching();
+        return transport_.release_fd();
     }
 
     /// Start watching the socket and the HELLO deadline.
@@ -393,6 +403,7 @@ private:
         update_interest();
         if (closing_after_flush_) {
             transport_.shutdown_write();
+            linger_on_close_ = true;  // the server keeps the socket a moment: see IpcServer::linger
             close();
             return false;
         }
@@ -441,7 +452,8 @@ private:
         }
     }
 
-    void teardown() noexcept {
+    /// Cancel the timers and stop the loop reporting this socket; the descriptor stays open.
+    void stop_watching() noexcept {
         if (hello_timer_) {
             server_.loop_.cancel(*hello_timer_);
             hello_timer_.reset();
@@ -451,7 +463,16 @@ private:
             server_.loop_.unwatch(watch_);
             watch_ = WatchHandle{};
         }
-        transport_.close();
+    }
+
+    void teardown() noexcept {
+        stop_watching();
+        if (linger_on_close_) {
+            linger_on_close_ = false;
+            server_.linger(transport_.release_fd());  // closes it at once if it cannot linger
+        } else {
+            transport_.close();
+        }
     }
 
     void close() noexcept {
@@ -484,6 +505,7 @@ private:
     State state_ = State::AwaitHello;
     std::uint16_t peer_minor_ = 0;  // the minor the application said in HELLO
     bool closing_after_flush_ = false;
+    bool linger_on_close_ = false;  ///< hand the socket to IpcServer::linger instead of closing it
     bool blocked_ = false;  // the socket refused a write and `out_` still holds data
     bool pumping_ = false;
     bool stalled_ = false;  // closed by the stall timer, not by the application
@@ -533,6 +555,111 @@ IpcServer::create(EventLoop& loop, ISyscalls& sys, IBackend& backend, IpcServerC
     server->events_watch_ = *events;
     return server;
 }
+
+// ---- a connection we have said our last word to -------------------------------------------------
+
+/// Holds a half-closed TCP socket (our FIN is sent) until the peer closes it or `linger_timeout`
+/// passes, reading and throwing away whatever arrives. Why: a socket closed while the peer's bytes
+/// are unread, or that receives bytes after it is closed, makes the operating system answer with RST,
+/// and on Windows an RST discards the data the peer had received but not yet read, which is the very
+/// status we just sent. Everything runs on the loop thread; like a Peer it never destroys itself
+/// from inside its own callback (the server releases it at the end of the iteration).
+class IpcServer::Lingering final : public IEventHandler {
+public:
+    Lingering(IpcServer& server, Fd fd) : server_{server}, transport_{std::move(fd), server.sys_} {}
+    Lingering(const Lingering&) = delete;
+    Lingering& operator=(const Lingering&) = delete;
+    Lingering(Lingering&&) = delete;
+    Lingering& operator=(Lingering&&) = delete;
+    ~Lingering() override {
+        teardown();
+    }
+
+    [[nodiscard]] bool done() const noexcept {
+        return done_;
+    }
+
+    /// @return false when there is nothing to wait for (the peer is already gone, or the loop
+    /// cannot watch it): drop this object, which closes the socket.
+    [[nodiscard]] bool start() noexcept {
+        const Result<WatchHandle> watch =
+            server_.loop_.watch(transport_.fd(), PollEvents::Read, *this);
+        if (!watch) {
+            return false;
+        }
+        watch_ = *watch;
+        const Result<TimerHandle> timer =
+            server_.loop_.run_after(server_.config_.linger_timeout, [this] {
+                timer_.reset();
+                finish();  // the deadline: whatever the peer does, the descriptor goes
+            });
+        if (!timer) {
+            return false;
+        }
+        timer_ = *timer;
+        drain();  // what arrived before we watched: epoll is edge-triggered, it will not say so again
+        return !done_;
+    }
+
+    void on_event(PollEvents events) noexcept override {
+        if (done_) {
+            return;
+        }
+        drain();
+        if (!done_ && (has(events, PollEvents::Hangup) || has(events, PollEvents::Error))) {
+            finish();
+        }
+    }
+
+private:
+    /// Read and discard until the socket would block (or a bounded amount, then wait for the next
+    /// event or the deadline). EOF or an error ends it.
+    void drain() noexcept {
+        for (int rounds = 0; rounds < kMaxDrainRounds; ++rounds) {
+            const Result<std::size_t> n = transport_.read(MutableByteView{scratch_});
+            if (!n) {
+                if (n.error().code != ErrorCode::WouldBlock) {
+                    finish();
+                }
+                return;
+            }
+            if (*n == 0) {
+                finish();  // the peer closed: it has what we sent, nothing more to wait for
+                return;
+            }
+        }
+    }
+
+    void finish() noexcept {
+        if (done_) {
+            return;
+        }
+        done_ = true;
+        teardown();
+        server_.release_lingering(this);
+    }
+
+    void teardown() noexcept {
+        if (timer_) {
+            server_.loop_.cancel(*timer_);
+            timer_.reset();
+        }
+        if (watch_.generation != 0) {
+            server_.loop_.unwatch(watch_);
+            watch_ = WatchHandle{};
+        }
+        transport_.close();
+    }
+
+    static constexpr int kMaxDrainRounds = 64;  // 64 x 2 KiB per event: a peer cannot pin the loop
+
+    IpcServer& server_;
+    PlainTransport transport_;
+    std::array<std::byte, 2048> scratch_{};
+    WatchHandle watch_{};
+    std::optional<TimerHandle> timer_;
+    bool done_ = false;
+};
 
 IpcServer::IpcServer(Key /*unused*/,
                      EventLoop& loop,
@@ -745,7 +872,10 @@ void IpcServer::admit(Fd client) noexcept {
     // (ADR-0038 section 5). An authenticated application is never displaced.
     if (tcp && peer_ != nullptr && peer_->awaiting_hello()) {
         note(LogLevel::Debug, "app_replaced", "ipc: a connection that had not said HELLO was replaced");
+        // Tell it why, as any application we turn away is told, instead of cutting it off silently.
+        Fd displaced = peer_->surrender();
         peer_.reset();
+        reject_busy(std::move(displaced));
     }
     if (peer_ != nullptr) {
         note(LogLevel::Warn, "app_rejected", "ipc: a second application was refused, one is already connected");
@@ -770,7 +900,46 @@ void IpcServer::reject_busy(Fd client) noexcept {
         const Result<std::size_t> sent = transport.write(out.view());
         static_cast<void>(sent);  // best effort: the close that follows says it either way
         transport.shutdown_write();
+        linger(transport.release_fd());
     }
+}
+
+void IpcServer::linger(Fd fd) noexcept {
+    if (!is_tcp() || !fd.valid()) {
+        return;  // a Unix socket cannot be reset away from its data: closing is enough
+    }
+    // Entries whose release the loop refused are still in their slots: forget them now.
+    for (std::unique_ptr<Lingering>& slot : lingering_) {
+        if (slot && slot->done()) {
+            slot.reset();
+        }
+    }
+    auto* const free_slot = std::ranges::find_if(
+        lingering_, [](const std::unique_ptr<Lingering>& slot) { return slot == nullptr; });
+    if (free_slot == lingering_.end()) {
+        note(LogLevel::Debug, "ipc_linger_full", "ipc: too many sockets are waiting to close, closed one at once");
+        return;
+    }
+    auto entry = std::make_unique<Lingering>(*this, std::move(fd));
+    if (!entry->start()) {
+        return;  // the peer is already gone (or cannot be watched): closing it is right
+    }
+    *free_slot = std::move(entry);
+}
+
+void IpcServer::release_lingering(const Lingering* entry) noexcept {
+    // Called from inside the entry's own callback: destroy it at the end of the loop iteration.
+    const Result<void> queued = loop_.defer([this, weak = std::weak_ptr<char>{epoch_}, entry] {
+        if (weak.expired()) {
+            return;
+        }
+        for (std::unique_ptr<Lingering>& slot : lingering_) {
+            if (slot.get() == entry && slot->done()) {
+                slot.reset();
+            }
+        }
+    });
+    static_cast<void>(queued);  // a refused task: linger() sweeps finished entries next time
 }
 
 void IpcServer::schedule_retry() noexcept {

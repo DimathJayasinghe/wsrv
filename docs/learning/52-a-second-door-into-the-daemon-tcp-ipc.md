@@ -29,16 +29,22 @@ The subtle part is the order. If a real `HELLO` is already sitting in the kernel
 
 An automated review pointed out that a flood of connections can still displace the real application's pending connection. True, and written down in the ADR with the alternative (a bounded set of pending connections raises the cost from one connect to N, but does not remove the case, and makes admission multi-peer). The port is a trust boundary like a database port.
 
-## 4. Two details worth the detour
+## 4. The close that can erase the answer
+The first Windows CI run failed one test, and the failure was real. The daemon says "busy" and closes. If the worker's `HELLO` was still unread (or arrives after the close), the operating system answers with **RST** instead of a clean FIN. Linux lets the receiver still read what arrived before the reset; **Windows throws it away**. So a Windows worker would see "connection closed" instead of `BACKPRESSURE`, and could not tell a busy daemon from a dead one. First reaction, "the supervisor retries both, so it costs nothing", was the wrong one: the owner's rule is that what can break will break, and a fixable thing is fixed.
+
+The fix is a *lingering close*: send the status, send FIN (`shutdown(SHUT_WR)`), keep the socket, read and discard until the peer closes or a short deadline passes, then close. Details that mattered: it must never hold the application slot (it is a separate object); it must be bounded (32 at a time, then close at once and log `ipc_linger_full`); it needs a hard deadline whatever the peer does; and it must read what is *already* in the socket when it starts, because epoll is edge-triggered and will not say so again. Linux cannot show the bug directly (the data survives a reset), so the test watches what a *write after the FIN* does: the first write to a fully closed peer provokes the reset, the second then fails with EPIPE; against a lingering daemon both succeed. That probe was **mutation-checked**: turn lingering off and it fails.
+
+## 5. Two details worth the detour
 - **The image and the "both is an error" rule.** The official image set `WSRVD_IPC_SOCKET` as an `ENV`, so `-e WSRVD_IPC_PORT=9300` would arrive with both keys set and fail the very rule that protects people. The fix is not to loosen the rule: the image's socket path became a *build-time default* that applies only when neither key is set.
 - **A token file from a Windows drive.** Docker Desktop shows a bind-mounted file as root-owned and world-readable, which the daemon correctly refuses. The example copies the token into a named volume with the right owner and mode instead of weakening the check.
 
-## 5. What "it works on Windows" means
+## 6. What "it works on Windows" means
 PHP's `pcntl_fork` does not exist on Windows, and `stream_socket_pair` there accepts only the INET family. So the client tests were rewritten to use real loopback TCP and a **child PHP process** as the fake daemon (`proc_open` exists everywhere), and a `windows-latest` job runs them. What it does not prove, and the docs say so: Docker for Linux containers on a Windows runner, and the daemon itself. Each claim is tied to the test that backs it, on the platform where it can run.
 
 ## Pitfalls
 - A new transport is a new *threat model*, not just a new socket type: list what the old one guaranteed before you write the new one.
 - Renaming a PHP parameter breaks callers that use named arguments. `connect($socketPath, ...)` kept its name although it now also takes `tcp://...`.
+- "The caller retries anyway" is not a reason to leave a platform-specific failure in place: it turns an exact answer into a vague one.
 - A test that asserts "the message contains `tcp://`" passes for the *wrong* error too (the "cannot connect to tcp://..." message). Assert the message that proves the right code path ran.
 - Checking a claim in your own design document: the first draft of the ADR listed a JavaScript IPC client. There is none (`clients/js` is the browser WebSocket client). Read the code before you write the plan.
 

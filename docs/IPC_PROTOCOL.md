@@ -18,6 +18,7 @@ Two transports carry the same protocol (sections 2 to 9 are identical on both); 
 - **The link is not encrypted.** The messages and the token cross it in clear: use loopback, a private network, a VPN or an SSH tunnel, never the open internet. Anyone who can reach the port can try to authenticate and can make connections that fail; treat it like a database port.
 - A connection that has not yet sent `HELLO` holds nothing: a newcomer replaces it, so an idle connection cannot lock the real application out. An authenticated application is never displaced; a second authenticated one still receives `BACKPRESSURE`.
 - The daemon enables `TCP_NODELAY` and keepalive probes (30 s idle, 10 s apart, 3 probes) on the accepted socket, so an application whose host vanished frees the slot in about a minute. A client should set `TCP_NODELAY` too.
+- After refusing a connection (`BACKPRESSURE`, a rejected `HELLO`) the daemon sends its status and FIN, then keeps the socket for up to 2 s, discarding what arrives, so that closing cannot make the operating system reset the connection and wipe the status before the peer has read it (Windows drops received data on a reset). A client that wants a clean end reads the status and closes.
 
 ## 2. Framing
 Every frame, both directions:

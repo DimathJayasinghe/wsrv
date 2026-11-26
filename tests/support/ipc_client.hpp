@@ -22,6 +22,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <variant>
 #include <vector>
 
@@ -181,6 +182,21 @@ public:
             }
             pending_.insert(pending_.end(), buffer.begin(), buffer.begin() + n);
         }
+    }
+
+    /// After the server has said its last word and half-closed, does it still hold the connection?
+    /// A server that fully closed while our bytes were unread, or that gets ours after it closed,
+    /// answers the first write with a reset, and the second write then fails (EPIPE). A server that
+    /// lingers (reads and discards until we close) accepts both. Over TCP this is the difference
+    /// between a status the peer can still read and one a reset may wipe (ADR-0038 section 5).
+    [[nodiscard]] bool server_still_holds_connection(
+        std::chrono::milliseconds settle = std::chrono::milliseconds{250}) const {
+        const std::array<std::byte, 16> junk{};
+        if (::send(fd_, junk.data(), junk.size(), MSG_NOSIGNAL) < 0) {
+            return false;
+        }
+        std::this_thread::sleep_for(settle);  // time for a reset to come back, if one will
+        return ::send(fd_, junk.data(), junk.size(), MSG_NOSIGNAL) >= 0;
     }
 
     /// True if the server closes the connection (EOF) without sending anything more.

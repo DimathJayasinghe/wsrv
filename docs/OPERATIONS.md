@@ -147,6 +147,7 @@ Never logged at any level: tokens and credentials, cookies and other headers, me
 | `ipc_no_token` | warn | no `ipc_token_file`: only the peer uid check protects the socket (never said over TCP, where a token is required) |
 | `ipc_plaintext` | warn | the TCP IPC link is bound to an address that is not loopback; it is not encrypted (ADR-0038). Expected in a container whose port you publish on the host's loopback; a warning anywhere else |
 | `ipc_keepalive` | warn | TCP keepalive could not be set on the application's socket: a host that vanishes may keep the application slot for a long time |
+| `ipc_linger_full` | debug | over TCP, more than 32 refused connections were waiting to close at once; the extra ones were closed immediately (a flood of refused connections; the status was still sent) |
 | `app_replaced` | debug | over TCP, a connection that had not said HELLO was replaced by a newcomer (ADR-0038 section 5) |
 | `app_connected`, `app_disconnected` | info (warn if cut off for not reading) | the application's link came and went: connections it knew are closed with 1012 after `shutdown_grace_ms` unless a new one connects |
 | `app_rejected` | warn | an application was refused: another user, a second one, a wrong token or version, no HELLO in time. Many of these: a misconfigured worker (compare tokens and the socket path) |

@@ -90,9 +90,10 @@ test('client: a refusal sent by a daemon that hangs up at once is still reported
     // the close wins the race, our HELLO write fails (broken pipe), but the STATUS is already in
     // our receive buffer and says why: it must not be thrown away as "connection closed".
     if (PHP_OS_FAMILY === 'Windows') {
-        // Not a client bug: on Windows the socket pair is TCP, and a peer that closes while our HELLO is
-        // still unread makes the OS send RST, which Windows answers by discarding what we had already
-        // received. The Supervisor retries a hung-up daemon and BACKPRESSURE alike (ADR-0038 section 7).
+        // Here the socket pair is TCP, and a peer that closes while our HELLO is unread makes the OS
+        // send RST, which Windows answers by discarding what we had already received: no client can
+        // read that status. A real wsrvd does not do this over TCP any more (it lingers, next test and
+        // ADR-0038 section 5); this hard close is a Unix-socket behaviour.
         skip('Windows drops received data when a TCP peer resets the connection');
     }
     [$app, $daemon] = socket_pair();
@@ -100,6 +101,17 @@ test('client: a refusal sent by a daemon that hangs up at once is still reported
     fclose($daemon);
     $e = assertThrows(HandshakeRefused::class, fn () => Client::handshake($app, '', 1.0));
     assertSame(StatusCode::BACKPRESSURE, $e->status);
+});
+
+test('client: a refusal from a daemon that lingers after its last word is read on every platform', function () {
+    // What wsrvd does over TCP (ADR-0038 section 5): send the status, send FIN, then keep the socket
+    // and read what the client writes until the client closes. No reset, so nothing is lost anywhere.
+    [$app, $daemon] = socket_pair();
+    fwrite($daemon, status_frame(0, StatusCode::BACKPRESSURE));
+    stream_socket_shutdown($daemon, STREAM_SHUT_WR);
+    $e = assertThrows(HandshakeRefused::class, fn () => Client::handshake($app, '', 1.0));
+    assertSame(StatusCode::BACKPRESSURE, $e->status);
+    assertTrue(received($daemon) !== '', 'the daemon was still reading: our HELLO reached it');
 });
 
 test('client: a daemon that hangs up without a word is ConnectionClosed', function () {
