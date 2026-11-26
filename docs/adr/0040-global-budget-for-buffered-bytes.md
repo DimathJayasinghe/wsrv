@@ -1,6 +1,6 @@
 # ADR-0040: A global budget for the bytes connections buffer
 
-- Status: **Proposed** (2026-11-26; the owner accepts). Closes item (b) of RELEASE.md section 3 ("no global buffered-bytes budget"), makes SECURITY_DESIGN section 6 true, and delivers what ADR-0013 deferred ("the global buffered-bytes budget lands in M10").
+- Status: **Accepted** (2026-11-26, by the project owner in chat). Closes item (b) of RELEASE.md section 3 ("no global buffered-bytes budget"), makes SECURITY_DESIGN section 6 true, and delivers what ADR-0013 deferred ("the global buffered-bytes budget lands in M10").
 - Date: 2026-11-26
 - Deciders: project owner, maintainer assistant
 
@@ -42,6 +42,8 @@ The gauge `wsrv_buffered_bytes` shows the current sum.
 One key, `max_buffered_bytes` (config file, `--max-buffered-bytes`, `WSRVD_MAX_BUFFERED_BYTES`, the C `wsrv_config_set`): default **1 GiB**, range 1 byte .. 1 TiB, **no unlimited value** (the rule of ADR-0032).
 
 The arithmetic for the default. A healthy connection buffers close to nothing: an idle one 0, an echo 0, a 10 KiB message in flight a few KiB. To reach 1 GiB at the shipped limits the server needs at least 512 connections that each hold two full 1 MiB buffers at the same moment (and a full outbound queue is closed by the slow-consumer policy), or all 10 000 holding about 105 KiB each at the same instant. That is an overloaded server, not a legitimate 1.0 load, so the default cannot shed what 1.0 served; the 503 is the right answer in that state.
+
+The default is sized for ordinary message sizes. An application that raises `max_message_size` (file or image transfer) or `max_queued_bytes`, or that broadcasts large messages to many subscribers, raises what its connections can hold, so it must raise this key with them: a message limit of M bytes means about `1 GiB / M` incomplete messages at once before new clients are refused (50 MiB: about 20).
 
 The default protects a host with several GiB of memory. A smaller one must set the key: **about half of the memory limit** you give the process, after subtracting the deflate state (OPERATIONS section 1.1). The reference Kubernetes manifest limits memory to 1 GiB, so it sets `WSRVD_MAX_BUFFERED_BYTES` to 256 MiB, and so does the systemd example.
 
