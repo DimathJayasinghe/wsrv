@@ -162,7 +162,12 @@ void EmbeddedConfig::apply_to(ServerBuilder& builder) const {
     builder.listen(host_, port_);
     builder.config() = server_;
     if (admin_port_) {
-        builder.admin(admin_host_, *admin_port_);  // build() checks the address and the bounds
+        if (admin_token_.empty()) {
+            builder.admin(admin_host_, *admin_port_);  // build() checks the address and the bounds
+        } else {
+            builder.admin(
+                admin_host_, *admin_port_, admin_token_);  // borrowed: this config lives on
+        }
     }
     builder.config().publish_max_body_bytes =
         broker_.max_payload_bytes;  // one bound for both doors
@@ -193,6 +198,17 @@ Result<void> EmbeddedConfig::set_publish_token(std::string token) {
         return fail(ErrorCode::InvalidConfig, "config: the publish token needs at least 32 bytes");
     }
     publish_token_ = std::move(token);
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_admin_token(std::string token) {
+    if (token.size() < kMinAdminTokenBytes) {
+        return fail(ErrorCode::InvalidConfig, "config: the admin token needs at least 32 bytes");
+    }
+    if (!admin_port_) {
+        return fail(ErrorCode::InvalidConfig, "config: an admin token needs admin_port");
+    }
+    admin_token_ = std::move(token);
     return {};
 }
 

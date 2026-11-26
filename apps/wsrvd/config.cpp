@@ -59,10 +59,22 @@ parse_millis(std::string_view value, const MillisRule& rule, std::chrono::millis
 
 }  // namespace
 
-/// The publish file keys (ADR-0028), apart from `set` so it stays within the size the linter
-/// allows. @return nothing when `key` is not one of them.
-std::optional<Result<void>> DaemonConfig::set_publish_key(std::string_view key,
-                                                          std::string_view value) {
+/// The token file keys (publish: ADR-0028, admin: ADR-0041), apart from `set` so it stays within
+/// the size the linter allows. @return nothing when `key` is not one of them.
+std::optional<Result<void>> DaemonConfig::set_token_file_key(std::string_view key,
+                                                             std::string_view value) {
+    if (key == "admin_token") {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: there is no admin_token; put the token in a file and use "
+                    "admin_token_file");
+    }
+    if (key == "admin_token_file") {
+        if (value.empty()) {
+            return fail(ErrorCode::InvalidConfig, "config: admin_token_file needs a path");
+        }
+        admin_token_file_ = std::string{value};
+        return Result<void>{};
+    }
     if (key == "publish_token") {
         return fail(ErrorCode::InvalidConfig,
                     "config: there is no publish_token; put the token in a file and use "
@@ -121,8 +133,8 @@ Result<void> DaemonConfig::set(std::string_view key, std::string_view value) {
         token_file_ = std::string{value};
         return {};
     }
-    if (const std::optional<Result<void>> publish = set_publish_key(key, value)) {
-        return *publish;
+    if (const std::optional<Result<void>> files = set_token_file_key(key, value)) {
+        return *files;
     }
     if (const std::optional<Result<void>> transport = set_transport_key(key, value)) {
         return *transport;
@@ -229,6 +241,10 @@ Result<void> DaemonConfig::finish() {
     if (embedded_.publish_requested() == publish_token_file_.empty()) {
         return fail(ErrorCode::InvalidConfig,
                     "config: publish_port and publish_token_file go together");
+    }
+    // The token protects the admin listener, so without a port it is most likely a mistyped key.
+    if (!admin_token_file_.empty() && !embedded_.admin_requested()) {
+        return fail(ErrorCode::InvalidConfig, "config: admin_token_file needs admin_port");
     }
     const std::size_t message = embedded_.server().session.assembler.max_message_size;
     if (explicit_max_frame_ != 0) {

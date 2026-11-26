@@ -253,6 +253,31 @@ TEST(DaemonConfig, TheTokenFileIsRecordedNotRead) {
     EXPECT_EQ(config.token_file(), "/etc/wsrv/token");
 }
 
+// ADR-0041: the admin token file is a path recorded here and read later, never a value, and it
+// belongs to an admin listener: a file without a port is most likely a mistyped key.
+TEST(DaemonConfig, TheAdminTokenIsAFileNeverAValue) {
+    DaemonConfig config;
+    EXPECT_FALSE(config.set("admin_token", "s3cret").has_value());
+    EXPECT_FALSE(config.apply_argument("--admin-token=s3cret").has_value());
+    EXPECT_FALSE(config.apply_file_text("admin_token = s3cret\n").has_value());
+    EXPECT_FALSE(config.set("admin_token_file", "").has_value()) << "an empty path is no path";
+}
+
+TEST(DaemonConfig, TheAdminTokenFileIsRecordedNotReadAndNeedsTheAdminPort) {
+    DaemonConfig without_port = with_socket();
+    ASSERT_TRUE(without_port.set("admin_token_file", "/etc/wsrv/admin.token").has_value());
+    const wsrv::Result<void> refused = without_port.finish();
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, ErrorCode::InvalidConfig);
+    EXPECT_NE(std::string{refused.error().context}.find("admin_port"), std::string::npos);
+
+    DaemonConfig with_port = with_socket();
+    ASSERT_TRUE(with_port.apply_argument("--admin-port=9100").has_value());
+    ASSERT_TRUE(with_port.apply_argument("--admin-token-file=/etc/wsrv/admin.token").has_value());
+    ASSERT_TRUE(with_port.finish().has_value());
+    EXPECT_EQ(with_port.admin_token_file(), "/etc/wsrv/admin.token");
+}
+
 TEST(DaemonConfig, AnExplicitFrameLimitIsUsed) {
     DaemonConfig config = with_socket();
     ASSERT_TRUE(config.set("ipc_max_frame", "2097152").has_value());

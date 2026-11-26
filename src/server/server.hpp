@@ -51,6 +51,10 @@ struct ServerDeps {
     /// ServerConfig::publish is set, ignored otherwise. Borrowed; must outlive the Server. The
     /// action is called on loop 0.
     const PublishSources* publish = nullptr;
+    /// ADR-0041: when set, the admin listener's `/metrics` needs `Authorization: Bearer <token>`
+    /// (at least kMinAdminTokenBytes; `/healthz` and `/readyz` stay open). Ignored when
+    /// ServerConfig::admin is unset. Borrowed; must outlive the Server.
+    const std::string* admin_token = nullptr;
 };
 
 /// A WebSocket server (Facade): accepts connections, runs them on one or more loops, shuts them
@@ -158,6 +162,7 @@ private:
     [[nodiscard]] Result<void> start_admin();
     [[nodiscard]] Result<void> start_publish();
     [[nodiscard]] Result<void> make_shared_state();
+    void note_admin_refusal();
     void on_shard_drained();
     void on_signal(int signo);
 
@@ -165,6 +170,7 @@ private:
     IHandlerFactory& factory_;
     IHandshakeDecider* decider_;             // null = the hook is off
     const PublishSources* publish_sources_;  // null = no publish endpoint; borrowed
+    const std::string* admin_token_;         // null = /metrics is open; borrowed (ADR-0041)
     ITransportWrapper* wrapper_;             // null = plain TCP
     LinuxSyscalls own_sys_;
     SteadyClock own_clock_;
@@ -189,7 +195,8 @@ private:
     std::vector<std::unique_ptr<WorkerThread>> workers_;  // shards 1..threads-1, started by run()
     std::unique_ptr<TcpListener> listener_;
     std::unique_ptr<Acceptor> acceptor_;
-    std::unique_ptr<AdminEndpoint> admin_;      // on loop 0; null = off; destroyed before loop 0
+    std::unique_ptr<AdminEndpoint> admin_;  // on loop 0; null = off; destroyed before loop 0
+    std::uint64_t admin_refusals_ = 0;  // /metrics requests refused for their credential (loop 0)
     std::unique_ptr<PublishEndpoint> publish_;  // same: loop 0, null = off, destroyed before it
     std::unique_ptr<SignalWatcher> signals_;
 

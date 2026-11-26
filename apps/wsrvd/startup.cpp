@@ -211,43 +211,93 @@ constexpr std::string_view kBuiltInSocket = WSRVD_DEFAULT_IPC_SOCKET;
 constexpr std::string_view kBuiltInSocket{};
 #endif
 
-/// The IPC token and the publish token, each read from its file with the permission checks of
-/// read_token_file. The publish token goes straight into the embedded config, never through the key
-/// table; it must be a generated one (ADR-0039) and keeps the length floor of set_publish_token()
-/// as the last defence.
-Result<void> read_secrets(Startup& startup, ISyscalls& sys) {
-    if (!startup.config.token_file().empty()) {
-        Result<std::string> token = read_token_file(sys, startup.config.token_file());
-        if (!token) {
-            return std::unexpected{token.error()};
-        }
-        // Over TCP the token is the only authentication and can be guessed from the network, so
-        // only the form the generator writes is accepted: a long token somebody chose is not safe
-        // (ADR-0038 section 3). The message names the fix and never echoes the token.
-        if (startup.config.tcp() && !is_generated_token(*token)) {
-            return fail(ErrorCode::InvalidConfig,
-                        "config: over TCP the ipc token must be one made by `wsrvd "
-                        "--generate-token=FILE` (a token you chose, however long, can be guessed)");
-        }
-        startup.token = std::move(*token);
+/// The IPC token, read from its file with the permission checks of read_token_file. Over TCP the
+/// token is the only authentication and can be guessed from the network, so only the form the
+/// generator writes is accepted: a long token somebody chose is not safe (ADR-0038 section 3). The
+/// message names the fix and never echoes the token.
+Result<void> read_ipc_token(Startup& startup, ISyscalls& sys) {
+    if (startup.config.token_file().empty()) {
+        return {};
     }
-    if (!startup.config.publish_token_file().empty()) {
-        Result<std::string> token = read_token_file(sys, startup.config.publish_token_file());
-        if (!token) {
-            return std::unexpected{token.error()};
-        }
-        // The endpoint is plain HTTP and its token the only authentication, so a long token somebody
-        // chose is as unsafe here as over TCP IPC (ADR-0039). The rule is new in 1.1 and the message
-        // says so, because it can stop a 1.0 configuration that worked. It never echoes the token.
-        if (!is_generated_token(*token)) {
-            return fail(ErrorCode::InvalidConfig,
-                        "config: from wsrv 1.1 the publish token must be one made by `wsrvd "
-                        "--generate-token=FILE` (a token you chose, however long, can be guessed); "
-                        "make a new one and give it to your publishers");
-        }
-        return startup.config.set_publish_token(std::move(*token));
+    Result<std::string> token = read_token_file(sys, startup.config.token_file());
+    if (!token) {
+        return std::unexpected{token.error()};
     }
+    if (startup.config.tcp() && !is_generated_token(*token)) {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: over TCP the ipc token must be one made by `wsrvd "
+                    "--generate-token=FILE` (a token you chose, however long, can be guessed)");
+    }
+    startup.token = std::move(*token);
     return {};
+}
+
+/// The admin token (ADR-0041). Plain HTTP and the only credential for /metrics, so a long token
+/// somebody chose is as guessable here as anywhere (as ADR-0039). A scraper holds this token, so it
+/// must not also speak as the application's worker: it must differ from the IPC token, which is
+/// read first. The messages name the fix and never echo a token.
+Result<void> read_admin_token(Startup& startup, ISyscalls& sys) {
+    if (startup.config.admin_token_file().empty()) {
+        return {};
+    }
+    Result<std::string> token = read_token_file(sys, startup.config.admin_token_file());
+    if (!token) {
+        return std::unexpected{token.error()};
+    }
+    if (!is_generated_token(*token)) {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: the admin token must be one made by `wsrvd --generate-token=FILE` "
+                    "(a token you chose, however long, can be guessed)");
+    }
+    if (*token == startup.token) {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: the admin token must differ from the ipc token (a scraper that "
+                    "held it could speak as the application); make a new one with `wsrvd "
+                    "--generate-token=FILE`");
+    }
+    return startup.config.set_admin_token(std::move(*token));
+}
+
+/// The publish token (ADR-0028), which goes straight into the embedded config, never through the key
+/// table. The endpoint is plain HTTP and its token the only authentication, so a long token somebody
+/// chose is as unsafe here as over TCP IPC (ADR-0039). The rule is new in 1.1 and the message says
+/// so, because it can stop a 1.0 configuration that worked. It must differ from the admin token,
+/// which is read first (ADR-0041). It never echoes a token, and set_publish_token() keeps the
+/// length floor as the last defence.
+Result<void> read_publish_token(Startup& startup, ISyscalls& sys) {
+    if (startup.config.publish_token_file().empty()) {
+        return {};
+    }
+    Result<std::string> token = read_token_file(sys, startup.config.publish_token_file());
+    if (!token) {
+        return std::unexpected{token.error()};
+    }
+    if (!is_generated_token(*token)) {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: from wsrv 1.1 the publish token must be one made by `wsrvd "
+                    "--generate-token=FILE` (a token you chose, however long, can be guessed); "
+                    "make a new one and give it to your publishers");
+    }
+    const std::string& admin = startup.config.embedded().admin_token();
+    if (!admin.empty() && *token == admin) {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: the publish token must differ from the admin token (a scraper that "
+                    "held it could publish into rooms); make a new one with `wsrvd "
+                    "--generate-token=FILE`");
+    }
+    return startup.config.set_publish_token(std::move(*token));
+}
+
+/// The three secrets, each from its own file, in the order the distinctness rules need: IPC, then
+/// admin (differs from IPC), then publish (differs from admin).
+Result<void> read_secrets(Startup& startup, ISyscalls& sys) {
+    if (const Result<void> ipc = read_ipc_token(startup, sys); !ipc) {
+        return ipc;
+    }
+    if (const Result<void> admin = read_admin_token(startup, sys); !admin) {
+        return admin;
+    }
+    return read_publish_token(startup, sys);
 }
 
 /// The text printed for --help and after a usage error (data, not one long function).
@@ -279,8 +329,15 @@ constexpr std::string_view kUsageText =
            "  --max-message-size=BYTES  --max-connections=N  --shutdown-grace-ms=MS\n"
            "  --admin-port=PORT  --admin-host=ADDR (127.0.0.1)  serve /metrics, /healthz and\n"
            "                             /readyz over plain HTTP on this address; off unless\n"
-           "                             a port is given; there is no authentication, so keep\n"
-           "                             it on loopback or behind a network policy\n"
+           "                             a port is given; there is no authentication (but see\n"
+           "                             --admin-token-file), so keep it on loopback or behind\n"
+           "                             a network policy\n"
+           "  --admin-token-file=FILE    with --admin-port: GET /metrics then needs `Authorization:\n"
+           "                             Bearer <token>`; /healthz and /readyz stay open (probes\n"
+           "                             cannot send one). FILE holds a token made by\n"
+           "                             --generate-token, mode 0600, different from the publish\n"
+           "                             and IPC tokens. The token travels in clear: this keeps\n"
+           "                             out whoever can reach the port, not whoever can read it\n"
            "  --publish-port=PORT  --publish-host=ADDR (127.0.0.1)  --publish-token-file=FILE\n"
            "                             accept `POST /publish?topic=T` from other processes and\n"
            "                             send the body to the subscribers of T (needs\n"

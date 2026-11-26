@@ -30,6 +30,9 @@ namespace wsrv::wsrvd {
 ///   publish_token_file   file holding the publish token (ADR-0028), same file rules; the token must
 ///                        be one `wsrvd --generate-token` made (ADR-0039); required with
 ///                        publish_port, and there is no publish_token key
+///   admin_token_file     file holding the token `/metrics` then needs (ADR-0041), same file rules
+///                        and the same generated form; requires admin_port, must differ from the
+///                        publish and IPC tokens; there is no admin_token key
 ///   ipc_max_frame        largest IPC frame after HELLO; default max_message_size + 64 KiB
 ///   ipc_hello_timeout_ms how long a new connection may take to say HELLO (default 5000)
 ///   ipc_stall_ms         how long the application may leave our output unread before we close
@@ -100,6 +103,14 @@ public:
     [[nodiscard]] const std::string& publish_token_file() const noexcept {
         return publish_token_file_;
     }
+    /// The file holding the admin token (ADR-0041); empty when `/metrics` is open.
+    [[nodiscard]] const std::string& admin_token_file() const noexcept {
+        return admin_token_file_;
+    }
+    /// Hand the admin token (already read from its file) to the embedded server's config.
+    [[nodiscard]] Result<void> set_admin_token(std::string token) {
+        return embedded_.set_admin_token(std::move(token));
+    }
     /// Hand the publish token (already read from its file) to the embedded server's config.
     [[nodiscard]] Result<void> set_publish_token(std::string token) {
         return embedded_.set_publish_token(std::move(token));
@@ -116,8 +127,10 @@ public:
     }
 
 private:
-    [[nodiscard]] std::optional<Result<void>> set_publish_key(std::string_view key,
-                                                             std::string_view value);
+    /// The token file keys: publish_token_file (ADR-0028) and admin_token_file (ADR-0041), and the
+    /// refusal of a token as a value. @return nothing when `key` is none of them.
+    [[nodiscard]] std::optional<Result<void>> set_token_file_key(std::string_view key,
+                                                                std::string_view value);
     /// ipc_port and ipc_host (ADR-0038). @return nothing when `key` is neither.
     [[nodiscard]] std::optional<Result<void>> set_transport_key(std::string_view key,
                                                                std::string_view value);
@@ -132,6 +145,7 @@ private:
     Endpoint ipc_endpoint_;
     std::string token_file_;
     std::string publish_token_file_;
+    std::string admin_token_file_;
     std::uint64_t explicit_max_frame_ = 0;  // 0 = not set
     std::uint32_t max_frame_ = 0;
     std::chrono::milliseconds hello_timeout_ = kDefaultHelloTimeout;

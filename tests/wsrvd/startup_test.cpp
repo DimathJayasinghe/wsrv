@@ -249,6 +249,98 @@ TEST_F(StartupTest, ATypoInAGeneratedPublishTokenStopsTheStartup) {
     EXPECT_EQ(startup.error().code, ErrorCode::InvalidConfig);
 }
 
+// ADR-0041: the optional token for the admin listener's /metrics page. Same file rules and the same
+// generated form as the publish token; a file and a port come as a pair; and it must not be a
+// token that already opens something else.
+constexpr std::string_view kOtherGenerated =  // the all-zero token of token_format_test
+    "wsrv1_0000000000000000000000000000000000000000000000000000000000000000_e3805f5e";
+static_assert(kOtherGenerated != kGenerated, "the distinctness tests need two different tokens");
+
+TEST_F(StartupTest, TheAdminTokenIsReadFromItsFileAndGivenToTheEmbeddedConfig) {
+    const std::string token = write("admin", std::string{kGenerated} + "\n");
+    const auto startup =
+        run({"--ipc-socket=/run/x.sock", "--admin-port=9100", "--admin-token-file=" + token});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_TRUE(startup->config.embedded().admin_requested());
+    EXPECT_EQ(startup->config.embedded().admin_token(), std::string{kGenerated});
+}
+
+TEST_F(StartupTest, WithoutAnAdminTokenFileTheAdminListenerIsOpenAsBefore) {
+    const auto startup = run({"--ipc-socket=/run/x.sock", "--admin-port=9100"});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_TRUE(startup->config.embedded().admin_token().empty());
+}
+
+TEST_F(StartupTest, TheAdminTokenHasNoKeyAndNoFlag) {
+    EXPECT_FALSE(run({"--ipc-socket=/run/x.sock",
+                      "--admin-port=9100",
+                      "--admin-token=" + std::string(kGenerated)})
+                     .has_value());
+}
+
+TEST_F(StartupTest, AnAdminTokenFileWithoutAnAdminPortIsAMistake) {
+    const std::string token = write("admin", std::string{kGenerated});
+    const auto startup = run({"--ipc-socket=/run/x.sock", "--admin-token-file=" + token});
+    ASSERT_FALSE(startup.has_value());
+    EXPECT_EQ(startup.error().code, ErrorCode::InvalidConfig);
+    EXPECT_NE(std::string{startup.error().context}.find("admin_port"), std::string::npos);
+}
+
+TEST_F(StartupTest, ABadAdminTokenFileStopsTheStartupAndTheMessageNamesTheFix) {
+    const std::string chosen = "MyCompanyWebsocketToken2026!!!!!MyCompany";  // 40 bytes, guessable
+    std::string typo = std::string{kGenerated};
+    typo[10] = typo[10] == 'a' ? 'b' : 'a';
+    const std::string open = write("open", std::string{kGenerated}, 0644);
+    for (const std::string& file : {write("chosen", chosen),
+                                    write("short", std::string(31, 'p')),
+                                    write("typo", typo),
+                                    open}) {
+        const auto startup =
+            run({"--ipc-socket=/run/x.sock", "--admin-port=9100", "--admin-token-file=" + file});
+        ASSERT_FALSE(startup.has_value()) << file;
+        EXPECT_EQ(startup.error().code, ErrorCode::InvalidConfig);
+        const std::string message{startup.error().context};
+        EXPECT_EQ(message.find(chosen), std::string::npos) << "the token must not be echoed";
+    }
+    const auto chosen_only = run({"--ipc-socket=/run/x.sock",
+                                  "--admin-port=9100",
+                                  "--admin-token-file=" + write("chosen2", chosen)});
+    ASSERT_FALSE(chosen_only.has_value());
+    EXPECT_NE(std::string{chosen_only.error().context}.find("--generate-token"), std::string::npos);
+}
+
+// A scraper holds the admin token. If it were also the publish token the scraper could publish into
+// rooms, and if it were the IPC token it could speak as the application's worker.
+TEST_F(StartupTest, TheAdminTokenMustDifferFromThePublishAndTheIpcToken) {
+    const std::string admin = write("admin", std::string{kGenerated});
+    const std::string same = write("same", std::string{kGenerated});
+    const std::string other = write("other", std::string{kOtherGenerated});
+
+    const auto as_publish = run({"--ipc-socket=/run/x.sock",
+                                 "--broker=true",
+                                 "--admin-port=9100",
+                                 "--admin-token-file=" + admin,
+                                 "--publish-port=9200",
+                                 "--publish-token-file=" + same});
+    ASSERT_FALSE(as_publish.has_value());
+    EXPECT_NE(std::string{as_publish.error().context}.find("publish"), std::string::npos);
+
+    const auto as_ipc = run({"--ipc-socket=/run/x.sock",
+                             "--ipc-token-file=" + same,
+                             "--admin-port=9100",
+                             "--admin-token-file=" + admin});
+    ASSERT_FALSE(as_ipc.has_value());
+    EXPECT_NE(std::string{as_ipc.error().context}.find("ipc"), std::string::npos);
+
+    const auto distinct = run({"--ipc-socket=/run/x.sock",
+                               "--broker=true",
+                               "--admin-port=9100",
+                               "--admin-token-file=" + admin,
+                               "--publish-port=9200",
+                               "--publish-token-file=" + other});
+    EXPECT_TRUE(distinct.has_value()) << "three different tokens are the intended setup";
+}
+
 // The Unix-socket IPC token keeps its old rules: the publish rule must not leak into it.
 TEST_F(StartupTest, TheUnixSocketIpcTokenStillAcceptsAnyToken) {
     const auto startup = run({"--ipc-socket=/run/x.sock",
@@ -319,6 +411,16 @@ TEST_F(EnvironmentTest, TheBufferedBytesBudgetIsAVariableAndAFlagAndABadOneIsRef
         run_with({}, {"WSRVD_IPC_SOCKET=/run/a.sock", "WSRVD_MAX_BUFFERED_BYTES=1099511627776"});
     ASSERT_TRUE(top.has_value()) << "exactly 1 TiB is the largest value";
     EXPECT_EQ(top->config.embedded().server().max_buffered_bytes, std::size_t{1} << 40);
+}
+
+TEST_F(EnvironmentTest, TheAdminTokenFileIsAVariableLikeAnyOther) {  // ADR-0041
+    const auto startup =
+        run_with({},
+                 {"WSRVD_IPC_SOCKET=/run/a.sock",
+                  "WSRVD_ADMIN_PORT=9100",
+                  "WSRVD_ADMIN_TOKEN_FILE=" + write("admin", std::string{kGenerated})});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_EQ(startup->config.embedded().admin_token(), std::string{kGenerated});
 }
 
 TEST_F(EnvironmentTest, TheLogSettingsAreFlagsAndVariablesLikeAnyOther) {  // ADR-0037
@@ -455,6 +557,25 @@ TEST_F(EnvironmentTest, HealthcheckIsAModeAndNeedsTheSameConfiguration) {
     EXPECT_FALSE(run_with({"--healthcheck"}, {}).has_value()) << "no socket path: nothing to check";
 }
 
+// ADR-0041: the container's HEALTHCHECK runs with the daemon's environment, so it sees
+// WSRVD_ADMIN_TOKEN_FILE too. It must neither need that file (a probe that fails because a secret
+// is unreadable would restart a healthy pod) nor send a credential.
+TEST_F(EnvironmentTest, HealthcheckWithAnAdminTokenFileDoesNotReadTheFile) {
+    const auto startup = run_with({"--healthcheck"},
+                                  {"WSRVD_IPC_SOCKET=/run/a.sock",
+                                   "WSRVD_ADMIN_PORT=9100",
+                                   "WSRVD_ADMIN_TOKEN_FILE=/run/secrets/does-not-exist"});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_TRUE(startup->healthcheck);
+    EXPECT_TRUE(startup->config.embedded().admin_token().empty()) << "no token file is read";
+    const auto daemon = run_with({},
+                                 {"WSRVD_IPC_SOCKET=/run/a.sock",
+                                  "WSRVD_ADMIN_PORT=9100",
+                                  "WSRVD_ADMIN_TOKEN_FILE=/run/secrets/does-not-exist"});
+    EXPECT_FALSE(daemon.has_value())
+        << "the daemon itself does read it, and a missing file stops it";
+}
+
 TEST(Usage, NamesTheEnvironmentAndHealthcheckAndSaysTokensAreNeverEnvironment) {  // ADR-0030
     const std::string_view text = wsrv::wsrvd::usage();
     EXPECT_NE(text.find("--healthcheck"), std::string_view::npos);
@@ -485,6 +606,12 @@ TEST(Usage, NamesTheBufferedBytesBudgetAndWhatToSetItTo) {  // ADR-0040
     const std::string_view text = wsrv::wsrvd::usage();
     EXPECT_NE(text.find("--max-buffered-bytes"), std::string_view::npos);
     EXPECT_NE(text.find("half the memory limit"), std::string_view::npos);
+}
+
+TEST(Usage, NamesTheAdminTokenFileAndSaysWhichPagesItProtects) {  // ADR-0041
+    const std::string_view text = wsrv::wsrvd::usage();
+    EXPECT_NE(text.find("--admin-token-file"), std::string_view::npos);
+    EXPECT_NE(text.find("/metrics"), std::string_view::npos);
 }
 
 TEST(Usage, NamesTheAdminFlagsAndWarnsThatThePortIsNotAuthenticated) {  // ADR-0023

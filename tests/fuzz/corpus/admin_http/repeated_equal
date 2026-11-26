@@ -1,0 +1,4 @@
+GET /metrics HTTP/1.1
+Authorization: Bearer wsrv1-fuzz-token-0123456789abcdef0123456789abcdef
+Authorization: Bearer wsrv1-fuzz-token-0123456789abcdef0123456789abcdef
+

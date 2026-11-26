@@ -195,6 +195,17 @@ public:
     }
     /// @return Error{InvalidConfig} when the token is shorter than kMinPublishTokenBytes.
     [[nodiscard]] Result<void> set_publish_token(std::string token);
+
+    /// The token `/metrics` needs on the admin listener (ADR-0041); empty = the page is open. Like
+    /// the publish token it is not a key: it cannot come from a config file, a command line or the
+    /// C ABI's string settings, only from here. It lives as long as this config, which the server
+    /// borrows it from.
+    [[nodiscard]] const std::string& admin_token() const noexcept {
+        return admin_token_;
+    }
+    /// @return Error{InvalidConfig} when the token is shorter than kMinAdminTokenBytes, or when no
+    /// admin_port was set (a token for a listener that is not there is a mistake).
+    [[nodiscard]] Result<void> set_admin_token(std::string token);
     /// Whether the publish settings make sense together: with publish_port the broker must be on
     /// and a token must have been given. @return Error{InvalidConfig} otherwise.
     [[nodiscard]] Result<void> check_publish() const;
@@ -261,6 +272,7 @@ private:
     std::string admin_host_ = "127.0.0.1";    // loopback: the admin page has no authentication
     std::string publish_host_ = "127.0.0.1";  // loopback unless the operator opts into exposure
     std::string publish_token_;               // a secret: never logged, never a config key
+    std::string admin_token_;                 // the same, for /metrics (ADR-0041)
     std::string host_ = "127.0.0.1";          // loopback unless the operator opts into exposure
     std::string tls_cert_;
     std::string tls_key_;

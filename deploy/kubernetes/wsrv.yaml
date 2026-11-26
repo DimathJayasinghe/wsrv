@@ -23,6 +23,11 @@ data:
   WSRVD_MAX_BUFFERED_BYTES: "268435456"
   # /healthz, /readyz and /metrics for the kubelet and Prometheus; protected by the NetworkPolicy below.
   WSRVD_ADMIN_HOST: "0.0.0.0"
+  # Optional (ADR-0041): also require a bearer token for /metrics (the probes stay open). Make a token with
+  # `wsrvd --generate-token` (different from the publish token), add it to the Secret as `admin-token`, copy it
+  # in the init container exactly as the publish token is copied (install -m 0600 ... /run/wsrv/ipc/admin.token),
+  # then uncomment the next line. Give Prometheus the same file: `authorization: {credentials_file: ...}`.
+  # WSRVD_ADMIN_TOKEN_FILE: "/run/wsrv/ipc/admin.token"
   WSRVD_BROKER: "true"
   WSRVD_PUBLISH_HOST: "0.0.0.0"
   WSRVD_PUBLISH_PORT: "9200"

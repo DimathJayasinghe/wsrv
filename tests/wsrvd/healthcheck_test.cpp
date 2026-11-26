@@ -19,6 +19,9 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "capi/embedded_config.hpp"
+#include "capi/embedded_server.hpp"
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -196,6 +199,25 @@ TEST(Healthcheck, WithAdminItAsksHealthzAndWantsA200) {
     HealthTarget target;
     target.admin_host = "127.0.0.1";
     target.admin_port = admin.port();
+    EXPECT_TRUE(check_health(target, 2s).has_value());
+}
+
+// ADR-0041, the claim the token design rests on: with a token on /metrics, the probe the image and
+// the liveness check run still passes, because it asks /healthz and sends no credential. A real
+// server, the real probe.
+TEST(Healthcheck, ARealAdminListenerThatGuardsMetricsStillAnswersTheProbe) {
+    wsrv::EmbeddedConfig config;
+    ASSERT_TRUE(config.set("allow_origin", "https://app.example.com").has_value());
+    ASSERT_TRUE(config.set("shutdown_grace_ms", "2000").has_value());
+    ASSERT_TRUE(config.set("admin_port", "0").has_value());
+    ASSERT_TRUE(config.set_admin_token(std::string(48, 't')).has_value());
+    auto server = wsrv::EmbeddedServer::create(config);
+    ASSERT_TRUE(server.has_value());
+    ASSERT_TRUE((*server)->start().has_value());
+    HealthTarget target;
+    target.admin_host = "127.0.0.1";
+    target.admin_port = (*server)->admin_port();
+    ASSERT_NE(target.admin_port, 0);
     EXPECT_TRUE(check_health(target, 2s).has_value());
 }
 
