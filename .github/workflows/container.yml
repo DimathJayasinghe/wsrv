@@ -1,0 +1,83 @@
+name: container
+
+# The wsrvd image (docker/wsrvd.Dockerfile) must keep three promises: it starts from environment
+# variables alone (ADR-0030), `docker ps` reports it healthy (the HEALTHCHECK runs `wsrvd
+# --healthcheck`), and a mistyped WSRVD_ variable stops it instead of starting a weaker server.
+# Runs only when the image or what goes into it changes; one native build, about five minutes.
+on:
+  push:
+    branches: [main, develop]
+    paths: ['docker/wsrvd.Dockerfile', 'apps/wsrvd/**', 'src/**', 'include/**', 'CMakeLists.txt', 'CMakePresets.json', 'cmake/**', '.github/workflows/container.yml']
+  pull_request:
+    paths: ['docker/wsrvd.Dockerfile', 'apps/wsrvd/**', 'src/**', 'include/**', 'CMakeLists.txt', 'CMakePresets.json', 'cmake/**', '.github/workflows/container.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build the image
+        run: docker build -f docker/wsrvd.Dockerfile -t wsrvd:ci .
+      - name: Starts from the environment and becomes healthy
+        run: |
+          docker run -d --name wsrvd-env \
+            -e WSRVD_ALLOW_ORIGIN=https://a.example,https://b.example \
+            -e WSRVD_MAX_CONNECTIONS_PER_IP=7 \
+            wsrvd:ci
+          for i in $(seq 1 30); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' wsrvd-env)
+            [ "$status" = healthy ] && break
+            sleep 2
+          done
+          echo "health after wait: $status"
+          docker logs wsrvd-env
+          [ "$status" = healthy ]
+      - name: The daemon says what it is doing, one structured line per event (ADR-0037)
+        run: |
+          logs="$(docker logs wsrvd-env 2>&1)"
+          echo "$logs" | grep -Eq '^ts=[0-9T:.Z-]+ level=info event=ipc_ready msg="'
+          echo "$logs" | grep -Eq '^ts=[0-9T:.Z-]+ level=info event=listening msg="'
+          # Every line on stderr is a log line: nothing unstructured has crept back in.
+          ! echo "$logs" | grep -Ev '^ts=[0-9T:.Z-]+ level=(error|warn|info|debug) event=[a-z_]+ ' | grep .
+      - name: Reports unhealthy once the daemon is gone
+        run: |
+          # The probe is the binary's own mode: ask it directly with the container's environment.
+          docker exec wsrvd-env /usr/local/bin/wsrvd --healthcheck
+          docker kill wsrvd-env
+          ! docker run --rm -e WSRVD_IPC_SOCKET=/nonexistent/ipc.sock wsrvd:ci --healthcheck
+      - name: The log level is honoured and a misspelled one stops the start
+        run: |
+          docker run -d --name wsrvd-quiet -e WSRVD_LOG_LEVEL=warn wsrvd:ci
+          for i in $(seq 1 30); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' wsrvd-quiet)" = healthy ] && break
+            sleep 2
+          done
+          quiet="$(docker logs wsrvd-quiet 2>&1)"
+          echo "at warn level: $quiet"
+          echo "$quiet" | grep -q 'event=ipc_no_token'      # a warning is still said
+          ! echo "$quiet" | grep -q 'event=listening'       # info is not
+          docker kill wsrvd-quiet
+          set +e
+          out=$(docker run --rm -e WSRVD_LOG_LEVEL=loud wsrvd:ci 2>&1)
+          code=$?
+          echo "$out" | head -3
+          [ "$code" -ne 0 ]
+          echo "$out" | grep -q WSRVD_LOG_LEVEL
+      - name: A mistyped WSRVD_ variable stops the start and names itself
+        run: |
+          set +e
+          out=$(docker run --rm -e WSRVD_ALLOW_ORIGINS=https://a.example wsrvd:ci 2>&1)
+          code=$?
+          echo "$out" | head -5
+          [ "$code" -ne 0 ]
+          echo "$out" | grep -q WSRVD_ALLOW_ORIGINS

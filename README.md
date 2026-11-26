@@ -1,28 +1,126 @@
-# wsrv — WebSocket Server in C++
+# wsrv: a WebSocket server for PHP, with a C++ core
 
-A from-scratch, standards-compliant **RFC 6455** WebSocket server written in modern C++.
-No Boost, no Asio, no third-party WebSocket libraries. Quality over feature count.
+Hold thousands of WebSocket connections in one small daemon and write the logic in PHP (or any
+language that can call a C ABI). A from-scratch **RFC 6455** implementation in modern C++23: no Boost,
+no Asio, no third-party WebSocket library. Open source under the [Apache License 2.0](LICENSE).
 
-> Status: **pre-release, no tagged version yet; for evaluation, not for production.** RFC 6455 +
-> permessage-deflate + TLS, multi-loop server, per-IP limits, pub/sub broker (C++), Prometheus
-> metrics, C ABI, the `wsrvd` sidecar and a PHP package (sidecar client and embedded server over
-> FFI, PHP 8.2 to the latest release) are built, tested under ASan/UBSan/TSan, fuzzed, and
-> Autobahn-clean (517 cases, 0 failed). Linux only (x86-64 and aarch64). What is not done, and what
-> stands between this and a 1.0, is listed in [docs/RELEASE.md](docs/RELEASE.md); changes are in
-> [CHANGELOG.md](CHANGELOG.md). The documents below are the contract the code satisfies; read them
-> before changing code.
+> Status: **1.0.0**, stable. The 1.0 line freezes the IPC protocol, the C ABI and the PHP API (see
+> [Stability](#stability)); what was checked before release, and what is known and accepted, is in
+> [docs/RELEASE.md](docs/RELEASE.md), and changes are in [CHANGELOG.md](CHANGELOG.md). The server is Linux only
+> (x86-64 and aarch64); on macOS and Windows develop with Docker or WSL2 ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) section 11). A native macOS server and TCP IPC are planned for a future 1.x release.
 
-## Why this exists
+## What you get
+
+- **A daemon, `wsrvd`, that owns the sockets.** RFC 6455 and permessage-deflate (RFC 7692), TLS, Origin
+  checks on by default, per-IP and global limits, and a bound on every queue and buffer.
+- **Rooms and push.** A pub/sub broker and an HTTP publish endpoint, so a controller or a queue job can
+  send to browsers without holding a connection.
+- **A PHP package** (`composer require wsrv/client`, PHP 8.2 or newer, no extension for the sidecar): a
+  worker that reconnects after a daemon restart, a `Publisher`, and a [Laravel guide](docs/LARAVEL.md).
+- **A JavaScript client** that reconnects with backoff and rejoins its rooms
+  ([clients/js](clients/js/README.md)).
+- **Operations built in:** Prometheus metrics, `/healthz` and `/readyz`, graceful shutdown, and a
+  [deployment guide](docs/DEPLOYMENT.md) (Docker, Compose, systemd, Kubernetes, reverse proxies).
+- **Tested hard:** Autobahn|Testsuite (517 cases, 0 failed, also over `wss://`), the whole suite under
+  ASan, UBSan and TSan, and 12 fuzz targets.
+
+```
+browser ──WebSocket──▶ wsrvd (C++: sockets, TLS, limits, rooms) ──Unix socket──▶ your PHP worker
+                           ▲
+controller / queue job ──HTTP POST /publish (token)
+```
+
+PHP never runs on the daemon's I/O threads: a slow handler does not block the sockets (pings, handshakes and
+limits keep working), and a worker that stalls for good is cut off after a timeout and its clients are closed with 1001.
+
+## Run it in 60 seconds (PHP, Docker; no C++ and no compiler)
+
+```sh
+git clone https://github.com/DimathJayasinghe/wsrv && cd wsrv/examples/docker
+docker compose up -d                       # port 8080 busy? WSRV_PORT=18080 docker compose up -d
+npx wscat -c ws://localhost:8080/          # any WebSocket client works
+> hello                                    # < hello            (the PHP worker echoes)
+> join room.1                              # < joined room.1
+```
+
+In a second terminal, publish from a separate process, as a controller or a queue job would:
+
+```sh
+docker compose run --rm worker php /app/publish.php room.1 "hello from outside"
+# subscribers=1 accepted=1 refused=0   and the first terminal prints: hello from outside
+```
+
+Use it in your own project:
+
+| You want | Do this |
+|---|---|
+| The daemon | `docker run ghcr.io/dimathjayasinghe/wsrvd:1.0.0` (amd64 and arm64), or the checksummed binary from the [releases](https://github.com/DimathJayasinghe/wsrv/releases) |
+| The PHP client | `composer require wsrv/client` (PHP 8.2 or newer, no extension needed for the sidecar) |
+| Rooms and push from a controller or job | `Wsrv\Publisher`, see [bindings/php/README.md](bindings/php/README.md) |
+| Laravel | [docs/LARAVEL.md](docs/LARAVEL.md) (ticket login, an Artisan worker, queued publishing; tried against Laravel 13) |
+| Production notes | TLS, limits, metrics, hardening: [docs/OPERATIONS.md](docs/OPERATIONS.md) |
+
+Browser (`Origin`) checks are on by default; the example allows command-line clients with `--allow-missing-origin=true`: remove that for anything browser-facing.
+
+## How it compares
+
+Measured against Workerman 5, Swoole and Laravel Reverb on the same machine (512 connections for echo,
+5 000 for the broadcast; [docs/BENCHMARKS.md](docs/BENCHMARKS.md) has every number, the noise, and the
+harness in [`bench/compare/`](bench/compare/README.md) to run yourself):
+
+| | wsrv | Workerman 5 | Swoole | Reverb |
+|---|---|---|---|---|
+| Echo, four CPUs (messages/s) | **192,036** | 100,582 | 112,610 | n/a |
+| Echo, one CPU (messages/s) | 99,287 | 112,135 | **126,032** | n/a |
+| Broadcast to 5 000 subscribers, four CPUs (ms to the last one) | **31.1** | 58.6 | 52.2 | 89.5 |
+| Memory per idle connection, 10 000 connections | **8.3 KiB** | 8.8 KiB | 8.9 KiB | 20.5 KiB |
+
+wsrv is ahead when it has several cores (about 1.7 to 1.9 times the echo of the others with 512 connections)
+and behind per core on echo, by 11 to 21 percent on one CPU: the daemon and the PHP worker are two
+processes, the others are one. One laptop, a load generator written by this project, small messages
+and no TLS: read the page before you quote a number.
+
+## Stability
+
+From 1.0, across every 1.x release:
+
+- the **IPC protocol** between `wsrvd` and a worker (version 0.3): frames and fields are never removed
+  or changed, and minors only add;
+- the **C ABI** (`include/wsrv/wsrv.h`), which CI checks against the exported symbols;
+- the **PHP package** follows [semantic versioning](https://semver.org/), and the daemon and the package
+  are versioned together, so you can upgrade them one at a time (daemon first);
+- the **names of the log fields and events** ([docs/OPERATIONS.md](docs/OPERATIONS.md) section 2): new ones
+  may appear, none is renamed or removed; the message text is not promised.
+
+Not promised: the JavaScript client in `clients/js` (you copy its one file into your project; it is not on
+npm), the C++ headers under `src/`, metrics marked experimental in
+[docs/OPERATIONS.md](docs/OPERATIONS.md), and anything under `bench/` or `tests/`. How to upgrade a
+running system with no more than a reconnect: [docs/DEPLOYMENT.md, section 10](docs/DEPLOYMENT.md#10-upgrading).
+Security reports: [SECURITY.md](SECURITY.md).
+
+## Documentation
+
+| You want to | Read |
+|---|---|
+| Put it in production (Docker, systemd, Kubernetes, proxies, sizing, go-live checklist) | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
+| Configure, monitor and harden it (limits, TLS, metrics, shutdown) | [docs/OPERATIONS.md](docs/OPERATIONS.md) |
+| Use it from PHP | [bindings/php/README.md](bindings/php/README.md) |
+| Use it from Laravel | [docs/LARAVEL.md](docs/LARAVEL.md) |
+| Write a client or another language binding | [docs/IPC_PROTOCOL.md](docs/IPC_PROTOCOL.md), [docs/BINDINGS.md](docs/BINDINGS.md) |
+| Know what it costs and how it compares | [docs/BENCHMARKS.md](docs/BENCHMARKS.md), [docs/PERFORMANCE.md](docs/PERFORMANCE.md) |
+| Judge how safe it is | [docs/SECURITY_DESIGN.md](docs/SECURITY_DESIGN.md), [docs/RELEASE.md](docs/RELEASE.md) |
+
+## For contributors
 
 Languages such as PHP cannot hold long-lived sockets in their normal request model. wsrv is one
-audited C++ core exposed through a stable C ABI and a sidecar daemon, so PHP (first) and other
-languages get production-grade WebSocket servers. Open source under the [Apache License 2.0](LICENSE) ([NOTICE](NOTICE)); contributions welcome under the [Code of Conduct](CODE_OF_CONDUCT.md).
+audited C++ core exposed through a stable C ABI and a sidecar daemon, so PHP (first) and other languages
+get a production-grade WebSocket server. Contributions are welcome under the
+[Code of Conduct](CODE_OF_CONDUCT.md); start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Goals in one paragraph
-
-Correct (passes the full Autobahn|Testsuite), secure by default, observable, and maintainable.
-The protocol logic is *sans-I/O* (pure, deterministic, fuzzable); the networking layer is a thin,
-replaceable shell around it. Every design choice is traceable to an ADR in [docs/adr/](docs/adr/).
+The goals: correct (passes the full Autobahn|Testsuite), secure by default, observable, and
+maintainable. The protocol logic is *sans-I/O* (pure, deterministic, fuzzable); the networking layer is
+a thin, replaceable shell around it. Every design choice is traceable to an ADR in [docs/adr/](docs/adr/).
+The documents below are the contract the code satisfies; read them before changing code.
 
 ## Document map
 
@@ -43,6 +141,7 @@ replaceable shell around it. Every design choice is traceable to an ADR in [docs
 | [docs/LARAVEL.md](docs/LARAVEL.md) | Rooms and publishing from a Laravel app | Using wsrv from Laravel |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Config, logging, metrics, shutdown, deployment hardening | Shipping / running |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Measured scaling, fan-out and soak numbers and their limits | Sizing or touching a hot path |
+| [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | wsrv against Workerman, Swoole and Reverb: numbers, noise, limits, how to rerun | Choosing a server, or quoting a number |
 | [docs/RELEASE.md](docs/RELEASE.md) | 1.0-rc claims, evidence, known limitations, release checklist | Deciding whether to ship |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Workflow, commit rules, PR checklist, Definition of Done | Every PR |
 | [SECURITY.md](SECURITY.md) | Vulnerability reporting policy | Found a vuln |
@@ -50,7 +149,7 @@ replaceable shell around it. Every design choice is traceable to an ADR in [docs
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | How we treat each other | Joining the community |
 | [CLAUDE.md](CLAUDE.md) | Rules for AI coding agents working in this repo | Using an agent |
 
-## Planned layout
+## Source layout
 
 ```
 include/wsrv/      public API headers only (stable surface)
@@ -66,7 +165,7 @@ examples/          echo, chat
 docs/              this documentation set
 ```
 
-## Quick start (Docker, recommended)
+## Build from source (contributors)
 
 ```bash
 make image      # once: builds the dev image (GCC 14, Clang 18, CMake, sanitizers, ...)

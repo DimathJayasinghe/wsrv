@@ -37,6 +37,9 @@ TEST(ServerConfig, DefaultsMatchTheRequirementsTable) {  // REQUIREMENTS section
     EXPECT_EQ(config.session.outbound.max_frame_payload, 64U * 1024U);
     EXPECT_EQ(config.session.outbound.max_queued_bytes, 1U << 20U);
     EXPECT_EQ(config.session.idle_timeout, 60s);
+    EXPECT_EQ(config.session.ping_interval, 30s);
+    EXPECT_EQ(config.session.pong_timeout, 10s);
+    EXPECT_EQ(config.session.incomplete_message_timeout, 30s);
     EXPECT_EQ(config.session.close_timeout, 5s);
     EXPECT_EQ(config.session.max_control_frames_per_second, 100U);
     EXPECT_EQ(config.session.max_data_frames_per_second, 10000U);
@@ -65,6 +68,20 @@ TEST(ServerConfig, TheDecisionTimeoutMustBeBetween100MsAnd60Seconds) {
     EXPECT_EQ(complaint(config), "");
     config.handshake_decision_timeout = 60000ms;
     EXPECT_EQ(complaint(config), "");
+}
+
+TEST(ServerConfig, ThePendingSendBudgetHasABoundedDefaultAndIsRangeChecked) {  // ADR-0032
+    wsrv::ServerConfig config;
+    EXPECT_EQ(config.max_pending_send_bytes, std::size_t{64} << 20) << "per loop";
+    EXPECT_TRUE(wsrv::validate(config).has_value());
+    config.max_pending_send_bytes = 0;
+    EXPECT_FALSE(wsrv::validate(config).has_value()) << "no unlimited value";
+    config.max_pending_send_bytes = wsrv::kMaxConfiguredQueue + 1;
+    EXPECT_FALSE(wsrv::validate(config).has_value());
+    config.max_pending_send_bytes = wsrv::kMaxConfiguredQueue;
+    EXPECT_TRUE(wsrv::validate(config).has_value());
+    config.max_pending_send_bytes = 1;
+    EXPECT_TRUE(wsrv::validate(config).has_value()) << "tiny is allowed: it only refuses sends";
 }
 
 TEST(ServerConfig, PendingHandshakesNeedAPositiveBoundThatNeverExceedsTheConnectionCap) {

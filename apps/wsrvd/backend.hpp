@@ -31,9 +31,11 @@ public:
     /// The oldest pending event, or nothing. Never blocks.
     [[nodiscard]] virtual std::optional<HostEvent> poll() = 0;
 
-    /// Readable exactly while poll() would return an event (EventQueue::event_fd). The daemon
-    /// watches it on its loop; it is edge-triggered there, so a reader that stops before the queue
-    /// is empty must come back on its own (see Pump).
+    /// Readable once the host must come back for an event (EventQueue::event_fd): a message's
+    /// wake-up is paid at the end of the loop iteration that queued it (ADR-0035), so poll() can
+    /// return an event a little before the descriptor shows it. The daemon watches it on its loop,
+    /// edge-triggered; a reader that stops before the queue is empty must come back on its own
+    /// (see Pump), because the queue may be non-empty with the wake-up still owed.
     [[nodiscard]] virtual int event_fd() const noexcept = 0;
 
     /// Commands by connection id. Accepted, not delivered (ADR-0016 section 5). A connection that

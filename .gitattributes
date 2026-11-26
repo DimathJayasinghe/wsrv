@@ -17,7 +17,10 @@
 /Makefile export-ignore
 /SECURITY.md export-ignore
 /apps export-ignore
+/bench export-ignore
+/clients export-ignore
 /cmake export-ignore
+/deploy export-ignore
 /docker export-ignore
 /docker-compose.yml export-ignore
 /docs export-ignore

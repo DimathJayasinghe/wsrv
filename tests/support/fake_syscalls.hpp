@@ -21,6 +21,7 @@ enum class Call : std::size_t {
     Accept4,
     Read,
     Write,
+    Poll,
     Send,
     Shutdown,
     SetSockOpt,
@@ -31,6 +32,7 @@ enum class Call : std::size_t {
     UnlinkPath,
     PeerUid,
     EffectiveUid,
+    DupCloexec,
     EpollCreate1,
     EpollCtl,
     EpollWait,
@@ -118,6 +120,12 @@ public:
         }
         return real_.write(fd, buf, n);
     }
+    SysResult poll(pollfd* fds, nfds_t count, int timeout_ms) override {
+        if (const auto injected = scripted(Call::Poll)) {
+            return *injected;
+        }
+        return real_.poll(fds, count, timeout_ms);
+    }
     SysResult send(int fd, const void* buf, std::size_t n, int flags) override {
         if (const auto injected = scripted(Call::Send)) {
             return *injected;
@@ -182,6 +190,12 @@ public:
             return static_cast<std::uint32_t>(injected->value);
         }
         return real_.effective_uid();
+    }
+    SysResult dup_cloexec(int fd, int lowest) override {
+        if (const auto injected = scripted(Call::DupCloexec)) {
+            return *injected;
+        }
+        return real_.dup_cloexec(fd, lowest);
     }
     SysResult epoll_create1(int flags) override {
         if (const auto injected = scripted(Call::EpollCreate1)) {

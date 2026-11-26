@@ -20,6 +20,41 @@ TEST(EmbeddedConfig, DefaultsAreTheServerDefaultsOnLoopback) {
     EXPECT_TRUE(config.server().handshake.allowed_origins.empty());  // the safe default: reject
 }
 
+// ADR-0037 section 8.
+TEST(EmbeddedConfig, LoggingIsAtInfoWithoutTheClientAddressByDefault) {
+    const EmbeddedConfig config;
+    EXPECT_EQ(config.log_level(), LogLevel::Info);
+    EXPECT_FALSE(config.server().log_peer) << "an address is personal data (NFR-O1)";
+}
+
+TEST(EmbeddedConfig, LogLevelTakesTheFourLevelsAndNothingElse) {
+    EmbeddedConfig config;
+    for (const auto& [text, level] : {std::pair{"error", LogLevel::Error},
+                                      std::pair{"warn", LogLevel::Warn},
+                                      std::pair{"info", LogLevel::Info},
+                                      std::pair{"debug", LogLevel::Debug}}) {
+        ASSERT_TRUE(config.set("log_level", text).has_value()) << text;
+        EXPECT_EQ(config.log_level(), level) << text;
+    }
+    // "trace" is not offered (it would log payloads); names are exact, so a typo cannot silently
+    // mean "info".
+    for (const char* bad : {"trace", "verbose", "INFO", " info", "info ", "", "0"}) {
+        const auto set = config.set("log_level", bad);
+        ASSERT_FALSE(set.has_value()) << "'" << bad << "'";
+        EXPECT_EQ(set.error().code, ErrorCode::InvalidConfig);
+    }
+    EXPECT_EQ(config.log_level(), LogLevel::Debug) << "a refused value changes nothing";
+}
+
+TEST(EmbeddedConfig, LogPeerIsABoolean) {
+    EmbeddedConfig config;
+    ASSERT_TRUE(config.set("log_peer", "true").has_value());
+    EXPECT_TRUE(config.server().log_peer);
+    ASSERT_TRUE(config.set("log_peer", "false").has_value());
+    EXPECT_FALSE(config.server().log_peer);
+    EXPECT_FALSE(config.set("log_peer", "yes").has_value());
+}
+
 TEST(EmbeddedConfig, EveryDocumentedKeyIsAccepted) {
     EmbeddedConfig config;
     EXPECT_TRUE(config.set("listen_host", "0.0.0.0").has_value());
@@ -151,6 +186,40 @@ TEST(EmbeddedConfig, MalformedPerIpLimitsAreRefusedAndChangeNothing) {
     EXPECT_EQ(config.server().max_new_connections_per_ip_per_second, 50U);
 }
 
+TEST(EmbeddedConfig, TrustedProxiesAreOffByDefaultAndCollectRangesInOrder) {  // ADR-0029
+    EmbeddedConfig config;
+    EXPECT_TRUE(config.server().trusted_proxies.empty());
+    EXPECT_EQ(config.server().client_ip_header, "X-Forwarded-For");
+    EXPECT_TRUE(config.set("trusted_proxy", "10.0.0.0/8").has_value());
+    EXPECT_TRUE(config.set("trusted_proxy", "::1").has_value());
+    ASSERT_EQ(config.server().trusted_proxies.size(), 2U);
+    EXPECT_EQ(config.server().trusted_proxies[0].prefix, 96U + 8U);  // IPv4 kept as IPv4-mapped
+    EXPECT_TRUE(config.set("client_ip_header", "CF-Connecting-IP").has_value());
+    EXPECT_EQ(config.server().client_ip_header, "CF-Connecting-IP");
+}
+
+TEST(EmbeddedConfig, MalformedTrustedProxySettingsAreRefusedAndChangeNothing) {
+    EmbeddedConfig config;
+    for (const char* bad : {"", "10.0.0.0/33", "localhost", " 10.0.0.1", "10.0.0.0/8/8", "[::1]"}) {
+        EXPECT_FALSE(config.set("trusted_proxy", bad).has_value()) << "'" << bad << "'";
+    }
+    for (const char* bad : {"", "X Forwarded", "X-Forwarded-For:", "X\r\nFor"}) {
+        EXPECT_FALSE(config.set("client_ip_header", bad).has_value()) << "'" << bad << "'";
+    }
+    EXPECT_TRUE(config.server().trusted_proxies.empty());
+    EXPECT_EQ(config.server().client_ip_header, "X-Forwarded-For");
+}
+
+TEST(EmbeddedConfig, AtMostSixtyFourTrustedProxiesAreAccepted) {
+    EmbeddedConfig config;
+    for (int i = 0; i < 64; ++i) {
+        ASSERT_TRUE(config.set("trusted_proxy", "10.0." + std::to_string(i) + ".0/24").has_value())
+            << i;
+    }
+    EXPECT_FALSE(config.set("trusted_proxy", "10.1.0.0/24").has_value());
+    EXPECT_EQ(config.server().trusted_proxies.size(), 64U);
+}
+
 TEST(EmbeddedConfig, TheAdminListenerIsOffUntilAPortIsGiven) {  // ADR-0023 section 3
     EmbeddedConfig config;
     EXPECT_FALSE(config.admin_requested());
@@ -190,6 +259,52 @@ TEST(EmbeddedConfig, TheEventQueueLimitsAreCheckedWhenTheQueueIsBuiltNotHere) {
     EmbeddedConfig config;
     EXPECT_TRUE(config.set("event_queue_events", "1").has_value());
     EXPECT_EQ(config.queue().max_events, 1U);
+}
+
+// A live connection holds one slot of the event queue for its Close event (event_queue.hpp), so a
+// queue of 4096 events silently capped the server at 4095 connections whatever max_connections said
+// (found by the 1.0 benchmark: 5000 idle connections lost 905). The defaults now follow
+// max_connections; a value the operator sets stays exactly as set.
+TEST(EmbeddedConfig, TheDefaultEventQueueHoldsEveryConnectionTheServerAccepts) {
+    EmbeddedConfig config;  // max_connections 10000
+    EXPECT_GT(config.queue().max_events, config.server().max_connections)
+        << "every live connection reserves a slot for its Close";
+    EXPECT_GE(config.queue().max_bytes,
+              config.server().max_connections * EventQueue::kReservedCloseBytes)
+        << "and the bytes set aside for it";
+}
+
+TEST(EmbeddedConfig, TheDefaultEventQueueGrowsWithMaxConnectionsInEitherOrderOfSetting) {
+    EmbeddedConfig config;
+    ASSERT_TRUE(config.set("max_connections", "50000").has_value());
+    EXPECT_GT(config.queue().max_events, 50000U);
+    EXPECT_GE(config.queue().max_bytes, 50000U * EventQueue::kReservedCloseBytes);
+
+    EmbeddedConfig small;
+    ASSERT_TRUE(small.set("max_connections", "10").has_value());
+    // One slot per connection, plus the old default (4096 events, 8 MiB) as room for events in
+    // flight.
+    EXPECT_EQ(small.queue().max_events, 10U + 4096U);
+    EXPECT_EQ(small.queue().max_bytes,
+              10U * EventQueue::kReservedCloseBytes + (std::size_t{8} << 20));
+}
+
+TEST(EmbeddedConfig, AnEventQueueTheOperatorSetsIsNeverChanged) {
+    EmbeddedConfig config;
+    ASSERT_TRUE(config.set("max_connections", "50000").has_value());
+    ASSERT_TRUE(config.set("event_queue_events", "100").has_value());
+    ASSERT_TRUE(config.set("event_queue_bytes", "4096").has_value());
+    EXPECT_EQ(config.queue().max_events, 100U)
+        << "an explicit value wins: it is the operator's call";
+    EXPECT_EQ(config.queue().max_bytes, 4096U);
+}
+
+TEST(EmbeddedConfig, SettingOnlyOneEventQueueLimitLeavesTheOtherDerived) {
+    EmbeddedConfig config;
+    ASSERT_TRUE(config.set("max_connections", "50000").has_value());
+    ASSERT_TRUE(config.set("event_queue_events", "70000").has_value());
+    EXPECT_EQ(config.queue().max_events, 70000U);
+    EXPECT_GE(config.queue().max_bytes, 50000U * EventQueue::kReservedCloseBytes);
 }
 
 TEST(EmbeddedConfig, PermessageDeflateIsOffByDefaultAndItsKeysAreStored) {  // ADR-0020 section 6
@@ -277,6 +392,17 @@ TEST(EmbeddedConfig, TheHandshakeHookIsOffByDefaultAndItsKeysAreChecked) {  // A
     EXPECT_FALSE(config.set("handshake_decision_timeout_ms", "x").has_value());
     EXPECT_FALSE(config.set("max_pending_handshakes", "0").has_value());
     EXPECT_EQ(config.server().handshake_decision_timeout, 1500ms) << "a refusal changes nothing";
+}
+
+TEST(EmbeddedConfig, ThePendingSendBudgetKeyIsCheckedAndANoOpOnRefusal) {  // ADR-0032
+    EmbeddedConfig config;
+    EXPECT_EQ(config.server().max_pending_send_bytes, std::size_t{64} << 20);
+    ASSERT_TRUE(config.set("max_pending_send_bytes", "1048576").has_value());
+    EXPECT_EQ(config.server().max_pending_send_bytes, 1048576U);
+    EXPECT_FALSE(config.set("max_pending_send_bytes", "0").has_value()) << "no unlimited value";
+    EXPECT_FALSE(config.set("max_pending_send_bytes", "x").has_value());
+    EXPECT_FALSE(config.set("max_pending_send_bytes", "2147483648").has_value()) << "above 1 GiB";
+    EXPECT_EQ(config.server().max_pending_send_bytes, 1048576U) << "a refusal changes nothing";
 }
 
 // ---- ADR-0016 A1: the three limits a conformance run raises ---------------------------------

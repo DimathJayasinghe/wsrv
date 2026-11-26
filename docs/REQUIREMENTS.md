@@ -94,9 +94,9 @@ See [SECURITY_DESIGN.md](SECURITY_DESIGN.md). Secure by default; unsafe options 
 - **NFR-X2** OS specifics only in `src/net/` behind interfaces.
 
 ### 3.6 Observability
-- **NFR-O1** Structured logs (key=value or JSON), levels, no secrets/PII by default, sanitized.
+- **NFR-O1** Structured logs (key=value or JSON), levels, no secrets/PII by default, sanitized. *Built (ADR-0037): key=value lines on stderr, levels `error`..`debug`, the client address only with `log_peer`, peer text escaped and never logged, per-event rate limit, a stuck destination drops lines instead of stalling a loop.*
 - **NFR-O2** Metrics: connections (current/total/rejected by reason), bytes in/out, messages in/out, close codes histogram, handshake latency, queue depth, loop lag.
-- **NFR-O3** Per-connection ID for correlation.
+- **NFR-O3** Per-connection ID for correlation. *Built: `conn=` on every line about a connection.*
 
 ## 4. Default resource limits (all configurable, all enforced)
 
@@ -111,11 +111,11 @@ See [SECURITY_DESIGN.md](SECURITY_DESIGN.md). Secure by default; unsafe options 
 | Incomplete-message timeout | 30 s | close 1008 |
 | Max outbound frame payload (auto-fragmentation size) | 64 KiB | — |
 | Data-frame rate per connection | 10 000 / s | close 1008 |
-| Max concurrent connections (global) | 10 000 | refuse accept / 503 |
+| Max concurrent connections (global) | 10 000 | refused at accept: closed at once, no answer (FR-S1: minimal cost) |
 | Max connections per IP | 100 | 429 / close |
 | Handshake rate per IP | 50 / s | 429 |
 | Outbound queue per connection | 1 MiB | slow-consumer policy (default: close 1008) |
-| Inbound read buffer per connection | 64 KiB (grows to frame limit only when needed) | — |
+| Inbound read buffer | 16 KiB per event loop, shared by its connections; per connection only the unfinished frame is held (nothing reserved up front, bounded by the frame limit) | — |
 | Idle timeout | 60 s without any frame | close 1001 |
 | Ping interval / pong timeout | 30 s / 10 s | close 1002/1001 |
 | Close handshake timeout | 5 s | force TCP close |

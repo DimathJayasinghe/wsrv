@@ -8,7 +8,10 @@
 
 #include <array>
 #include <cerrno>
+#include <exception>
 #include <cstddef>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 
@@ -28,6 +31,8 @@ constexpr std::size_t kMaxReadsPerEvent = 16;   // fairness budget (EC-N07, EC-N
 constexpr std::size_t kMaxEventsPerFill = 256;  // events encoded before the buffer is flushed
 constexpr std::size_t kMaxPumpRounds = 16;      // fill+flush rounds before the loop gets a turn
 constexpr std::chrono::milliseconds kAcceptRetry{100};
+/// How soon a stale close that a full loop queue refused is tried again (ADR-0034).
+constexpr std::chrono::milliseconds kCloseRetry{25};
 // Close codes (RFC 6455 section 7.4.1; 1012 is in the IANA registry): 1001 Going Away,
 // 1012 Service Restart.
 constexpr std::uint16_t kCloseGoingAway = 1001;
@@ -82,6 +87,7 @@ public:
             server_.loop_.run_after(server_.config_.hello_timeout, [this] {
                 hello_timer_.reset();
                 if (state_ == State::AwaitHello) {
+                    server_.note(LogLevel::Warn, "app_rejected", "ipc: no HELLO in time, closing");
                     close();  // a peer that stays silent must not hold the only slot
                 }
             });
@@ -145,7 +151,9 @@ public:
             }
             if (round + 1 >= kMaxPumpRounds) {
                 // Events remain and the socket takes them, but other work deserves a turn.
-                // The backend's wake-up is edge-triggered: ask for a fresh edge.
+                // The backend's wake-up is edge-triggered: ask for a fresh edge. (If the queue is
+                // non-empty but its wake-up is still owed, the re-arm reports nothing and the
+                // owing loop's flush supplies the edge; ADR-0035.)
                 server_.rearm_event_source();
                 break;
             }
@@ -222,11 +230,16 @@ private:
         if (state_ == State::AwaitHello) {
             const Handshake::Outcome outcome = server_.handshake_.on_first_message(message);
             if (!outcome.accepted) {
+                // Which of version, token or format failed is not said: it would help a guesser.
+                server_.note(LogLevel::Warn,
+                             "app_rejected",
+                             "ipc: the first message was refused (version, token or format)");
                 closing_after_flush_ = true;  // one STATUS, then goodbye
                 send(outcome.reply);
                 return;
             }
             state_ = State::Ready;
+            server_.note(LogLevel::Info, "app_connected", "ipc: application connected");
             peer_minor_ = outcome.peer_minor;
             if (hello_timer_) {
                 server_.loop_.cancel(*hello_timer_);
@@ -404,6 +417,11 @@ private:
         closed_ = true;
         teardown();
         if (state_ == State::Ready) {
+            if (stalled_) {
+                server_.note(LogLevel::Warn, "app_disconnected", "ipc: application stopped reading, cut off");
+            } else {
+                server_.note(LogLevel::Info, "app_disconnected", "ipc: application disconnected");
+            }
             server_.application_lost(stalled_);  // it had been told about connections
         }
         server_.release(this);
@@ -475,6 +493,9 @@ IpcServer::~IpcServer() {
     if (grace_timer_) {
         loop_.cancel(*grace_timer_);
     }
+    if (close_retry_) {
+        loop_.cancel(*close_retry_);
+    }
     if (events_watch_) {
         loop_.unwatch(*events_watch_);
     }
@@ -519,7 +540,7 @@ void IpcServer::application_lost(bool stalled) noexcept {
     }
     if (stalled) {
         // The application holds our output hostage; waiting would only grow the backlog.
-        relay_.close_stale(kCloseGoingAway, "application stalled");
+        close_stale_connections(kCloseGoingAway, "application stalled");
         return;
     }
     // A restart is the common case: give the replacement the grace period, then close what it
@@ -534,13 +555,36 @@ void IpcServer::application_lost(bool stalled) noexcept {
                 return;
             }
             grace_timer_.reset();
-            relay_.close_stale(kCloseServiceRestart, "service restart");
+            close_stale_connections(kCloseServiceRestart, "service restart");
         });
     if (timer) {
         grace_timer_ = *timer;
     } else {
         // No timer to wait with: close now rather than leave connections nobody will ever serve.
-        relay_.close_stale(kCloseServiceRestart, "service restart");
+        close_stale_connections(kCloseServiceRestart, "service restart");
+    }
+}
+
+void IpcServer::close_stale_connections(std::uint16_t code, std::string_view reason) {
+    if (close_retry_) {
+        loop_.cancel(*close_retry_);
+        close_retry_.reset();
+    }
+    if (relay_.close_stale(code, reason) == 0) {
+        return;
+    }
+    // A loop's task queue was full for some of them: they are still open. Try again shortly; each
+    // round only asks the ones still refused, and the set is bounded by max_connections.
+    const Result<TimerHandle> timer = loop_.run_after(
+        kCloseRetry, [this, code, text = std::string{reason}, weak = std::weak_ptr<char>{epoch_}] {
+            if (weak.expired()) {
+                return;
+            }
+            close_retry_.reset();
+            close_stale_connections(code, text);
+        });
+    if (timer) {
+        close_retry_ = *timer;
     }
 }
 
@@ -582,6 +626,7 @@ void IpcServer::admit(Fd client) noexcept {
     // 1. Who is on the other end, according to the kernel, before a single byte is read.
     std::uint32_t uid = 0;
     if (sys_.peer_uid(client.get(), uid).err != 0 || uid != sys_.effective_uid()) {
+        note(LogLevel::Warn, "app_rejected", "ipc: a connection from another user was dropped");
         return;  // closing the descriptor is the whole answer to a stranger
     }
     // 2. One application at a time. First let the current one show that it is gone, if it is.
@@ -592,6 +637,7 @@ void IpcServer::admit(Fd client) noexcept {
         peer_.reset();
     }
     if (peer_ != nullptr) {
+        note(LogLevel::Warn, "app_rejected", "ipc: a second application was refused, one is already connected");
         reject_busy(std::move(client));
         return;
     }
@@ -632,6 +678,16 @@ void IpcServer::schedule_retry() noexcept {
         });
     if (timer) {
         retry_ = *timer;
+    }
+}
+
+void IpcServer::note(LogLevel level, std::string_view event, std::string_view message) const noexcept {
+    if (config_.logger == nullptr) {
+        return;
+    }
+    try {
+        config_.logger->log(level, event, message);
+    } catch (const std::exception&) {  // NOLINT(bugprone-empty-catch): logging never fails the daemon
     }
 }
 

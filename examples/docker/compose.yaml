@@ -1,22 +1,45 @@
 # wsrv quickstart: the daemon and a PHP worker, no compiler, no C++.
-#   docker compose up --build      # builds the daemon image from this repository (works from a clone, today)
-#   WSRV_VERSION=0.1.0-rc.2 docker compose up      # or pull the published image once that tag exists (no build)
+#   docker compose up -d           # pulls ghcr.io/dimathjayasinghe/wsrvd:1.0.0 and builds the tiny PHP worker
+#   docker compose up --build      # same, but also rebuilds the daemon image from this repository's source
+#   WSRV_VERSION=1.0.0 docker compose up -d   # another published version (WSRV_CLIENT sets the PHP package's, below)
 #   then connect any WebSocket client to ws://localhost:8080/ and send a message: the worker echoes it.
 #
-# The two services share /run/wsrv (the daemon's private IPC socket directory). The socket is mode 0600
+# Rooms and publishing (ADR-0028): the daemon also runs the pub/sub broker and an HTTP publish endpoint on
+# port 9200 that only the other containers can reach (`expose:`, never `ports:`). `token-init` writes a random
+# token once into the shared volume, mode 0600, and the daemon and the worker both read it from there.
+#
+# The services share /run/wsrv (the daemon's private IPC socket directory). The socket is mode 0600
 # and the daemon checks the peer uid (ADR-0017), so both containers run as the same uid, 10001.
 services:
+  # Runs once and exits: creates /run/wsrv/publish.token (64 hex characters) if it does not exist yet.
+  token-init:
+    image: ghcr.io/dimathjayasinghe/wsrvd:${WSRV_VERSION:-1.0.0}
+    user: "10001:10001"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - umask 077; [ -s /run/wsrv/publish.token ] || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > /run/wsrv/publish.token
+    volumes:
+      - ipc:/run/wsrv
+    restart: "no"
+
   wsrvd:
-    image: ghcr.io/dimathjayasinghe/wsrvd:${WSRV_VERSION:-0.1.0-rc.2}
+    image: ghcr.io/dimathjayasinghe/wsrvd:${WSRV_VERSION:-1.0.0}
     build:
       context: ../..
       dockerfile: docker/wsrvd.Dockerfile
-    command:
-      - --ipc-socket=/run/wsrv/ipc.sock
-      - --listen-host=0.0.0.0
-      - --listen-port=8080
-      - --allow-origin=http://localhost:8000      # the page below; browsers must come from here
-      - --allow-missing-origin=true               # command-line clients (wscat, websocat); remove in production
+    # Every setting is WSRVD_<KEY> (ADR-0030); the image already sets the socket, the listen address and port 8080.
+    environment:
+      WSRVD_ALLOW_ORIGIN: http://localhost:8000      # the page below; browsers must come from here
+      WSRVD_ALLOW_MISSING_ORIGIN: "true"             # command-line clients (wscat, websocat); remove in production
+      WSRVD_BROKER: "true"                           # rooms
+      WSRVD_PUBLISH_HOST: 0.0.0.0                    # reachable inside the compose network only (see expose below)
+      WSRVD_PUBLISH_PORT: "9200"
+      WSRVD_PUBLISH_TOKEN_FILE: /run/wsrv/publish.token
+    depends_on:
+      token-init:
+        condition: service_completed_successfully
+    expose:
+      - "9200"
     ports:
       - "${WSRV_PORT:-8080}:8080"        # change the host port with WSRV_PORT=...
     volumes:
@@ -24,13 +47,19 @@ services:
     restart: unless-stopped
 
   worker:
-    build: ./worker
+    build:
+      context: ./worker
+      args:
+        WSRV_CLIENT: ${WSRV_CLIENT:-1.0.0}   # pin another version of the PHP package here
     user: "10001:10001"
     depends_on:
       - wsrvd
+    environment:
+      WSRV_PUBLISH_URL: http://wsrvd:9200
     volumes:
       - ipc:/run/wsrv
       - ./worker/worker.php:/app/worker.php:ro
+      - ./worker/publish.php:/app/publish.php:ro
     restart: unless-stopped
 
 volumes:

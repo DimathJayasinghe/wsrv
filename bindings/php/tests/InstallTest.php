@@ -60,6 +60,20 @@ test('install: asset names are built from a checked version and a fixed architec
     assertThrows(InstallException::class, fn () => LibraryInstaller::assetName('evil', '1.2.3', 'x86_64'));
 });
 
+// The prebuilt files are Linux ELF files. On a Mac (php_uname('m') is "arm64", which the architecture table
+// maps to aarch64) the installer used to fetch one and write a library that can never load.
+test('install: only Linux gets a prebuilt library; any other system is told why before anything is fetched', function () {
+    LibraryInstaller::checkOperatingSystem('Linux'); // no exception
+    foreach (['Darwin', 'Windows', 'BSD', 'Solaris', 'Unknown'] as $os) {
+        $e = assertThrows(InstallException::class, fn () => LibraryInstaller::checkOperatingSystem($os), $os);
+        $message = $e->getMessage();
+        assertTrue(str_contains($message, $os), "the message names $os: $message");
+        assertTrue(str_contains($message, 'Linux only'), "the message says why: $message");
+        assertTrue(str_contains($message, 'Docker'), "the message says what to do: $message");
+        assertTrue(str_contains($message, 'client works'), "the message says the client still works: $message");
+    }
+});
+
 test('install: SHA256SUMS is parsed strictly', function () {
     $h = str_repeat('ab', 32);
     assertSame(['a.so' => $h, 'b' => $h], LibraryInstaller::parseSums("$h  a.so\n" . strtoupper($h) . " *b\n\n"));
@@ -128,6 +142,20 @@ test('install: a pinned hash replaces SHA256SUMS, and a wrong pin is refused', f
 });
 
 test('install: the command works offline from a directory and says how to use the library', function () {
+    if (PHP_OS_FAMILY !== 'Linux') {
+        // The real command on a system without a prebuilt library (CI runs this on macOS): it stops with
+        // a message, a non-zero status, and nothing written.
+        install_scratch(function (string $dir) {
+            $cmd = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(dirname(__DIR__) . '/bin/wsrv-install-lib')
+                . ' --from-dir=' . escapeshellarg("$dir/none") . ' --dir=' . escapeshellarg("$dir/lib") . ' 2>&1';
+            exec($cmd, $lines, $status);
+            $out = implode("\n", $lines);
+            assertSame(1, $status, $out);
+            assertTrue(str_contains($out, PHP_OS_FAMILY) && str_contains($out, 'Linux only'), $out);
+            assertTrue(!file_exists("$dir/lib"), 'nothing is written');
+        });
+        return;
+    }
     install_scratch(function (string $dir) {
         $version = Version::PACKAGE;
         $arch = LibraryInstaller::architecture(php_uname('m'));

@@ -34,8 +34,9 @@ extern "C" {
 #define WSRV_API
 #endif
 
-/* (major << 16) | minor. Compare the major with the one you compiled against. */
-#define WSRV_ABI_VERSION ((0u << 16) | 4u)
+/* (major << 16) | minor. Compare the major with the one you compiled against. From 1.0 the major
+ * changes only with wsrv 2.0 and a minor only adds (ADR-0016 amendment A4). */
+#define WSRV_ABI_VERSION ((1u << 16) | 0u)
 WSRV_API uint32_t wsrv_abi_version(void);
 
 typedef enum wsrv_status {
@@ -107,16 +108,29 @@ WSRV_API void wsrv_config_free(wsrv_config *config); /* NULL is fine */
  *                        is no authentication: keep it on loopback or behind a network policy.
  *   admin_host           IP literal for the admin port, default "127.0.0.1"
  *   shutdown_grace_ms    graceful shutdown deadline
- *   event_queue_events   most events waiting for the host
- *   event_queue_bytes    most payload bytes waiting for the host
+ *   event_queue_events   most events waiting for the host. Every live connection holds one slot
+ *                        for its Close event, so this must exceed max_connections. Unset, it is
+ *                        max_connections + 4096; set by hand, it is used as given (a smaller
+ *                        value caps the connections the server can hold at that value)
+ *   event_queue_bytes    most payload bytes waiting for the host. Unset, it is max_connections
+ *                        times the bytes reserved per Close plus 8 MiB; set by hand, as given
  *   handshake_hook       "true"/"false"/"1"/"0", default false. When true, every valid upgrade
  *                        waits for the host: a WSRV_EV_HANDSHAKE event, answered with
  *                        wsrv_handshake_accept() or wsrv_handshake_reject(). Unanswered upgrades
  *                        are refused with 503 (fail closed). See "handshake decisions" below.
  *   handshake_forward_header  a request header name (for example "Cookie") to include in the
  *                        event; repeatable. Cookie and Authorization are NOT sent unless listed.
+ *   trusted_proxy       an address or CIDR of a reverse proxy whose forwarded-address header is
+ *                        believed; repeatable, at most 64, default none (feature off). Behind such
+ *                        a proxy the per-IP limits and the peer address in events are the client's.
+ *   client_ip_header     the header naming the client, default "X-Forwarded-For" (read as a list,
+ *                        rightmost untrusted entry); any other name is read as one address.
  *   handshake_decision_timeout_ms  how long the host has to answer, default 3000 (> 0)
  *   max_pending_handshakes  most upgrades waiting at once, default 256 (> 0); more get 503
+ *   max_pending_send_bytes  per loop, the most payload bytes of wsrv_send_* calls waiting for the
+ *                        loop, default 67108864 (1 .. 1073741824); over it a send returns
+ *                        WSRV_ERR_BACKPRESSURE (wait and retry), a message larger than the whole
+ *                        budget WSRV_ERR_INVALID_ARGUMENT
  *   tls_cert             path of the server certificate chain (PEM, certificate first)
  *   tls_key              path of its private key (PEM, not readable by "others"; no passphrase)
  *                        Setting either asks for wss://: connections are then TLS only (1.2 and
@@ -170,8 +184,12 @@ WSRV_API wsrv_status wsrv_server_start(wsrv_server *server, wsrv_error *error);
 /* The port actually bound; 0 before a successful start. Any thread. */
 WSRV_API uint16_t wsrv_server_port(const wsrv_server *server);
 
-/* A descriptor that is readable while events wait: add it to your poll/epoll/select loop, then
- * call wsrv_poll(server, &ev, 0) until it returns WSRV_TIMEOUT. Do not read or close it. */
+/* A descriptor that becomes readable when events wait: add it to your poll/epoll/select loop, then
+ * call wsrv_poll(server, &ev, 0) until it returns WSRV_TIMEOUT. Do not read or close it. The
+ * server may pay a message's wake-up at the end of the I/O loop iteration that received it, so
+ * the descriptor can lag wsrv_poll() by that much; wsrv_poll() returns such an event already, and
+ * the descriptor never stays silent while an event waits (it is the wake-up that is batched, not
+ * the event). Do not use the descriptor's readability as a test that the queue is empty. */
 WSRV_API int wsrv_server_event_fd(const wsrv_server *server);
 
 /* Re-read tls_cert and tls_key and use them for connections accepted from now on (connections

@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <map>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -235,6 +236,111 @@ TEST_F(SessionHandleTest, AHandleOutlivesTheLinkOwnerAndCopiesShareTheTarget) {
     EXPECT_EQ(copy.id(), kId);
 }
 
+// ---- the pending-send byte budget (ADR-0032) ----------------------------------------------------
+
+class BudgetTest : public ::testing::Test {
+protected:
+    static constexpr ConnectionId kId = 7;
+    static constexpr std::size_t kBudget = 100;
+
+    BudgetTest() {
+        wsrv::EventLoopConfig config;
+        auto loop = wsrv::EventLoop::create(sys_, clock_, config);
+        EXPECT_TRUE(loop.has_value());
+        loop_ = std::move(*loop);
+        link_ = std::make_shared<wsrv::LoopLink>(*loop_, directory_, kBudget);
+        directory_.sessions[kId] = &session_;
+    }
+
+    void run_loop() {
+        for (int i = 0; i < 5; ++i) {
+            ASSERT_TRUE(loop_->run_once(10ms).has_value());
+        }
+    }
+
+    static inline wsrv::LinuxSyscalls sys_;
+    static inline wsrv::SteadyClock clock_;
+    FakeDirectory directory_;
+    RecordingSession session_{kId};
+    std::unique_ptr<wsrv::EventLoop> loop_;
+    std::shared_ptr<wsrv::LoopLink> link_;
+};
+
+TEST_F(BudgetTest, DirectSendsAreRefusedOnceTheBytesWaitingForTheLoopReachTheBudget) {
+    const SessionHandle handle{link_, kId};
+    EXPECT_TRUE(handle.send_text(std::string(60, 'a')).has_value());
+    EXPECT_EQ(link_->pending_send_bytes(), 60U);
+    const auto over = handle.send_text(std::string(60, 'b'));
+    ASSERT_FALSE(over.has_value());
+    EXPECT_EQ(over.error().code, ErrorCode::BufferFull) << "wait for the loop and try again";
+    EXPECT_EQ(link_->pending_send_bytes(), 60U) << "a refused send holds nothing";
+    EXPECT_TRUE(handle.send_text(std::string(40, 'c')).has_value()) << "exactly to the budget";
+    EXPECT_EQ(link_->pending_send_bytes(), 100U);
+    EXPECT_EQ(handle.send_text("x").error().code, ErrorCode::BufferFull);
+}
+
+TEST_F(BudgetTest, TheBytesAreGivenBackWhenTheLoopHasRunTheSend) {
+    const SessionHandle handle{link_, kId};
+    ASSERT_TRUE(handle.send_text(std::string(90, 'a')).has_value());
+    ASSERT_FALSE(handle.send_binary(std::vector<std::byte>(90)).has_value());
+    run_loop();
+    EXPECT_EQ(link_->pending_send_bytes(), 0U);
+    EXPECT_EQ(session_.texts.size(), 1U);
+    ASSERT_TRUE(handle.send_binary(std::vector<std::byte>(90)).has_value()) << "room again";
+}
+
+TEST_F(BudgetTest, ASendLargerThanTheWholeBudgetCanNeverBeSentAndIsInvalidNotBusy) {
+    const SessionHandle handle{link_, kId};
+    const auto too_big = handle.send_text(std::string(kBudget + 1, 'a'));
+    ASSERT_FALSE(too_big.has_value());
+    EXPECT_EQ(too_big.error().code, ErrorCode::InvalidArgument) << "retrying cannot help";
+    EXPECT_EQ(handle.send_binary(std::vector<std::byte>(kBudget + 1)).error().code,
+              ErrorCode::InvalidArgument);
+    EXPECT_EQ(link_->pending_send_bytes(), 0U);
+    EXPECT_TRUE(handle.send_text(std::string(kBudget, 'a')).has_value())
+        << "exactly the budget fits";
+}
+
+TEST_F(BudgetTest, SendsThatTheLoopNeverRunsAreGivenBackWhenTheLoopIsDestroyed) {
+    const SessionHandle handle{link_, kId};
+    ASSERT_TRUE(handle.send_text(std::string(80, 'a')).has_value());
+    ASSERT_EQ(link_->pending_send_bytes(), 80U);
+    link_->close();
+    loop_.reset();  // the queued task is discarded, never run
+    EXPECT_EQ(link_->pending_send_bytes(), 0U);
+}
+
+TEST_F(BudgetTest, ASendTheFullTaskQueueRefusesHoldsNoBudget) {
+    wsrv::EventLoopConfig config;
+    config.max_queued_tasks = 1;
+    auto small = wsrv::EventLoop::create(sys_, clock_, config);
+    ASSERT_TRUE(small.has_value());
+    auto link = std::make_shared<wsrv::LoopLink>(**small, directory_, kBudget);
+    const SessionHandle handle{link, kId};
+    ASSERT_TRUE(handle.send_text("first").has_value());
+    const auto refused = handle.send_text("second");
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, ErrorCode::BufferFull);
+    EXPECT_EQ(link->pending_send_bytes(), 5U) << "only the one that was queued";
+}
+
+TEST_F(BudgetTest, BroadcastsControlCommandsAndDecisionsAreNotChargedToTheBudget) {
+    const SessionHandle handle{link_, kId};
+    const auto big = wsrv::SharedMessage::text(std::string(10 * kBudget, 'a'));
+    ASSERT_TRUE(big.has_value());
+    EXPECT_TRUE(handle.send(*big).has_value()) << "one shared buffer for all subscribers";
+    EXPECT_TRUE(handle.close(CloseCode::Normal, "bye").has_value());
+    EXPECT_TRUE(handle.resume_reads().has_value());
+    EXPECT_EQ(link_->pending_send_bytes(), 0U);
+}
+
+TEST_F(BudgetTest, TheBudgetIsPerLink) {
+    wsrv::LoopLink other{*loop_, directory_, kBudget};
+    const SessionHandle first{link_, kId};
+    ASSERT_TRUE(first.send_text(std::string(kBudget, 'a')).has_value());
+    EXPECT_EQ(other.pending_send_bytes(), 0U);
+}
+
 TEST_F(SmallQueueTest, AFullTaskQueueIsReportedAsBufferFull) {  // EC-N14
     const SessionHandle handle{link_, kId};
     int accepted = 0;
@@ -267,6 +373,151 @@ TEST_F(SmallQueueTest,
         << "the broadcast flood must not keep a close out";
     ASSERT_TRUE(pump_until([&] { return !session_.closes.empty(); }));
     EXPECT_EQ(session_.texts.size(), 3U);
+}
+
+// ---- one slot per chunk of recipients, not per recipient (ADR-0034) ----------------------------
+
+/// Many connections on one loop with a tiny task queue (4 slots: a bulk lane of 3), so that the
+/// per-recipient cost the old broadcast paid is visible: it could take 3 recipients, not 50.
+class BulkTest : public SmallQueueTest {
+protected:
+    /// `count` sessions with ids 100.., each reachable through `link_`.
+    std::vector<SessionHandle> populate(std::size_t count) {
+        std::vector<SessionHandle> handles;
+        for (std::size_t i = 0; i < count; ++i) {
+            const ConnectionId id = 100 + i;
+            sessions_.push_back(std::make_unique<RecordingSession>(id));
+            directory_.sessions[id] = sessions_.back().get();
+            handles.emplace_back(link_, id);
+        }
+        return handles;
+    }
+
+    [[nodiscard]] std::size_t delivered() const {
+        std::size_t total = 0;
+        for (const auto& session : sessions_) {
+            total += session->texts.size();
+        }
+        return total;
+    }
+
+    std::vector<std::unique_ptr<RecordingSession>> sessions_;
+};
+
+TEST_F(BulkTest, ABroadcastToMoreRecipientsThanTheBulkLaneHasSlotsIsDeliveredToAll) {
+    const std::vector<SessionHandle> handles = populate(50);
+    const auto message = wsrv::SharedMessage::text("hi");
+    ASSERT_TRUE(message.has_value());
+    const wsrv::BulkSendReport report = wsrv::send_to_many(handles, *message);
+    EXPECT_EQ(report.accepted, 50U) << "one chunk, one slot: the lane of 3 is not the limit";
+    EXPECT_EQ(report.refused, 0U);
+    EXPECT_TRUE(report.gone.empty());
+    ASSERT_TRUE(pump_until([&] { return delivered() == 50; }));
+}
+
+TEST_F(BulkTest, AChunkIsAcceptedOrRefusedWholeAndTheCountsAreForRecipients) {
+    const std::size_t total = (wsrv::kBulkChunk * 4) + 100;  // five chunks; the lane has three
+    const std::vector<SessionHandle> handles = populate(total);
+    const auto message = wsrv::SharedMessage::text("hi");
+    ASSERT_TRUE(message.has_value());
+    const wsrv::BulkSendReport report = wsrv::send_to_many(handles, *message);
+    EXPECT_EQ(report.accepted, wsrv::kBulkChunk * 3) << "three chunks fit the lane";
+    EXPECT_EQ(report.refused, total - (wsrv::kBulkChunk * 3));
+    EXPECT_TRUE(report.gone.empty()) << "a full queue is not a gone server";
+    ASSERT_TRUE(pump_until([&] { return delivered() == wsrv::kBulkChunk * 3; }));
+}
+
+TEST_F(BulkTest, RecipientsAreServedInTheOrderGiven) {
+    const std::vector<SessionHandle> handles = populate(10);
+    const auto message = wsrv::SharedMessage::text("hi");
+    ASSERT_TRUE(message.has_value());
+    // The first publish and the second reach each connection in that order.
+    const auto second = wsrv::SharedMessage::text("again");
+    ASSERT_TRUE(second.has_value());
+    ASSERT_EQ(wsrv::send_to_many(handles, *message).accepted, 10U);
+    ASSERT_EQ(wsrv::send_to_many(handles, *second).accepted, 10U);
+    ASSERT_TRUE(pump_until([&] { return delivered() == 20; }));
+    for (const auto& session : sessions_) {
+        ASSERT_EQ(session->texts.size(), 2U);
+        EXPECT_EQ(session->texts[0], "hi");
+        EXPECT_EQ(session->texts[1], "again");
+    }
+}
+
+TEST_F(BulkTest, AFullBulkLaneRefusesTheWholeChunkAndNothingIsDelivered) {
+    const std::vector<SessionHandle> handles = populate(40);
+    const auto message = wsrv::SharedMessage::text("hi");
+    ASSERT_TRUE(message.has_value());
+    const SessionHandle filler{link_, kId};
+    for (int i = 0; i < 3; ++i) {
+        ASSERT_TRUE(filler.send(*message).has_value());  // the lane (3) is now used up
+    }
+    const wsrv::BulkSendReport report = wsrv::send_to_many(handles, *message);
+    EXPECT_EQ(report.accepted, 0U);
+    EXPECT_EQ(report.refused, 40U);
+    EXPECT_TRUE(report.gone.empty());
+}
+
+TEST_F(BulkTest, AClosedLinkMakesEveryRecipientRefusedAndGone) {
+    const std::vector<SessionHandle> handles = populate(5);
+    link_->close();
+    const auto message = wsrv::SharedMessage::text("hi");
+    ASSERT_TRUE(message.has_value());
+    const wsrv::BulkSendReport report = wsrv::send_to_many(handles, *message);
+    EXPECT_EQ(report.accepted, 0U);
+    EXPECT_EQ(report.refused, 5U);
+    ASSERT_EQ(report.gone.size(), 5U);
+    EXPECT_EQ(report.gone.front(), 100U);
+}
+
+TEST_F(BulkTest, AnInertHandleIsRefusedAndGoneAndTheRestStillGetTheMessage) {
+    std::vector<SessionHandle> handles = populate(3);
+    handles.insert(handles.begin() + 1, SessionHandle{});
+    const auto message = wsrv::SharedMessage::text("hi");
+    ASSERT_TRUE(message.has_value());
+    const wsrv::BulkSendReport report = wsrv::send_to_many(handles, *message);
+    EXPECT_EQ(report.accepted, 3U);
+    EXPECT_EQ(report.refused, 1U);
+    ASSERT_EQ(report.gone.size(), 1U);
+    ASSERT_TRUE(pump_until([&] { return delivered() == 3; }));
+}
+
+TEST_F(BulkTest, MoreIdsThanOneChunkInOneTaskIsAnInvalidArgument) {
+    const std::vector<ConnectionId> ids(wsrv::kBulkChunk + 1, kId);
+    const wsrv::Result<void> result = link_->submit_bulk_many(ids, [](wsrv::Session&) {});
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ErrorCode::InvalidArgument)
+        << "the memory a task holds is bounded";
+}
+
+TEST(BulkAcrossLoops, RecipientsOfDifferentLoopsAreGroupedAndEachLoopGetsItsOwn) {
+    wsrv::LinuxSyscalls sys;
+    wsrv::SteadyClock clock;
+    auto loop_a = wsrv::EventLoop::create(sys, clock, {});
+    auto loop_b = wsrv::EventLoop::create(sys, clock, {});
+    ASSERT_TRUE(loop_a.has_value() && loop_b.has_value());
+    FakeDirectory dir_a;
+    FakeDirectory dir_b;
+    auto link_a = std::make_shared<wsrv::LoopLink>(**loop_a, dir_a);
+    auto link_b = std::make_shared<wsrv::LoopLink>(**loop_b, dir_b);
+    RecordingSession one{1};
+    RecordingSession two{2};
+    RecordingSession three{3};
+    dir_a.sessions[1] = &one;
+    dir_b.sessions[2] = &two;
+    dir_a.sessions[3] = &three;
+    const std::vector<SessionHandle> handles{
+        SessionHandle{link_a, 1}, SessionHandle{link_b, 2}, SessionHandle{link_a, 3}};
+    const auto message = wsrv::SharedMessage::text("hi");
+    ASSERT_TRUE(message.has_value());
+    const wsrv::BulkSendReport report = wsrv::send_to_many(handles, *message);
+    EXPECT_EQ(report.accepted, 3U);
+    EXPECT_EQ(report.refused, 0U);
+    ASSERT_TRUE((*loop_a)->run_once(0ms).has_value());
+    ASSERT_TRUE((*loop_b)->run_once(0ms).has_value());
+    EXPECT_EQ(one.texts.size(), 1U);
+    EXPECT_EQ(two.texts.size(), 1U);
+    EXPECT_EQ(three.texts.size(), 1U);
 }
 
 TEST_F(SessionHandleTest, ClosingTheLinkWhileThreadsSendIsRaceFree) {  // run under TSan

@@ -69,6 +69,7 @@ reserve_descriptors(const ServerConfig& config, ISyscalls& sys, ILogger& logger)
             FdLimits limits;
             static_cast<void>(sys.get_fd_limits(limits));
             logger.log(LogLevel::Error,
+                       "descriptor_limit",
                        "server: needs " + std::to_string(needed) +
                            " descriptors (max_connections " +
                            std::to_string(config.max_connections) +
@@ -76,6 +77,7 @@ reserve_descriptors(const ServerConfig& config, ISyscalls& sys, ILogger& logger)
                            " soft / " + std::to_string(limits.hard) + " hard (RLIMIT_NOFILE)");
         } else if (budget->raised) {
             logger.log(LogLevel::Info,
+                       "descriptor_limit_raised",
                        "server: raised the soft descriptor limit to " +
                            std::to_string(budget->soft));
         }
@@ -193,7 +195,8 @@ Result<void> Server::start_publish() {
                                                         sys_,
                                                         *publish_sources_,
                                                         main_->metrics(),
-                                                        [this] { return !shutting_down_; }},
+                                                        [this] { return !shutting_down_; },
+                                                        &logger_},
                                             publish);
     if (!endpoint) {
         return std::unexpected{endpoint.error()};
@@ -201,9 +204,12 @@ Result<void> Server::start_publish() {
     publish_ = std::move(*endpoint);
     const Endpoint bound = publish_->local_endpoint();
     try {
-        logger_.log(LogLevel::Info, "server: publish listening on " + format_endpoint(bound));
+        logger_.log(LogLevel::Info,
+                    "publish_listening",
+                    "server: publish listening on " + format_endpoint(bound));
         if (!is_loopback(bound)) {
             logger_.log(LogLevel::Warn,
+                        "publish_exposed",
                         "server: the publish port is not on loopback; the token travels in clear "
                         "text unless a TLS proxy or a private network protects it");
         }
@@ -237,9 +243,12 @@ Result<void> Server::start_admin() {
     admin_ = std::move(*endpoint);
     const Endpoint bound = admin_->local_endpoint();
     try {
-        logger_.log(LogLevel::Info, "server: admin listening on " + format_endpoint(bound));
+        logger_.log(LogLevel::Info,
+                    "admin_listening",
+                    "server: admin listening on " + format_endpoint(bound));
         if (!is_loopback(bound)) {
             logger_.log(LogLevel::Warn,
+                        "admin_exposed",
                         "server: the admin port is not on loopback and has no authentication");
         }
     } catch (const std::bad_alloc&) {
@@ -343,11 +352,14 @@ void Server::on_accept(Fd client, const Endpoint& peer) {
         main_->metrics().add(Metric::RejectedGlobalCap);
         const std::uint64_t total = main_->metrics().read(Metric::RejectedGlobalCap);
         if ((total & (total - 1)) == 0) {  // log the 1st, 2nd, 4th, 8th...: rate-limited
-            logger_.log(LogLevel::Warn, "server: connection limit reached, refusing clients");
+            logger_.log(
+                LogLevel::Warn, "conn_limit", "server: connection limit reached, refusing clients");
         }
         return;
     }
-    if (ip_limits_ != nullptr) {
+    // A trusted proxy (ADR-0029) takes no per-IP slot here: its clients are admitted by the
+    // connection once the upgrade request names them. The shard decides the same way on release.
+    if (ip_limits_ != nullptr && !is_trusted_proxy(config_.trusted_proxies, peer)) {
         if (const Admission verdict = ip_limits_->admit(peer); verdict != Admission::Admitted) {
             refuse_for_ip_limit(std::move(client), verdict);
             return;
@@ -372,20 +384,6 @@ constexpr std::string_view kAnswer503 = "HTTP/1.1 503 Service Unavailable\r\nRet
                                         "1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
 }  // namespace
 
-/// Which counter a refusal belongs to (ADR-0023): the reason is a closed set, never peer data.
-Metric Server::refusal_metric(Admission verdict) noexcept {
-    switch (verdict) {
-    case Admission::TooManyConnections:
-        return Metric::RejectedIpConnections;
-    case Admission::RateExceeded:
-        return Metric::RejectedIpRate;
-    case Admission::TableFull:
-    case Admission::Admitted:  // never refused; counted with the table, the strictest reading
-        return Metric::RejectedIpTable;
-    }
-    return Metric::RejectedIpTable;
-}
-
 /// An address over its limit: tell it so in one send and close. Best effort by design: a client
 /// that already sent its request may see a reset instead; the close is what counts. The table
 /// being full (an address-spraying flood) is a 503, the limits themselves are a 429.
@@ -397,7 +395,7 @@ void Server::refuse_for_ip_limit(Fd client, Admission verdict) {
                                 now.value(Metric::RejectedIpRate) +
                                 now.value(Metric::RejectedIpTable);
     if ((total & (total - 1)) == 0) {  // log the 1st, 2nd, 4th, 8th...: rate-limited
-        logger_.log(LogLevel::Warn, "server: per-IP limit reached, refusing clients");
+        logger_.log(LogLevel::Warn, "ip_limit", "server: per-IP limit reached, refusing clients");
     }
     const std::string_view answer = verdict == Admission::TableFull ? kAnswer503 : kAnswer429;
     static_cast<void>(
@@ -424,14 +422,15 @@ void Server::hand_off(std::size_t worker, Fd client, const Endpoint& peer, Conne
             ip_limits_->release(peer);
         }
         main_->metrics().add(Metric::RejectedGlobalCap);  // shed like a full table: no loop took it
-        logger_.log(LogLevel::Warn, "server: a loop is overloaded, refusing a client");
+        logger_.log(
+            LogLevel::Warn, "loop_overloaded", "server: a loop is overloaded, refusing a client");
     }
 }
 
 // ---- shutdown -----------------------------------------------------------------------------------
 
 void Server::on_signal(int /*signo*/) {
-    logger_.log(LogLevel::Info, "server: shutdown signal received");
+    logger_.log(LogLevel::Info, "shutdown", "server: shutdown signal received");
     begin_shutdown();  // the second signal lands in force_shutdown()
 }
 
@@ -448,7 +447,9 @@ void Server::begin_shutdown() {
     for (const std::unique_ptr<WorkerThread>& worker : workers_) {
         LoopShard& shard = worker->shard();
         if (!shard.loop().post([&shard] { shard.begin_shutdown(); })) {
-            logger_.log(LogLevel::Error, "server: cannot tell a loop to shut down, forcing");
+            logger_.log(LogLevel::Error,
+                        "shutdown_failed",
+                        "server: cannot tell a loop to shut down, forcing");
             force_shutdown();
             return;
         }

@@ -57,9 +57,19 @@ namespace {
         return std::unexpected{
             bad_config("max_new_connections_per_ip_per_second out of range (ADR-0021)")};
     }
+    if (config.trusted_proxies.size() > kMaxTrustedProxies) {
+        return std::unexpected{bad_config("trusted_proxies has too many entries (ADR-0029)")};
+    }
+    if (!is_token(config.client_ip_header)) {
+        return std::unexpected{bad_config("client_ip_header is not a header name (ADR-0029)")};
+    }
     if (config.http.max_request_line == 0 || config.http.max_total_bytes == 0 ||
         config.http.max_headers == 0) {
         return std::unexpected{bad_config("http limits must be non-zero")};
+    }
+    if (config.max_pending_send_bytes == 0 || config.max_pending_send_bytes > kMaxConfiguredQueue) {
+        return std::unexpected{
+            bad_config("max_pending_send_bytes must be in (0, 1 GiB] (ADR-0032)")};
     }
     if (config.read.max_reads_per_event == 0 || config.read.max_bytes_per_event == 0 ||
         config.read.max_bytes_per_event > kMaxConfiguredReadBytes) {

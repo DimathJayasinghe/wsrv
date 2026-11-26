@@ -32,6 +32,7 @@ std::optional<HostEvent> Relay::next_event() {
             // showing it a message or a Close for it would be nonsense. Its Close ends the entry.
             if (event->type == HostEventType::Close) {
                 stale_.erase(event->conn);
+                closing_.erase(event->conn);
             }
             continue;
         }
@@ -52,10 +53,21 @@ void Relay::detach() {
     open_.clear();
 }
 
-void Relay::close_stale(std::uint16_t code, std::string_view reason) {
+std::size_t Relay::close_stale(std::uint16_t code, std::string_view reason) {
+    std::size_t still_to_do = 0;
     for (const ConnectionId conn : stale_) {
-        static_cast<void>(backend_.close(conn, code, reason).has_value());  // Closing = gone
+        if (closing_.contains(conn)) {
+            continue;  // accepted earlier: its Close event will end the entry
+        }
+        const Result<void> closed = backend_.close(conn, code, reason);
+        if (!closed && (closed.error().code == ErrorCode::BufferFull ||
+                        closed.error().code == ErrorCode::ResourceExhausted)) {
+            ++still_to_do;  // the loop could not take it now: the connection is still open
+            continue;
+        }
+        closing_.insert(conn);  // accepted, or gone (Closing): either way not asked again
     }
+    return still_to_do;
 }
 
 std::optional<std::uint8_t> Relay::refuse(std::uint32_t request,

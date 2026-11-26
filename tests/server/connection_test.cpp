@@ -117,6 +117,17 @@ wsrv::HandshakeConfig handshake_config() {
     return config;
 }
 
+/// The first log entry named `event`, or null (ADR-0037).
+const wsrv::test::RecordingLogger::Entry*
+find_event(const std::vector<wsrv::test::RecordingLogger::Entry>& logs, std::string_view event) {
+    for (const auto& entry : logs) {
+        if (entry.event == event) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
 struct ConnectionTest : public ::testing::Test {
     FakeHost host;
     wsrv::ServerConfig config;
@@ -232,6 +243,61 @@ TEST_F(ConnectionTest, ARefusedUpgradeIsAnsweredAndTheConnectionClosed) {
     EXPECT_TRUE(transport->closed);
     EXPECT_EQ(script.created, 0);  // no handler, no on_open
     EXPECT_EQ(host.retired.size(), 1U);
+}
+
+TEST_F(ConnectionTest,
+       ARefusedOriginIsALoggedWarningThatNeverRepeatsWhatThePeerSent) {  // ADR-0037, T14
+    open();
+    std::string request{kRequest};
+    request.replace(request.find("https://app.example.com"), 23, "https://evil.example.x");
+    send_bytes(request);
+    const auto* entry = find_event(host.logs, "origin_refused");
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->level, wsrv::LogLevel::Warn);
+    EXPECT_EQ(entry->conn, 7U);
+    for (const auto& line : host.logs) {
+        EXPECT_EQ(line.message.find("evil"), std::string::npos) << "a peer's text is never logged";
+    }
+}
+
+TEST_F(ConnectionTest, GarbageInPlaceOfAnUpgradeIsLoggedAsARefusedHandshake) {  // ADR-0037
+    open();
+    send_bytes("\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03 TLS\r\n\r\n");
+    const auto* entry = find_event(host.logs, "handshake_refused");
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->level, wsrv::LogLevel::Info) << "any peer can send garbage: not an alert";
+    EXPECT_EQ(find_event(host.logs, "origin_refused"), nullptr);
+}
+
+TEST_F(ConnectionTest, AConnectionOpeningAndClosingIsLoggedAtDebugWithTheCloseCode) {  // ADR-0037
+    establish();
+    const auto* opened = find_event(host.logs, "conn_open");
+    ASSERT_NE(opened, nullptr);
+    EXPECT_EQ(opened->level, wsrv::LogLevel::Debug);
+    EXPECT_EQ(opened->conn, 7U);
+
+    send_frame(Opcode::Close, std::string("\x03\xe9", 2));  // 1001 going away
+    const auto* closed = find_event(host.logs, "conn_close");
+    ASSERT_NE(closed, nullptr);
+    EXPECT_EQ(closed->level, wsrv::LogLevel::Debug);
+    EXPECT_EQ(closed->conn, 7U);
+    EXPECT_NE(closed->message.find("1001"), std::string::npos) << closed->message;
+}
+
+TEST_F(ConnectionTest,
+       ALevelTheLoggerDoesNotWantNeverReachesIt) {  // ADR-0037: the filter comes first
+    host.min_level = wsrv::LogLevel::Warn;
+    config.log_peer = true;
+    establish();
+    send_frame(Opcode::Close, std::string("\x03\xe9", 2));
+    EXPECT_TRUE(host.logs.empty()) << "debug lines for a logger set to warn";
+}
+
+TEST_F(ConnectionTest, ASlowLorisIsLoggedWhenItsHandshakeTimesOut) {  // ADR-0037
+    open();
+    send_bytes(kRequest.substr(0, 20));
+    host.advance(5100ms, 100ms);
+    EXPECT_NE(find_event(host.logs, "handshake_timeout"), nullptr);
 }
 
 TEST_F(ConnectionTest, ThePeerLeavingMidHandshakeCreatesNoHandlerAndFreesEverything) {  // EC-H21
@@ -525,6 +591,46 @@ TEST_F(ConnectionTest, ASlowConsumerIsClosedWith1008ByDefault) {  // EC-N09
     }
     EXPECT_TRUE(policy_close);
     EXPECT_EQ(bank.read(wsrv::Metric::SlowConsumerDrops), 1U);  // ADR-0023
+}
+
+// ADR-0037: what a log record carries. A slow consumer is the easiest warning to provoke.
+TEST_F(ConnectionTest, ALogLineNamesItsEventAndItsConnectionAndNotTheAddressByDefault) {
+    config.session.outbound.max_queued_bytes = 200;
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        script.last_send = s.send_text(std::string(150, 'a'));
+        script.last_send = s.send_text(std::string(150, 'b'));
+    };
+    transport->set_write_capacity(0);
+    send_frame(Opcode::Text, "go");
+    transport->set_write_capacity(static_cast<std::size_t>(-1));
+    conn->on_event(PollEvents::Write);
+
+    const auto* entry = find_event(host.logs, "slow_consumer");
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->level, wsrv::LogLevel::Warn);
+    EXPECT_EQ(entry->conn, 7U)
+        << "NFR-O3: the connection id correlates the lines of one connection";
+    EXPECT_TRUE(entry->peer.empty()) << "an address is personal data: off unless log_peer is set";
+}
+
+TEST_F(ConnectionTest, TheClientAddressIsLoggedWhenTheOperatorAsksForIt) {
+    config.log_peer = true;
+    config.session.outbound.max_queued_bytes = 200;
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        script.last_send = s.send_text(std::string(150, 'a'));
+        script.last_send = s.send_text(std::string(150, 'b'));
+    };
+    transport->set_write_capacity(0);
+    send_frame(Opcode::Text, "go");
+    transport->set_write_capacity(static_cast<std::size_t>(-1));
+    conn->on_event(PollEvents::Write);
+
+    const auto* entry = find_event(host.logs, "slow_consumer");
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->peer, wsrv::format_endpoint(wsrv::Endpoint{}));
+    EXPECT_FALSE(entry->peer.empty());
 }
 
 TEST_F(ConnectionTest, TheDropPolicyIsNotCountedAsADroppedConnection) {  // nothing was dropped
@@ -1145,6 +1251,63 @@ TEST_F(ConnectionTest, APausedConnectionStillWatchesWritabilityWhileOutputIsBloc
     EXPECT_TRUE(wsrv::has(host.interest_now, PollEvents::Write));
 }
 
+// ---- a short read from a stream socket ends the event without a read that would only block
+// ----------
+
+TEST_F(ConnectionTest, AShortReadFromAStreamTransportEndsTheEventWithoutAnotherRead) {
+    establish();
+    transport->stream_like(true);
+    transport->read_calls = 0;
+    send_frame(Opcode::Text, "hello");
+    EXPECT_EQ(script.texts.size(), 1U);
+    EXPECT_EQ(transport->read_calls, 1U)
+        << "the kernel gave all it had: no read to hear WouldBlock";
+}
+
+TEST_F(ConnectionTest, ATransportThatCannotVouchForItselfReadsOnUntilItAnswersWouldBlock) {
+    establish();  // the fake is not stream-like by default, like TLS
+    transport->read_calls = 0;
+    send_frame(Opcode::Text, "hello");
+    EXPECT_EQ(script.texts.size(), 1U);
+    EXPECT_EQ(transport->read_calls, 2U);
+}
+
+TEST_F(ConnectionTest, AFullReadOnAStreamTransportIsFollowedByAnotherUntilOneComesBackShort) {
+    open_with_tiny_reads(*this, 16);
+    transport->stream_like(true);
+    script.echo = true;
+    for (int i = 0; i < 3; ++i) {
+        const auto frame = client_frame(Opcode::Text, true, "buffered");
+        transport->feed(wsrv::ByteView{frame});
+    }
+    transport->read_calls = 0;
+    readable();
+    EXPECT_EQ(script.texts.size(), 3U) << "42 bytes through a 16-byte buffer: 16, 16, then 10";
+    EXPECT_EQ(transport->read_calls, 3U);
+    EXPECT_EQ(transport->unread(), 0U);
+}
+
+TEST_F(ConnectionTest, APeerThatIsClosingIsReadToTheEndEvenAfterAShortRead) {
+    establish();
+    transport->stream_like(true);
+    const auto frame = client_frame(Opcode::Text, true, "last words");
+    transport->feed(wsrv::ByteView{frame});
+    transport->feed_eof();
+    transport->read_calls = 0;
+    conn->on_event(PollEvents::Read | PollEvents::Hangup);  // the FIN came with the data
+    EXPECT_EQ(script.texts.size(), 1U);
+    EXPECT_EQ(transport->read_calls, 2U) << "the read that returns 0 must still happen";
+    EXPECT_TRUE(conn->finished());
+}
+
+TEST_F(ConnectionTest, APeerThatIsClosingAndLeftNothingIsStillSeen) {
+    establish();
+    transport->stream_like(true);
+    transport->feed_eof();
+    conn->on_event(PollEvents::Read | PollEvents::Hangup);
+    EXPECT_TRUE(conn->finished());
+}
+
 TEST_F(ConnectionTest, APeerThatHangsUpWhilePausedIsStillSeenAndTheConnectionEnds) {
     establish();
     script.on_text = [&](Session& s, std::string_view) { s.pause_reads(); };
@@ -1503,6 +1666,19 @@ TEST_F(HookTest, ADeciderThatAnsweredIsNeverToldAboutAWithdrawal) {
     send_request();
     decide(reject_verdict(403));
     EXPECT_TRUE(decider.withdrawals.empty()) << "it answered; there is nothing to forget";
+}
+
+// The event name is also the rate-limit bucket (ADR-0037 section 5): a line a peer can trigger at
+// will (garbage in place of an upgrade) must never share a name with a warning about the server
+// itself, or a flood of the first would hide the second.
+TEST_F(HookTest, ANobodyCanDecideWarningHasItsOwnEventNotTheOneAPeerCanFlood) {
+    decider.refuse = true;
+    open_hook();
+    send_request();
+    const auto* entry = find_event(host.logs, "handshake_undecided");
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->level, wsrv::LogLevel::Warn);
+    EXPECT_EQ(find_event(host.logs, "handshake_refused"), nullptr);
 }
 
 TEST_F(HookTest, ADeciderThatRefusedTheRequestIsNotToldAboutAWithdrawalEither) {

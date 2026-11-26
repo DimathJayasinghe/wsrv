@@ -52,3 +52,9 @@ graphify-out/
 
 # Executing-plans scratch (ledger, briefs)
 /.superpowers/
+
+# Python bytecode (bench/ and tests/soak/ scripts)
+__pycache__/
+
+# Soak run results (tests/soak/soak.py): numbers and container logs of one run, not source
+tests/soak/results/

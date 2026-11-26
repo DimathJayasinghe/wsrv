@@ -51,11 +51,12 @@ LoopShard::LoopShard(Key /*unused*/,
                      std::function<void()> on_drained)
     : shared_{shared}, bank_{shared.banks.claim()}, on_drained_{std::move(on_drained)},
       loop_{std::move(loop)} {
+    loop_->set_iteration_end([factory = &shared_.factory] { factory->on_loop_iteration_end(); });
     table_ = std::make_unique<ConnectionTable>(*loop_,
                                                [this](const Endpoint& peer) { on_removed(peer); });
     host_ = std::make_unique<LoopHost>(*loop_, shared_.clock, shared_.logger, *table_);
     scratch_.resize(kScratchSize);
-    link_ = std::make_shared<LoopLink>(*loop_, *table_);
+    link_ = std::make_shared<LoopLink>(*loop_, *table_, shared_.config.max_pending_send_bytes);
     context_ = std::make_unique<ConnectionContext>(ConnectionContext{*host_,
                                                                      shared_.config,
                                                                      shared_.negotiator,
@@ -64,7 +65,8 @@ LoopShard::LoopShard(Key /*unused*/,
                                                                      link_,
                                                                      shared_.decider,
                                                                      shared_.pending,
-                                                                     &bank_});
+                                                                     &bank_,
+                                                                     shared_.ip_limits});
 }
 
 LoopShard::~LoopShard() {
@@ -87,7 +89,9 @@ void LoopShard::adopt(Fd client, const Endpoint& peer, ConnectionId id) {
             transport = shared_.wrapper->wrap(std::move(transport));
             if (!transport) {
                 give_back(peer);  // the socket was closed with the failed wrapper
-                shared_.logger.log(LogLevel::Error, "server: cannot wrap a connection's transport");
+                shared_.logger.log(LogLevel::Error,
+                                   "transport_failed",
+                                   "server: cannot wrap a connection's transport");
                 return;
             }
         }
@@ -95,7 +99,8 @@ void LoopShard::adopt(Fd client, const Endpoint& peer, ConnectionId id) {
             std::make_unique<Connection>(id, peer, std::move(transport), *context_));
     } catch (const std::exception&) {
         give_back(peer);  // never reached the table: nothing else will give the slots back
-        shared_.logger.log(LogLevel::Error, "server: out of memory accepting a connection");
+        shared_.logger.log(
+            LogLevel::Error, "out_of_memory", "server: out of memory accepting a connection");
         return;
     }
     bank_.add(Metric::ConnectionsAccepted);
@@ -114,10 +119,11 @@ void LoopShard::abort_all() {
     table_->for_each([](Connection& connection) { connection.abort(); });
 }
 
-/// The global slot and the per-IP slot a connection took at accept (Server::on_accept).
+/// The global slot and the per-IP slot a connection took at accept (Server::on_accept). A trusted
+/// proxy took none (ADR-0029): the connection gives back the slot of the client it admitted.
 void LoopShard::give_back(const Endpoint& peer) {
     shared_.live.fetch_sub(1);
-    if (shared_.ip_limits != nullptr) {
+    if (shared_.ip_limits != nullptr && !is_trusted_proxy(shared_.config.trusted_proxies, peer)) {
         shared_.ip_limits->release(peer);
     }
 }

@@ -10,7 +10,10 @@ namespace wsrv::wsrvd {
 /// What happened on SIGHUP, for the daemon's log.
 struct ReloadOutcome {
     bool reloaded = false;  ///< the new certificate is in use
-    std::string line;       ///< one line for stderr, without a trailing newline
+    /// TLS is off, so there was nothing to reload. (A reload that worked or failed was already
+    /// logged by the TLS context, with the file and the reason: ADR-0037.)
+    bool skipped = false;
+    std::string line;  ///< one line for people, without a trailing newline
 };
 
 /// SIGHUP means "re-read your configuration files". The only reloadable thing today is the TLS

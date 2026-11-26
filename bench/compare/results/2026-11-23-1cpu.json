@@ -1,0 +1,801 @@
+{
+  "label": "2026-11-23-1cpu",
+  "date": "2026-11-23T23:25:11",
+  "docker": "20 CPUs, 3895296000 bytes, Docker Desktop, kernel 6.12.76-linuxkit",
+  "settings": {
+    "echo": [
+      [
+        64,
+        64
+      ],
+      [
+        512,
+        64
+      ]
+    ],
+    "idle": [
+      1000,
+      10000
+    ],
+    "fanout": [
+      [
+        1000,
+        128
+      ],
+      [
+        5000,
+        128
+      ]
+    ],
+    "repeats": 3,
+    "seconds": 15,
+    "hold": 15,
+    "rounds": 30
+  },
+  "servers": {
+    "wsrv": {
+      "versions": "wsrvd image wsrvd:local built from commit 992abcd, PHP 8.3.37 in the worker",
+      "echo": [
+        {
+          "connections": 64,
+          "size": 64,
+          "runs": [
+            {
+              "mode": "echo",
+              "connections": 64,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 1146556,
+              "msgs_per_sec": 76432,
+              "failures": 0,
+              "p50_us": 780,
+              "p90_us": 1148,
+              "p99_us": 1577,
+              "p999_us": 2024,
+              "max_us": 5419
+            },
+            {
+              "mode": "echo",
+              "connections": 64,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 1189435,
+              "msgs_per_sec": 79291,
+              "failures": 0,
+              "p50_us": 755,
+              "p90_us": 1099,
+              "p99_us": 1508,
+              "p999_us": 1807,
+              "max_us": 5343
+            },
+            {
+              "mode": "echo",
+              "connections": 64,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 1213185,
+              "msgs_per_sec": 80873,
+              "failures": 0,
+              "p50_us": 742,
+              "p90_us": 1074,
+              "p99_us": 1477,
+              "p999_us": 1731,
+              "max_us": 4493
+            }
+          ]
+        },
+        {
+          "connections": 512,
+          "size": 64,
+          "runs": [
+            {
+              "mode": "echo",
+              "connections": 512,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 873475,
+              "msgs_per_sec": 58228,
+              "failures": 0,
+              "p50_us": 8985,
+              "p90_us": 10660,
+              "p99_us": 12573,
+              "p999_us": 14347,
+              "max_us": 16685
+            },
+            {
+              "mode": "echo",
+              "connections": 512,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 871427,
+              "msgs_per_sec": 58091,
+              "failures": 0,
+              "p50_us": 9038,
+              "p90_us": 10623,
+              "p99_us": 12486,
+              "p999_us": 14450,
+              "max_us": 21743
+            },
+            {
+              "mode": "echo",
+              "connections": 512,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 868432,
+              "msgs_per_sec": 57892,
+              "failures": 0,
+              "p50_us": 9009,
+              "p90_us": 10762,
+              "p99_us": 12863,
+              "p999_us": 15919,
+              "max_us": 18293
+            }
+          ]
+        }
+      ],
+      "fanout": [
+        {
+          "connections": 1000,
+          "size": 128,
+          "runs": [
+            {
+              "mode": "fanout",
+              "subscribers": 1000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "ws",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 538,
+              "last_p50_us": 9500,
+              "last_p90_us": 11212,
+              "last_p99_us": 15418,
+              "last_max_us": 15418,
+              "deliveries_per_sec_p50": 105263
+            },
+            {
+              "mode": "fanout",
+              "subscribers": 1000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "ws",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 516,
+              "last_p50_us": 9520,
+              "last_p90_us": 10052,
+              "last_p99_us": 17146,
+              "last_max_us": 17146,
+              "deliveries_per_sec_p50": 105042
+            },
+            {
+              "mode": "fanout",
+              "subscribers": 1000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "ws",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 540,
+              "last_p50_us": 9640,
+              "last_p90_us": 14945,
+              "last_p99_us": 20040,
+              "last_max_us": 20040,
+              "deliveries_per_sec_p50": 103734
+            }
+          ]
+        },
+        {
+          "connections": 5000,
+          "size": 128,
+          "runs": [
+            {
+              "mode": "fanout",
+              "subscribers": 5000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "ws",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 680,
+              "last_p50_us": 42993,
+              "last_p90_us": 45582,
+              "last_p99_us": 46551,
+              "last_max_us": 46551,
+              "deliveries_per_sec_p50": 116298
+            },
+            {
+              "mode": "fanout",
+              "subscribers": 5000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "ws",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 698,
+              "last_p50_us": 43884,
+              "last_p90_us": 50245,
+              "last_p99_us": 53985,
+              "last_max_us": 53985,
+              "deliveries_per_sec_p50": 113937
+            },
+            {
+              "mode": "fanout",
+              "subscribers": 5000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "ws",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 791,
+              "last_p50_us": 44171,
+              "last_p90_us": 46113,
+              "last_p99_us": 55308,
+              "last_max_us": 55308,
+              "deliveries_per_sec_p50": 113196
+            }
+          ]
+        }
+      ]
+    },
+    "workerman": {
+      "versions": "Workerman 5.2.4, PHP 8.3.37",
+      "echo": [
+        {
+          "connections": 64,
+          "size": 64,
+          "runs": [
+            {
+              "mode": "echo",
+              "connections": 64,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 1904322,
+              "msgs_per_sec": 126946,
+              "failures": 0,
+              "p50_us": 493,
+              "p90_us": 545,
+              "p99_us": 943,
+              "p999_us": 1136,
+              "max_us": 2635
+            },
+            {
+              "mode": "echo",
+              "connections": 64,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 1804678,
+              "msgs_per_sec": 120305,
+              "failures": 0,
+              "p50_us": 517,
+              "p90_us": 555,
+              "p99_us": 1043,
+              "p999_us": 1340,
+              "max_us": 3687
+            },
+            {
+              "mode": "echo",
+              "connections": 64,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 1833355,
+              "msgs_per_sec": 122215,
+              "failures": 0,
+              "p50_us": 508,
+              "p90_us": 549,
+              "p99_us": 1004,
+              "p999_us": 1075,
+              "max_us": 3058
+            }
+          ]
+        },
+        {
+          "connections": 512,
+          "size": 64,
+          "runs": [
+            {
+              "mode": "echo",
+              "connections": 512,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 1612832,
+              "msgs_per_sec": 107515,
+              "failures": 0,
+              "p50_us": 4706,
+              "p90_us": 4969,
+              "p99_us": 5965,
+              "p999_us": 10282,
+              "max_us": 14822
+            },
+            {
+              "mode": "echo",
+              "connections": 512,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 1619174,
+              "msgs_per_sec": 107937,
+              "failures": 0,
+              "p50_us": 4687,
+              "p90_us": 4984,
+              "p99_us": 6040,
+              "p999_us": 9252,
+              "max_us": 12916
+            },
+            {
+              "mode": "echo",
+              "connections": 512,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 1684680,
+              "msgs_per_sec": 112304,
+              "failures": 0,
+              "p50_us": 4484,
+              "p90_us": 4892,
+              "p99_us": 6361,
+              "p999_us": 9259,
+              "max_us": 10858
+            }
+          ]
+        }
+      ],
+      "fanout": [
+        {
+          "connections": 1000,
+          "size": 128,
+          "runs": [
+            {
+              "mode": "fanout",
+              "subscribers": 1000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "ws",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 275,
+              "last_p50_us": 10261,
+              "last_p90_us": 11057,
+              "last_p99_us": 16048,
+              "last_max_us": 16048,
+              "deliveries_per_sec_p50": 97456
+            },
+            {
+              "mode": "fanout",
+              "subscribers": 1000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "ws",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 263,
+              "last_p50_us": 10358,
+              "last_p90_us": 15207,
+              "last_p99_us": 21345,
+              "last_max_us": 21345,
+              "deliveries_per_sec_p50": 96544
+            },
+            {
+              "mode": "fanout",
+              "subscribers": 1000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "ws",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 265,
+              "last_p50_us": 10215,
+              "last_p90_us": 12900,
+              "last_p99_us": 15262,
+              "last_max_us": 15262,
+              "deliveries_per_sec_p50": 97895
+            }
+          ]
+        },
+        {
+          "connections": 5000,
+          "size": 128,
+          "runs": [
+            {
+              "mode": "fanout",
+              "subscribers": 5000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "ws",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 278,
+              "last_p50_us": 47100,
+              "last_p90_us": 50144,
+              "last_p99_us": 54192,
+              "last_max_us": 54192,
+              "deliveries_per_sec_p50": 106157
+            },
+            {
+              "mode": "fanout",
+              "subscribers": 5000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "ws",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 263,
+              "last_p50_us": 49213,
+              "last_p90_us": 55809,
+              "last_p99_us": 57474,
+              "last_max_us": 57474,
+              "deliveries_per_sec_p50": 101599
+            },
+            {
+              "mode": "fanout",
+              "subscribers": 5000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "ws",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 275,
+              "last_p50_us": 53921,
+              "last_p90_us": 65874,
+              "last_p99_us": 74667,
+              "last_max_us": 74667,
+              "deliveries_per_sec_p50": 92728
+            }
+          ]
+        }
+      ]
+    },
+    "swoole": {
+      "versions": "Swoole 6.3.0RC2, PHP 8.3.37",
+      "echo": [
+        {
+          "connections": 64,
+          "size": 64,
+          "runs": [
+            {
+              "mode": "echo",
+              "connections": 64,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 1988704,
+              "msgs_per_sec": 132572,
+              "failures": 0,
+              "p50_us": 463,
+              "p90_us": 537,
+              "p99_us": 954,
+              "p999_us": 1118,
+              "max_us": 4334
+            },
+            {
+              "mode": "echo",
+              "connections": 64,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 1913801,
+              "msgs_per_sec": 127578,
+              "failures": 0,
+              "p50_us": 478,
+              "p90_us": 560,
+              "p99_us": 1000,
+              "p999_us": 1283,
+              "max_us": 3091
+            },
+            {
+              "mode": "echo",
+              "connections": 64,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 1870169,
+              "msgs_per_sec": 124669,
+              "failures": 0,
+              "p50_us": 484,
+              "p90_us": 591,
+              "p99_us": 1078,
+              "p999_us": 1504,
+              "max_us": 3633
+            }
+          ]
+        },
+        {
+          "connections": 512,
+          "size": 64,
+          "runs": [
+            {
+              "mode": "echo",
+              "connections": 512,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 1617225,
+              "msgs_per_sec": 107808,
+              "failures": 0,
+              "p50_us": 4687,
+              "p90_us": 5667,
+              "p99_us": 6916,
+              "p999_us": 9744,
+              "max_us": 18435
+            },
+            {
+              "mode": "echo",
+              "connections": 512,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 1663828,
+              "msgs_per_sec": 110914,
+              "failures": 0,
+              "p50_us": 4434,
+              "p90_us": 5404,
+              "p99_us": 6769,
+              "p999_us": 9142,
+              "max_us": 14760
+            },
+            {
+              "mode": "echo",
+              "connections": 512,
+              "threads": 4,
+              "size": 64,
+              "seconds": 15.0,
+              "messages": 1431610,
+              "msgs_per_sec": 95434,
+              "failures": 0,
+              "p50_us": 5282,
+              "p90_us": 6174,
+              "p99_us": 8596,
+              "p999_us": 11557,
+              "max_us": 19641
+            }
+          ]
+        }
+      ],
+      "fanout": [
+        {
+          "connections": 1000,
+          "size": 128,
+          "runs": [
+            {
+              "mode": "fanout",
+              "subscribers": 1000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "ws",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 258,
+              "last_p50_us": 9929,
+              "last_p90_us": 12148,
+              "last_p99_us": 15837,
+              "last_max_us": 15837,
+              "deliveries_per_sec_p50": 100715
+            },
+            {
+              "mode": "fanout",
+              "subscribers": 1000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "ws",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 263,
+              "last_p50_us": 9866,
+              "last_p90_us": 14627,
+              "last_p99_us": 18605,
+              "last_max_us": 18605,
+              "deliveries_per_sec_p50": 101358
+            },
+            {
+              "mode": "fanout",
+              "subscribers": 1000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "ws",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 242,
+              "last_p50_us": 9470,
+              "last_p90_us": 11854,
+              "last_p99_us": 13974,
+              "last_max_us": 13974,
+              "deliveries_per_sec_p50": 105597
+            }
+          ]
+        },
+        {
+          "connections": 5000,
+          "size": 128,
+          "runs": [
+            {
+              "mode": "fanout",
+              "subscribers": 5000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "ws",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 270,
+              "last_p50_us": 48921,
+              "last_p90_us": 53782,
+              "last_p99_us": 75074,
+              "last_max_us": 75074,
+              "deliveries_per_sec_p50": 102206
+            },
+            {
+              "mode": "fanout",
+              "subscribers": 5000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "ws",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 271,
+              "last_p50_us": 50957,
+              "last_p90_us": 58078,
+              "last_p99_us": 60066,
+              "last_max_us": 60066,
+              "deliveries_per_sec_p50": 98122
+            },
+            {
+              "mode": "fanout",
+              "subscribers": 5000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "ws",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 266,
+              "last_p50_us": 50821,
+              "last_p90_us": 54162,
+              "last_p99_us": 58576,
+              "last_max_us": 58576,
+              "deliveries_per_sec_p50": 98385
+            }
+          ]
+        }
+      ]
+    },
+    "reverb": {
+      "versions": "Laravel Reverb v1.14.0 (Laravel Framework 13.43.0), PHP 8.3.37",
+      "fanout": [
+        {
+          "connections": 1000,
+          "size": 128,
+          "runs": [
+            {
+              "mode": "fanout",
+              "subscribers": 1000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "pusher",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 5150,
+              "last_p50_us": 14766,
+              "last_p90_us": 17697,
+              "last_p99_us": 40817,
+              "last_max_us": 40817,
+              "deliveries_per_sec_p50": 67723
+            },
+            {
+              "mode": "fanout",
+              "subscribers": 1000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "pusher",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 5205,
+              "last_p50_us": 15086,
+              "last_p90_us": 17310,
+              "last_p99_us": 40903,
+              "last_max_us": 40903,
+              "deliveries_per_sec_p50": 66287
+            },
+            {
+              "mode": "fanout",
+              "subscribers": 1000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "pusher",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 6224,
+              "last_p50_us": 16604,
+              "last_p90_us": 19233,
+              "last_p99_us": 41345,
+              "last_max_us": 41345,
+              "deliveries_per_sec_p50": 60226
+            }
+          ]
+        },
+        {
+          "connections": 5000,
+          "size": 128,
+          "runs": [
+            {
+              "mode": "fanout",
+              "subscribers": 5000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "pusher",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 20599,
+              "last_p50_us": 72014,
+              "last_p90_us": 77270,
+              "last_p99_us": 81930,
+              "last_max_us": 81930,
+              "deliveries_per_sec_p50": 69431
+            },
+            {
+              "mode": "fanout",
+              "subscribers": 5000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "pusher",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 26224,
+              "last_p50_us": 85233,
+              "last_p90_us": 92787,
+              "last_p99_us": 105706,
+              "last_max_us": 105706,
+              "deliveries_per_sec_p50": 58663
+            },
+            {
+              "mode": "fanout",
+              "subscribers": 5000,
+              "rounds": 30,
+              "size": 128,
+              "trigger": "pusher",
+              "delivered_ratio": 1.0,
+              "trigger_failures": 0,
+              "dropped": 0,
+              "first_p50_us": 24901,
+              "last_p50_us": 84234,
+              "last_p90_us": 97029,
+              "last_p99_us": 133814,
+              "last_max_us": 133814,
+              "deliveries_per_sec_p50": 59358
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

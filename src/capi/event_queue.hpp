@@ -47,11 +47,15 @@ struct Popped {
 /// host sees every Open it was told about end with exactly one Close, and can free its state.
 /// Everything else is refused with BufferFull when it does not fit, and counted in dropped().
 ///
-/// event_fd() is readable exactly while an event is pending. The descriptor is written by the push
-/// that makes the queue non-empty and drained by the pop that empties it, both under the queue's
-/// mutex, so a wake-up cannot be lost between a producer's push and the consumer's sleep (lesson
-/// 13). The mutex lives here, at the edge, and is held for one push or pop; Connection and
-/// ProtocolSession stay lock-free.
+/// event_fd() is readable whenever the host must come back: an event is pending and its wake-up
+/// has been paid. A push with Wake::Now pays it inside push(); a Wake::AtFlush push (a message from
+/// a loop thread, ADR-0035) owes it until that loop's flush_wake() at the end of its iteration, so
+/// the descriptor can lag the queue by up to one loop iteration. try_pop() already returns such an
+/// event, so a host that polls on a timer misses nothing; a host that waits on the descriptor is
+/// woken no later than the end of that iteration. The descriptor is written by the wake-up and
+/// drained by the pop that empties the queue, both under the queue's mutex, so a wake-up cannot be
+/// lost between a producer's push and the consumer's sleep (lesson 13). The mutex lives here, at
+/// the edge, and is held for one push or pop; Connection and ProtocolSession stay lock-free.
 /// Thread-affinity: push() any thread; try_pop() one consumer thread at a time; the rest any.
 class EventQueue {
 public:
@@ -72,12 +76,29 @@ public:
     EventQueue& operator=(EventQueue&&) = delete;
     ~EventQueue() = default;
 
+    /// When a push that finds the queue empty wakes the host (ADR-0035). Now writes the descriptor
+    /// inside push(); AtFlush only owes the wake-up, and flush_wake() pays it. A loop that handles
+    /// many ready connections in one iteration pushes many events: one wake-up for the whole burst,
+    /// not one per event, which on a busy server saves the host a context switch per message. Use
+    /// AtFlush only from a loop thread that calls flush_wake() at the end of its iteration; every
+    /// other push (and every rare event) uses Now.
+    ///
+    /// Now writes only when it makes the queue non-empty: pushed onto a queue that is not empty,
+    /// it relies on the wake-up already written, or already owed to the loop that queued the
+    /// first event, which pays it at the end of its iteration.
+    enum class Wake : std::uint8_t { Now, AtFlush };
+
     /// Queue `event`; nothing is queued on failure.
     /// - Open needs room for itself and for the Close it reserves.
     /// - Close needs an accepted Open (else InvalidArgument) and always fits.
     /// - Text, Binary and Error need room for themselves and leave the reservations alone.
     /// @return Error{BufferFull} over a limit, Error{ResourceExhausted}, Error{Io}.
-    [[nodiscard]] Result<PushOutcome> push(HostEvent event);
+    [[nodiscard]] Result<PushOutcome> push(HostEvent event, Wake wake = Wake::Now);
+
+    /// Pay the wake-up that a Wake::AtFlush push owes, if any (a no-op, without taking the lock,
+    /// when none is owed). Called by the thread that pushed, after its burst. A host that emptied
+    /// the queue first has already cancelled the wake-up, and nothing is written.
+    void flush_wake();
 
     /// @return The oldest event, or nothing when the queue is empty. Never blocks: wait on
     /// event_fd() and call again.
@@ -114,9 +135,13 @@ private:
     const EventQueueConfig config_;
     Fd wake_;
     std::atomic<std::uint64_t> dropped_{0};
+    /// Mirrors wake_owed_ so flush_wake() can return without the lock. Only an optimisation: the
+    /// thread that pushed sees its own store, so it never skips its own wake-up.
+    std::atomic<bool> owed_hint_{false};
 
     mutable std::mutex mutex_;
     std::deque<HostEvent> events_;     // guarded by mutex_
+    bool wake_owed_ = false;           // guarded: a Wake::AtFlush push is waiting for flush_wake()
     std::size_t bytes_ = 0;            // guarded: payload bytes of events_
     std::size_t reserved_closes_ = 0;  // guarded: accepted Opens whose Close is still to come
     std::size_t reserved_bytes_ = 0;   // guarded: reserved_closes_ * kReservedCloseBytes

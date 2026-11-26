@@ -35,7 +35,8 @@ usage: wsrv-install-lib [--dir=DIR] [--daemon] [--sha256=HASH] [--from-dir=DIR] 
                   they are verified the same way
   --version=X.Y.Z the release to install (default: the version of this package)
 
-Prebuilt libraries exist for glibc Linux on x86_64 and aarch64; elsewhere build from source.
+Prebuilt libraries exist for glibc Linux on x86_64 and aarch64. On macOS and Windows the server does not
+run natively (it is built on epoll): run the wsrvd Docker image; the PHP client itself works anywhere.
 
 TXT);
     exit(2);
@@ -48,6 +49,7 @@ if ($options === false || isset($options['help'])) {
 $str = static fn (string $key, ?string $default): ?string => isset($options[$key]) && is_string($options[$key]) ? $options[$key] : $default;
 
 try {
+    LibraryInstaller::checkOperatingSystem(PHP_OS_FAMILY); // before anything is read or fetched
     $version = $str('version', Version::PACKAGE) ?? Version::PACKAGE;
     LibraryInstaller::checkVersion($version);
     $fromDir = $str('from-dir', null);

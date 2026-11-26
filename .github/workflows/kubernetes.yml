@@ -1,0 +1,118 @@
+name: kubernetes
+
+# deploy/kubernetes/wsrv.yaml is the manifest people copy. It is applied here to a real cluster (kind:
+# Kubernetes in Docker) with the image built from this commit, so the things that only a kubelet does are
+# exercised: the Secret volume's owner and mode, the init container, the in-memory volume, the probes,
+# service-link variables, and a rolling restart. The worker is a stand-in (`sleep`): the daemon, the
+# manifest and the cluster are what is under test. Runs only when one of them changes.
+on:
+  push:
+    branches: [main, develop]
+    paths: ['deploy/kubernetes/**', 'docker/wsrvd.Dockerfile', 'apps/wsrvd/**', 'src/**', 'include/**', 'CMakeLists.txt', 'CMakePresets.json', 'cmake/**', '.github/workflows/kubernetes.yml']
+  pull_request:
+    paths: ['deploy/kubernetes/**', 'docker/wsrvd.Dockerfile', 'apps/wsrvd/**', 'src/**', 'include/**', 'CMakeLists.txt', 'CMakePresets.json', 'cmake/**', '.github/workflows/kubernetes.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kubernetes-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  kind:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: The runner has kind and kubectl
+        run: |
+          command -v kind kubectl || { echo "kind or kubectl is missing from this runner image"; exit 1; }
+          kind version
+          kubectl version --client
+      - name: Build the image
+        run: docker build -f docker/wsrvd.Dockerfile -t wsrvd:ci .
+      - name: Start a cluster and load the image
+        run: |
+          kind create cluster --wait 180s
+          kind load docker-image wsrvd:ci
+          kubectl get nodes
+      - name: Apply the reference manifest (this image, a stand-in worker, a random token)
+        run: |
+          token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          echo "::add-mask::$token"
+          echo "$token" > "$RUNNER_TEMP/token"
+          # Only the values a user replaces are replaced: the images, the worker command, the token.
+          sed -e 's|ghcr.io/dimathjayasinghe/wsrvd:[^ ]*|wsrvd:ci|g' \
+              -e "s|REPLACE-WITH-64-RANDOM-HEX-CHARACTERS-REPLACE-WITH-64-RANDOM-HEX-CHARS|$token|" \
+              -e 's|image: registry.example.com/your-app-worker:latest.*|image: wsrvd:ci\n          command: ["sleep", "infinity"]|' \
+              deploy/kubernetes/wsrv.yaml > "$RUNNER_TEMP/wsrv.yaml"
+          grep -c 'wsrvd:ci' "$RUNNER_TEMP/wsrv.yaml"
+          kubectl apply -f "$RUNNER_TEMP/wsrv.yaml"
+          kubectl rollout status deployment/wsrv --timeout=240s
+          kubectl get pods -o wide
+      - name: Every pod is ready and was never restarted
+        run: |
+          kubectl wait --for=condition=Ready pod -l app=wsrv --timeout=60s
+          restarts="$(kubectl get pods -l app=wsrv -o jsonpath='{range .items[*].status.containerStatuses[*]}{.restartCount}{"\n"}{end}' | sort -u | tr '\n' ' ')"
+          echo "restart counts: $restarts"
+          [ "$restarts" = "0 " ]
+      - name: The token copy is the daemon's own, private, and readable by the worker
+        run: |
+          listing="$(kubectl exec deploy/wsrv -c wsrvd -- ls -ln /run/wsrv/ipc/publish.token)"
+          echo "$listing"
+          echo "$listing" | grep -q '^-rw------- 1 10001 10001 '
+          kubectl exec deploy/wsrv -c worker -- test -s /run/wsrv/ipc/publish.token
+      - name: The probes' endpoints and the publish port answer, and the token is checked
+        run: |
+          kubectl port-forward deploy/wsrv 19101:9101 19200:9200 > "$RUNNER_TEMP/forward.log" 2>&1 &
+          forward=$!
+          trap 'kill $forward 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            curl -fsS -o /dev/null http://127.0.0.1:19101/readyz 2>/dev/null && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:19101/readyz
+          none="$(curl -s -o /dev/null -w '%{http_code}' -X POST 'http://127.0.0.1:19200/publish?topic=room.1' -d hi)"
+          wrong="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer 0000000000000000000000000000000000000000000000000000000000000000' 'http://127.0.0.1:19200/publish?topic=room.1' -d hi)"
+          right="$(curl -s -w ' %{http_code}' -X POST -H "Authorization: Bearer $(cat "$RUNNER_TEMP/token")" 'http://127.0.0.1:19200/publish?topic=room.1' -d hi)"
+          echo "no token: $none, wrong token: $wrong, right token: $right"
+          [ "$none" = 401 ] && [ "$wrong" = 401 ]
+          case "$right" in *' 200') ;; *) exit 1 ;; esac
+      - name: A Service named wsrvd (service links on) does not stop the daemon or its healthcheck
+        run: |
+          kubectl create service clusterip wsrvd --tcp=8080:8080
+          # The pod is created after the Service, so the kubelet puts WSRVD_SERVICE_HOST, WSRVD_PORT=tcp://... in it.
+          kubectl apply -f - <<'YAML'
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: service-links
+          spec:
+            containers:
+              - name: wsrvd
+                image: wsrvd:ci
+          YAML
+          kubectl wait --for=condition=Ready pod/service-links --timeout=90s
+          sleep 8
+          kubectl exec service-links -- env | grep -E '^WSRVD_(SERVICE_HOST|PORT)=' | sed 's/=.*/=.../'
+          [ "$(kubectl exec service-links -- env | grep -cE '^WSRVD_(SERVICE_HOST|PORT)=')" = 2 ]
+          kubectl exec service-links -- /usr/local/bin/wsrvd --healthcheck
+          [ "$(kubectl get pod service-links -o jsonpath='{.status.containerStatuses[0].restartCount}')" = 0 ]
+          kubectl logs service-links | tail -3
+      - name: A rolling restart completes without losing availability
+        run: |
+          kubectl rollout restart deployment/wsrv
+          kubectl rollout status deployment/wsrv --timeout=240s
+          [ "$(kubectl get deployment wsrv -o jsonpath='{.status.availableReplicas}')" = 2 ]
+          kubectl get pods -l app=wsrv
+      - name: What the cluster saw, if something failed
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl describe pods -l app=wsrv || true
+          kubectl logs -l app=wsrv --all-containers --prefix --tail=60 || true
+          kubectl logs pod/service-links --tail=30 || true
+          kubectl get events --sort-by=.lastTimestamp | tail -30 || true

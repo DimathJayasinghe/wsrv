@@ -37,8 +37,12 @@ public:
 
     [[nodiscard]] virtual TimePoint now() const noexcept = 0;
 
-    /// `message` must be a fixed string: peer-supplied text is never passed to the log (T14).
-    virtual void log(LogLevel level, ConnectionId id, std::string_view message) = 0;
+    /// `record.message` must be a fixed string: peer-supplied text is never passed to the log (T14,
+    /// and the sink escapes it anyway). The connection fills in `conn` and, with `log_peer`,
+    /// `peer`.
+    virtual void log(const LogRecord& record) = 0;
+    /// Would a record of this level be written? Asked before anything is formatted for it.
+    [[nodiscard]] virtual bool log_enabled(LogLevel level) const noexcept = 0;
 
     /// The connection has finished and released everything it owns; the owner may destroy it at
     /// the next safe point (ADR-0013 decision 3). Called exactly once per connection.

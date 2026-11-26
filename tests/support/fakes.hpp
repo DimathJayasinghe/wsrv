@@ -7,12 +7,30 @@
 
 #include <chrono>
 #include <cstdint>
+#include <mutex>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <thread>
 #include <vector>
 
 namespace wsrv::test {
 
 /// A clock that only moves when the test says so: timeout logic is tested instantly and repeatably.
+/// Calendar time a test sets by hand (a log line's timestamp).
+class FakeWallClock final : public IWallClock {
+public:
+    [[nodiscard]] WallTime now() const noexcept override {
+        return now_;
+    }
+    void set(WallTime time) noexcept {
+        now_ = time;
+    }
+
+private:
+    WallTime now_{};
+};
+
 class FakeClock final : public IClock {
 public:
     [[nodiscard]] TimePoint now() const noexcept override {
@@ -31,14 +49,70 @@ class RecordingLogger final : public ILogger {
 public:
     struct Entry {
         LogLevel level;
+        std::string event;
         std::string message;
+        std::uint64_t conn = 0;
+        std::string peer;
     };
 
-    void log(LogLevel level, std::string_view message) override {
-        entries.push_back({level, std::string{message}});
+    using ILogger::log;
+    void log(const LogRecord& record) override {
+        entries.push_back({record.level,
+                           std::string{record.event},
+                           std::string{record.message},
+                           record.conn,
+                           std::string{record.peer}});
     }
 
     std::vector<Entry> entries;
+};
+
+/// A logger several threads may write while the test thread waits for a line (a running server logs
+/// from its own threads). `wait_for` polls; no sleeping beyond a few seconds in total.
+class SharedLogger final : public ILogger {
+public:
+    using ILogger::log;
+    void log(const LogRecord& record) override {
+        const std::lock_guard lock{mutex_};
+        entries_.push_back({record.level,
+                            std::string{record.event},
+                            std::string{record.message},
+                            record.conn,
+                            std::string{record.peer}});
+    }
+    /// The first entry named `event`, waiting up to `timeout`; empty optional if it never came.
+    [[nodiscard]] std::optional<RecordingLogger::Entry>
+    wait_for(std::string_view event, std::chrono::milliseconds timeout = std::chrono::seconds{3}) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        for (;;) {
+            {
+                const std::lock_guard lock{mutex_};
+                for (const auto& entry : entries_) {
+                    if (entry.event == event) {
+                        return entry;
+                    }
+                }
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return std::nullopt;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+    }
+    /// Every line so far as "event|level|message|peer", one per line, for "was X ever written".
+    [[nodiscard]] std::string everything() const {
+        const std::lock_guard lock{mutex_};
+        std::string all;
+        for (const auto& entry : entries_) {
+            all += entry.event + "|" + std::to_string(static_cast<int>(entry.level)) + "|" +
+                   entry.message + "|" + entry.peer + "\n";
+        }
+        return all;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::vector<RecordingLogger::Entry> entries_;
 };
 
 /// Deterministic "random" bytes (an incrementing counter) with failure injection.

@@ -58,6 +58,10 @@ public:
 
     [[nodiscard]] std::unique_ptr<IWebSocketHandler> create(const ConnectionInfo& info) override;
 
+    /// Every loop calls this at the end of each iteration: pays the host's wake-up that the
+    /// iteration's Text and Binary events owe (ADR-0035). Thread-safe.
+    void on_loop_iteration_end() noexcept override;
+
     /// IHandshakeDecider: queue a Handshake event for the host and remember how to answer it. A
     /// full queue is an Error (the server then refuses the upgrade with 503, never accepts).
     [[nodiscard]] Result<void> request(HandshakeRequest request, PendingHandle handle) override;

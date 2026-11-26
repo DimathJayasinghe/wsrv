@@ -97,3 +97,10 @@ ADR-0025), with the same harness limits as the C consumer set through the same t
 same explanation. The PHP echo handler catches `ConnectionClosed`: a message right before a protocol violation arrives at the
 handler after the library has failed the connection, and the send then throws; the first run of this suite ended after 39
 cases because that exception left `run()` and stopped the server (the example now treats it as normal; lesson 37).
+
+**Re-run on the 1.0.0 sources (2026-11-26, develop at `1e547c7`).** All six runs again, after the wake batching (ADR-0035) and the
+read trim (ADR-0036) changed the paths a message takes: `run.sh`, `--wss`, `--capi`, `--capi --wss`, `--php`, `--php --wss`,
+each with the 517 cases and deflate offered. **0 FAILED in all six.** The C++ server, plain and wss, and the C and PHP consumers
+over plain gave **1021 OK, the same seven NON-STRICT, 6 INFORMATIONAL**. Both C and PHP over wss gave **1020 OK, 8 NON-STRICT**: the
+seven and one more from the "small message, then a violation" group (4.2.5 for C, 3.4 for PHP), the timing difference described
+above for the C consumer; PHP loads the same `libwsrv.so`, so the same explanation holds.

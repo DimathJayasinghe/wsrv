@@ -254,4 +254,84 @@ TEST_F(EventQueueTest, ManyProducersOneConsumerLoseNothingKeepEachOrderAndEndNot
     EXPECT_FALSE(readable(*queue));  // no lost or stuck wake-up
 }
 
+// ---- a wake that waits for the end of the loop iteration (ADR-0035)
+// ------------------------------
+
+TEST_F(EventQueueTest, ADeferredWakeIsOwedUntilItIsFlushed) {
+    auto queue = make({});
+    ASSERT_TRUE(queue->push(text(1), EventQueue::Wake::AtFlush).has_value());
+    EXPECT_EQ(queue->pending(), 1U);
+    EXPECT_FALSE(readable(*queue)) << "the consumer is not woken per push";
+    queue->flush_wake();
+    EXPECT_TRUE(readable(*queue)) << "the flush pays the wake-up once";
+    ASSERT_TRUE(queue->try_pop().has_value());
+    EXPECT_FALSE(readable(*queue));
+}
+
+TEST_F(EventQueueTest, ManyDeferredPushesCostOneWakeAndTheFlushOfNothingIsFree) {
+    auto queue = make({});
+    queue->flush_wake();
+    EXPECT_FALSE(readable(*queue)) << "nothing is owed, nothing is written";
+    for (ConnectionId conn = 1; conn <= 5; ++conn) {
+        ASSERT_TRUE(queue->push(text(conn), EventQueue::Wake::AtFlush).has_value());
+    }
+    queue->flush_wake();
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_TRUE(readable(*queue)) << "still readable until the queue is empty";
+        ASSERT_TRUE(queue->try_pop().has_value());
+    }
+    EXPECT_FALSE(readable(*queue));
+    queue->flush_wake();
+    EXPECT_FALSE(readable(*queue)) << "a second flush owes nothing";
+}
+
+TEST_F(EventQueueTest, AConsumerThatDrainsBeforeTheFlushCancelsTheOwedWake) {
+    auto queue = make({});
+    ASSERT_TRUE(queue->push(text(1), EventQueue::Wake::AtFlush).has_value());
+    ASSERT_TRUE(queue->try_pop().has_value());  // the host was awake anyway
+    queue->flush_wake();
+    EXPECT_FALSE(readable(*queue)) << "no stale wake-up for an empty queue";
+}
+
+TEST_F(EventQueueTest, AnImmediatePushWhileAWakeIsOwedDoesNotLoseIt) {
+    auto queue = make({});
+    ASSERT_TRUE(queue->push(text(1), EventQueue::Wake::AtFlush).has_value());
+    ASSERT_TRUE(queue->push(control(HostEventType::Open, 2)).has_value());  // not empty: no write
+    EXPECT_FALSE(readable(*queue));
+    queue->flush_wake();
+    EXPECT_TRUE(readable(*queue)) << "the owed wake still arrives";
+}
+
+TEST_F(EventQueueTest, ADefaultPushStillWakesAtOnce) {
+    auto queue = make({});
+    ASSERT_TRUE(queue->push(text(1)).has_value());
+    EXPECT_TRUE(readable(*queue));
+}
+
+TEST_F(EventQueueTest,
+       ABurstProducerWithAFlushPerBurstNeverLeavesTheConsumerAsleep) {  // run under TSan
+    auto queue = make({.max_events = 4096, .max_bytes = 1U << 20});
+    constexpr std::size_t kBursts = 400;
+    constexpr std::size_t kPerBurst = 7;
+    std::atomic<std::size_t> received{0};
+    std::thread consumer{[&] {
+        while (received.load() < kBursts * kPerBurst) {
+            pollfd p{queue->event_fd(), POLLIN, 0};
+            if (::poll(&p, 1, 3000) == 0) {
+                return;  // a lost wake-up: the test fails on the count below
+            }
+            while (queue->try_pop()) {
+                received.fetch_add(1);
+            }
+        }
+    }};
+    for (std::size_t burst = 0; burst < kBursts; ++burst) {
+        for (std::size_t i = 0; i < kPerBurst; ++i) {
+            ASSERT_TRUE(queue->push(text(1 + i), EventQueue::Wake::AtFlush).has_value());
+        }
+        queue->flush_wake();  // what a loop does at the end of its iteration
+    }
+    consumer.join();
+    EXPECT_EQ(received.load(), kBursts * kPerBurst);
+}
 }  // namespace

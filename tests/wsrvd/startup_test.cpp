@@ -141,6 +141,169 @@ TEST_F(StartupTest, BadInputIsRefusedBeforeAnythingStarts) {
     EXPECT_FALSE(run({"--ipc-socket=/run/x.sock", "--ipc-token=s3cret"}).has_value());
 }
 
+// ADR-0030: environment variables are the base layer; the arguments override them.
+struct EnvironmentTest : public StartupTest {
+    std::string detail;
+    [[nodiscard]] wsrv::Result<wsrv::wsrvd::Startup> run_with(std::vector<std::string> args,
+                                                              std::vector<std::string> env) {
+        const std::vector<std::string_view> arg_views{args.begin(), args.end()};
+        const std::vector<std::string_view> env_views{env.begin(), env.end()};
+        detail.clear();
+        return prepare(arg_views, env_views, sys, &detail);
+    }
+};
+
+TEST_F(EnvironmentTest, AnEnvironmentAloneIsEnoughAndNamesAreTheUpperCasedKeys) {
+    const auto startup = run_with({},
+                                  {"WSRVD_IPC_SOCKET=/run/wsrv/ipc.sock",
+                                   "WSRVD_LISTEN_PORT=9100",
+                                   "WSRVD_MAX_CONNECTIONS_PER_IP=7"});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_EQ(startup->config.socket_path(), "/run/wsrv/ipc.sock");
+    EXPECT_EQ(startup->config.embedded().port(), 9100);
+    EXPECT_EQ(startup->config.embedded().server().max_connections_per_ip, 7U);
+}
+
+TEST_F(EnvironmentTest, TheLogSettingsAreFlagsAndVariablesLikeAnyOther) {  // ADR-0037
+    const auto from_env = run_with(
+        {}, {"WSRVD_IPC_SOCKET=/run/a.sock", "WSRVD_LOG_LEVEL=debug", "WSRVD_LOG_PEER=true"});
+    ASSERT_TRUE(from_env.has_value());
+    EXPECT_EQ(from_env->config.embedded().log_level(), wsrv::LogLevel::Debug);
+    EXPECT_TRUE(from_env->config.embedded().server().log_peer);
+
+    const auto flag =
+        run_with({"--log-level=error"}, {"WSRVD_IPC_SOCKET=/run/a.sock", "WSRVD_LOG_LEVEL=debug"});
+    ASSERT_TRUE(flag.has_value());
+    EXPECT_EQ(flag->config.embedded().log_level(), wsrv::LogLevel::Error)
+        << "a flag wins over the environment";
+
+    const auto misspelled =
+        run_with({}, {"WSRVD_IPC_SOCKET=/run/a.sock", "WSRVD_LOG_LEVEL=verbose"});
+    EXPECT_FALSE(misspelled.has_value()) << "a level that does not exist is not silently info";
+}
+
+TEST_F(EnvironmentTest, ArgumentsAndFilesOverrideTheEnvironmentAndFlagsStillWinOverFiles) {
+    const std::string file = write("wsrvd.conf", "listen_port = 7000\n");
+    const std::vector<std::string> env{"WSRVD_IPC_SOCKET=/run/a.sock", "WSRVD_LISTEN_PORT=9100"};
+    const auto from_env = run_with({}, env);
+    ASSERT_TRUE(from_env.has_value());
+    EXPECT_EQ(from_env->config.embedded().port(), 9100);
+    const auto from_file = run_with({"--config=" + file}, env);
+    ASSERT_TRUE(from_file.has_value());
+    EXPECT_EQ(from_file->config.embedded().port(), 7000);
+    const auto from_flag = run_with({"--config=" + file, "--listen-port=7001"}, env);
+    ASSERT_TRUE(from_flag.has_value());
+    EXPECT_EQ(from_flag->config.embedded().port(), 7001);
+}
+
+TEST_F(EnvironmentTest, RepeatableKeysTakeACommaListAndAddToWhatFlagsAdd) {
+    const auto startup = run_with(
+        {"--allow-origin=https://flag.example"},
+        {"WSRVD_IPC_SOCKET=/run/a.sock", "WSRVD_ALLOW_ORIGIN=https://a.example,https://b.example"});
+    ASSERT_TRUE(startup.has_value());
+    const auto& origins = startup->config.embedded().server().handshake.allowed_origins;
+    ASSERT_EQ(origins.size(), 3U);
+    EXPECT_EQ(origins[0], "https://a.example");
+    EXPECT_EQ(origins[1], "https://b.example");
+    EXPECT_EQ(origins[2], "https://flag.example");
+}
+
+TEST_F(EnvironmentTest, AnEmptyVariableCountsAsUnsetAndOtherPrefixesAreNeverRead) {
+    const auto startup = run_with({},
+                                  {"WSRVD_IPC_SOCKET=/run/a.sock",
+                                   "WSRVD_LISTEN_PORT=",
+                                   "WSRV_PORT=1",
+                                   "WSRV_VERSION=0.1.0",
+                                   "PATH=/usr/bin",
+                                   "WSRVDX=1"});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_EQ(startup->config.embedded().port(), 0) << "the default, not an error";
+}
+
+TEST_F(EnvironmentTest, AnUnknownWsrvdVariableStopsTheStartupAndIsNamed) {
+    const auto startup =
+        run_with({"--ipc-socket=/run/a.sock"}, {"WSRVD_ALLOW_ORIGINS=https://a.example"});
+    ASSERT_FALSE(startup.has_value());
+    EXPECT_EQ(startup.error().code, ErrorCode::InvalidConfig);
+    EXPECT_EQ(detail, "WSRVD_ALLOW_ORIGINS")
+        << "a typo must not start a server without an Origin list";
+}
+
+// ADR-0030 A1: for every Service in its namespace Kubernetes injects <SERVICE>_SERVICE_HOST,
+// <SERVICE>_SERVICE_PORT[_<NAME>], <SERVICE>_PORT and
+// <SERVICE>_PORT_<n>_<PROTO>[_PROTO|_PORT|_ADDR]. A Service named "wsrvd" (the natural name) makes
+// WSRVD_* names that are not settings; they must not stop the daemon or its --healthcheck, which
+// reads the same environment.
+TEST_F(EnvironmentTest, TheVariablesKubernetesInjectsForAServiceNamedWsrvdAreNotSettings) {
+    const auto startup = run_with({"--ipc-socket=/run/a.sock"},
+                                  {"WSRVD_SERVICE_HOST=10.96.0.12",
+                                   "WSRVD_SERVICE_PORT=8080",
+                                   "WSRVD_SERVICE_PORT_WS=8080",
+                                   "WSRVD_SERVICE_PORT_ADMIN_METRICS=9101",
+                                   "WSRVD_PORT=tcp://10.96.0.12:8080",
+                                   "WSRVD_PORT_8080_TCP=tcp://10.96.0.12:8080",
+                                   "WSRVD_PORT_8080_TCP_PROTO=tcp",
+                                   "WSRVD_PORT_8080_TCP_PORT=8080",
+                                   "WSRVD_PORT_8080_TCP_ADDR=10.96.0.12",
+                                   "WSRVD_LISTEN_PORT=9100"});
+    ASSERT_TRUE(startup.has_value()) << detail;
+    EXPECT_EQ(startup->config.embedded().port(), 9100)
+        << "a real setting beside them still applies";
+}
+
+TEST_F(EnvironmentTest, OnlyTheExactShapesOfServiceLinksAreIgnoredATypoStillStops) {
+    for (const char* entry : {"WSRVD_PORT=8080",  // a person meaning the listen port
+                              "WSRVD_PORT=",      // empty: skipped like any empty value
+                              "WSRVD_SERVICE_HOSTS=10.0.0.1",  // not the injected name
+                              "WSRVD_SERVICE=x",
+                              "WSRVD_PORT_8080=x",                 // no protocol
+                              "WSRVD_PORT_X_TCP=tcp://1.2.3.4:5",  // the port is a number
+                              "WSRVD_PORT_8080_TCP_EXTRA=x"}) {
+        const auto startup = run_with({"--ipc-socket=/run/a.sock"}, {entry});
+        if (std::string_view{entry}.ends_with('=')) {
+            EXPECT_TRUE(startup.has_value()) << entry;
+        } else {
+            EXPECT_FALSE(startup.has_value()) << entry << " must still be an error";
+        }
+    }
+}
+
+TEST_F(EnvironmentTest, ABadValueStopsTheStartupAndNamesTheVariable) {
+    const auto startup = run_with({"--ipc-socket=/run/a.sock"}, {"WSRVD_LISTEN_PORT=99999"});
+    ASSERT_FALSE(startup.has_value());
+    EXPECT_EQ(detail, "WSRVD_LISTEN_PORT");
+}
+
+TEST_F(EnvironmentTest, SecretsNeverComeFromTheEnvironment) {
+    for (const char* name : {"WSRVD_IPC_TOKEN=s3cret",
+                             "WSRVD_PUBLISH_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}) {
+        const auto startup = run_with({"--ipc-socket=/run/a.sock"}, {name});
+        EXPECT_FALSE(startup.has_value()) << name;
+    }
+}
+
+TEST_F(EnvironmentTest, AMalformedEntryWithoutAnEqualsSignIsIgnoredLikeTheShellDoes) {
+    const auto startup = run_with({"--ipc-socket=/run/a.sock"}, {"WSRVD_NOEQUALS", "=x"});
+    EXPECT_TRUE(startup.has_value());
+}
+
+TEST_F(EnvironmentTest, HealthcheckIsAModeAndNeedsTheSameConfiguration) {
+    const auto startup = run_with({"--healthcheck"}, {"WSRVD_IPC_SOCKET=/run/a.sock"});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_TRUE(startup->healthcheck);
+    EXPECT_FALSE(startup->help);
+    const auto normal = run_with({}, {"WSRVD_IPC_SOCKET=/run/a.sock"});
+    ASSERT_TRUE(normal.has_value());
+    EXPECT_FALSE(normal->healthcheck);
+    EXPECT_FALSE(run_with({"--healthcheck"}, {}).has_value()) << "no socket path: nothing to check";
+}
+
+TEST(Usage, NamesTheEnvironmentAndHealthcheckAndSaysTokensAreNeverEnvironment) {  // ADR-0030
+    const std::string_view text = wsrv::wsrvd::usage();
+    EXPECT_NE(text.find("--healthcheck"), std::string_view::npos);
+    EXPECT_NE(text.find("WSRVD_"), std::string_view::npos);
+}
+
 TEST(Usage, NamesThePermessageDeflateFlagsAndSaysItIsOffByDefault) {  // ADR-0020 section 6
     const std::string_view text = wsrv::wsrvd::usage();
     for (const char* flag : {"--permessage-deflate",

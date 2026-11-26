@@ -2,7 +2,10 @@
 # Runtime image for the wsrvd sidecar daemon (ADR-0026 amendment 1). Not the dev image (docker/Dockerfile).
 #
 #   docker build -f docker/wsrvd.Dockerfile -t wsrvd .
-#   docker run --rm -p 8080:8080 -v wsrv-ipc:/run/wsrv wsrvd --allow-origin=http://localhost:8000
+#   docker run --rm -p 8080:8080 -v wsrv-ipc:/run/wsrv -e WSRVD_ALLOW_ORIGIN=http://localhost:8000 wsrvd
+#
+# Configuration is by environment (ADR-0030): every setting is WSRVD_<KEY> (WSRVD_MAX_CONNECTIONS_PER_IP, ...);
+# flags still work and override it. The image sets the defaults below; `docker ps` shows the health state.
 #
 # Why a source build here and not "copy the release binary": one file reproduces the image from a tag on
 # any machine, with no download to trust. CI builds it natively per architecture (release.yml).
@@ -53,6 +56,14 @@ COPY --from=build /out/libwsrv.so /usr/local/lib/wsrv/libwsrv.so
 # socket directory is private and owned by the daemon user (OPERATIONS section 7).
 VOLUME ["/run/wsrv"]
 USER 10001:10001
+# The admin listener (/healthz, /readyz, /metrics) stays on the container's loopback: the healthcheck below
+# can reach it, nothing else can. Bind it wider only behind a network policy (OPERATIONS section 3.1).
+ENV WSRVD_IPC_SOCKET=/run/wsrv/ipc.sock \
+    WSRVD_LISTEN_HOST=0.0.0.0 \
+    WSRVD_LISTEN_PORT=8080 \
+    WSRVD_ADMIN_PORT=9101
 EXPOSE 8080
+# `wsrvd --healthcheck` reads the same environment, so changing a setting by environment changes both.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["/usr/local/bin/wsrvd", "--healthcheck"]
 ENTRYPOINT ["/usr/local/bin/wsrvd"]
-CMD ["--ipc-socket=/run/wsrv/ipc.sock", "--listen-host=0.0.0.0", "--listen-port=8080"]

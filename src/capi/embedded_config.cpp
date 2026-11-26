@@ -9,6 +9,7 @@
 #include <new>
 #include <optional>
 #include <system_error>
+#include <utility>
 
 namespace wsrv {
 
@@ -100,9 +101,12 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
         KeyEntry{"event_queue_bytes", &EmbeddedConfig::set_event_queue_bytes},
         KeyEntry{"handshake_hook", &EmbeddedConfig::set_handshake_hook},
         KeyEntry{"handshake_forward_header", &EmbeddedConfig::add_handshake_forward_header},
+        KeyEntry{"trusted_proxy", &EmbeddedConfig::add_trusted_proxy},
+        KeyEntry{"client_ip_header", &EmbeddedConfig::set_client_ip_header},
         KeyEntry{"handshake_decision_timeout_ms",
                  &EmbeddedConfig::set_handshake_decision_timeout_ms},
         KeyEntry{"max_pending_handshakes", &EmbeddedConfig::set_max_pending_handshakes},
+        KeyEntry{"max_pending_send_bytes", &EmbeddedConfig::set_max_pending_send_bytes},
         KeyEntry{"tls_cert", &EmbeddedConfig::set_tls_cert},
         KeyEntry{"tls_key", &EmbeddedConfig::set_tls_key},
         KeyEntry{"tls_sni", &EmbeddedConfig::add_tls_sni},
@@ -120,18 +124,20 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
             return (this->*entry.setter)(value);
         }
     }
-    if (const std::optional<Result<void>> broker = set_broker_key(key, value)) {
-        return *broker;
+    if (const std::optional<Result<void>> more = set_more_key(key, value)) {
+        return *more;
     }
     return fail(ErrorCode::InvalidConfig, "config: unknown key");
 }
 
-/// The pub/sub keys (ADR-0027), in their own table so `set` stays within the size the linter
-/// allows.
-/// @return nothing when `key` is not a broker key.
-std::optional<Result<void>> EmbeddedConfig::set_broker_key(std::string_view key,
-                                                           std::string_view value) {
-    static constexpr std::array kBrokerKeys{
+/// The pub/sub keys (ADR-0027) and the logging keys (ADR-0037), in their own table so `set` stays
+/// within the size the linter allows.
+/// @return nothing when `key` is not one of them.
+std::optional<Result<void>> EmbeddedConfig::set_more_key(std::string_view key,
+                                                         std::string_view value) {
+    static constexpr std::array kMoreKeys{
+        KeyEntry{"log_level", &EmbeddedConfig::set_log_level},
+        KeyEntry{"log_peer", &EmbeddedConfig::set_log_peer},
         KeyEntry{"publish_host", &EmbeddedConfig::set_publish_host},
         KeyEntry{"publish_port", &EmbeddedConfig::set_publish_port},
         KeyEntry{"broker", &EmbeddedConfig::set_broker},
@@ -143,7 +149,7 @@ std::optional<Result<void>> EmbeddedConfig::set_broker_key(std::string_view key,
         KeyEntry{"broker_max_subscriptions", &EmbeddedConfig::set_broker_max_subscriptions},
         KeyEntry{"broker_max_payload_bytes", &EmbeddedConfig::set_broker_max_payload_bytes},
     };
-    for (const KeyEntry& entry : kBrokerKeys) {
+    for (const KeyEntry& entry : kMoreKeys) {
         if (entry.name == key) {
             return (this->*entry.setter)(value);
         }
@@ -237,6 +243,34 @@ Result<void> EmbeddedConfig::add_allow_origin(std::string_view value) {
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::ResourceExhausted, "config: out of memory");
     }
+    return {};
+}
+
+/// ADR-0037 section 3. Exact names: a typo must not silently mean another level, and "trace" is not
+/// offered.
+Result<void> EmbeddedConfig::set_log_level(std::string_view value) {
+    static constexpr std::array<std::pair<std::string_view, LogLevel>, 4> kLevels{{
+        {"error", LogLevel::Error},
+        {"warn", LogLevel::Warn},
+        {"info", LogLevel::Info},
+        {"debug", LogLevel::Debug},
+    }};
+    for (const auto& [name, level] : kLevels) {
+        if (value == name) {
+            log_level_ = level;
+            return {};
+        }
+    }
+    return fail(ErrorCode::InvalidConfig, "config: log_level is error, warn, info or debug");
+}
+
+/// ADR-0037 section 4: the client address in log lines is personal data, so it is opt-in.
+Result<void> EmbeddedConfig::set_log_peer(std::string_view value) {
+    const std::optional<bool> flag = parse_bool(value);
+    if (!flag) {
+        return fail(ErrorCode::InvalidConfig, "config: a boolean is true, false, 1 or 0");
+    }
+    server_.log_peer = *flag;
     return {};
 }
 
@@ -435,6 +469,7 @@ Result<void> EmbeddedConfig::set_event_queue_events(std::string_view value) {
         return std::unexpected{number.error()};
     }
     queue_.max_events = *number;
+    queue_events_set_ = true;
     return {};
 }
 
@@ -445,6 +480,7 @@ Result<void> EmbeddedConfig::set_event_queue_bytes(std::string_view value) {
         return std::unexpected{number.error()};
     }
     queue_.max_bytes = *number;
+    queue_bytes_set_ = true;
     return {};
 }
 
@@ -470,6 +506,34 @@ Result<void> EmbeddedConfig::add_handshake_forward_header(std::string_view value
     return {};
 }
 
+Result<void> EmbeddedConfig::add_trusted_proxy(std::string_view value) {
+    const Result<IpNet> net = parse_ip_net(value);
+    if (!net) {
+        return std::unexpected{net.error()};
+    }
+    if (server_.trusted_proxies.size() >= kMaxTrustedProxies) {
+        return fail(ErrorCode::InvalidConfig, "config: too many trusted_proxy entries");
+    }
+    try {
+        server_.trusted_proxies.push_back(*net);
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "config: out of memory");
+    }
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_client_ip_header(std::string_view value) {
+    if (!is_header_name(value)) {
+        return fail(ErrorCode::InvalidConfig, "config: client_ip_header needs a header name");
+    }
+    try {
+        server_.client_ip_header = std::string{value};
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::ResourceExhausted, "config: out of memory");
+    }
+    return {};
+}
+
 Result<void> EmbeddedConfig::set_handshake_decision_timeout_ms(std::string_view value) {
     const auto number = parse_number<std::int64_t>(value);
     if (!number || *number <= 0) {
@@ -477,6 +541,20 @@ Result<void> EmbeddedConfig::set_handshake_decision_timeout_ms(std::string_view 
                     "config: handshake_decision_timeout_ms needs a number above 0");
     }
     server_.handshake_decision_timeout = std::chrono::milliseconds{*number};
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_max_pending_send_bytes(std::string_view value) {
+    const Result<std::size_t> number =
+        parse_size(value, "config: max_pending_send_bytes needs a number");
+    if (!number) {
+        return std::unexpected{number.error()};
+    }
+    if (*number == 0 || *number > kMaxConfiguredQueue) {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: max_pending_send_bytes must be in (0, 1 GiB]");
+    }
+    server_.max_pending_send_bytes = *number;
     return {};
 }
 

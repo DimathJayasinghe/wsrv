@@ -2,6 +2,7 @@
 #pragma once
 
 #include "base/clock.hpp"
+#include "base/metrics.hpp"
 #include "net/endpoint.hpp"
 
 #include <array>
@@ -27,6 +28,9 @@ enum class Admission : std::uint8_t {
     RateExceeded,        ///< the address opened connections faster than the bucket refills
     TableFull,           ///< a new address while the table is at its bound (or out of memory)
 };
+
+/// Which counter a refusal belongs to (ADR-0023): the reason is a closed set, never peer data.
+[[nodiscard]] Metric refusal_metric(Admission verdict) noexcept;
 
 /// Per-address connection count and new-connection rate, shared by the accept path (loop 0) and
 /// every loop that ends a connection (ADR-0021 options 3). One mutex, held for a single map

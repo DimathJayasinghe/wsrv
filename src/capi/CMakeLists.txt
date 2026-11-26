@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # wsrv_capi: the C++ behaviour (EmbeddedServer & co) plus the status table, testable without any C.
-wsrv_add_module(NAME capi SOURCES event_queue.cpp handshake_blob.cpp host_bridge.cpp embedded_config.cpp embedded_server.cpp c_status.cpp DEPS wsrv::base wsrv::net wsrv::server)
+wsrv_add_module(NAME capi SOURCES event_queue.cpp handshake_blob.cpp host_bridge.cpp embedded_config.cpp embedded_server.cpp fork_guard.cpp c_status.cpp DEPS wsrv::base wsrv::net wsrv::server)
 # TLS is optional (ADR-0019): with it, the embedded server can wrap connections in TLS when the
 # tls_cert/tls_key settings are given; without it, asking for TLS fails at start() (never plain).
 if(WSRV_ENABLE_TLS)

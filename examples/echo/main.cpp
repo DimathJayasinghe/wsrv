@@ -179,8 +179,9 @@ wsrv::ServerBuilder make_builder(const Options& options, EchoFactory& factory) {
 /// certificate must say so on the terminal.
 class StderrLogger final : public wsrv::ILogger {
 public:
-    void log(wsrv::LogLevel /*level*/, std::string_view message) override {
-        std::cerr << "echo: " << message << '\n';
+    using wsrv::ILogger::log;
+    void log(const wsrv::LogRecord& record) override {
+        std::cerr << "echo: " << record.message << '\n';
     }
 };
 

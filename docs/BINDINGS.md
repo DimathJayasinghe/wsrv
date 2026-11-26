@@ -32,7 +32,7 @@ Recommendation: ship **A + B**, with B implemented first for broadest reach (PHP
 ## 3. Stable C ABI (`include/wsrv/wsrv.h`)
 
 - Pure C99 header, opaque handles, no C++ types, no exceptions across the boundary, no allocation ownership ambiguity.
-- Versioned: `wsrv_abi_version()`; additive changes only within a major version; symbol visibility hidden except `WSRV_API` functions.
+- Versioned: `wsrv_abi_version()` (1.0 from wsrv 1.0, ADR-0016 A4); additive changes only within a major version; symbol visibility hidden except `WSRV_API` functions.
 - Thread-safety documented per function (`any-thread` vs `owner-thread`).
 
 Sketch:
@@ -62,7 +62,7 @@ wsrv_status  wsrv_config_set(wsrv_config*, const char *key, const char *val, wsr
 wsrv_status  wsrv_server_create(const wsrv_config*, wsrv_server **out, wsrv_error *err);
 wsrv_status  wsrv_server_start(wsrv_server*, wsrv_error*);    /* spawns the I/O thread, waits until listening */
 uint16_t     wsrv_server_port(const wsrv_server*);
-int          wsrv_server_event_fd(const wsrv_server*);        /* readable when events pending (eventfd) */
+int          wsrv_server_event_fd(const wsrv_server*);        /* readable when events wait (eventfd); may lag by one loop iteration */
 wsrv_status  wsrv_poll(wsrv_server*, wsrv_event *out, uint32_t timeout_ms); /* host thread drains */
 void         wsrv_event_release(wsrv_event*);
 wsrv_status  wsrv_send_text(wsrv_server*, wsrv_conn_id, const char*, size_t);   /* any-thread, non-blocking */

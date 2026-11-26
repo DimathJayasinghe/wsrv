@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "wsrvd/startup.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <ios>
 #include <vector>
@@ -12,6 +13,129 @@ namespace wsrv::wsrvd {
 namespace {
 
 constexpr std::string_view kConfigFlag = "--config=";
+constexpr std::string_view kEnvironmentPrefix = "WSRVD_";
+constexpr std::string_view kHealthcheckFlag = "--healthcheck";
+
+/// The keys that may be given several times (ADR-0030 section 1): one variable carries a comma list.
+[[nodiscard]] bool repeatable(std::string_view key) noexcept {
+    return key == "allow_origin" || key == "handshake_forward_header" || key == "trusted_proxy" ||
+           key == "tls_sni";
+}
+
+[[nodiscard]] std::string lower_ascii(std::string_view text) {
+    std::string out{text};
+    std::ranges::transform(out, out.begin(), [](char c) {
+        return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+    });
+    return out;
+}
+
+[[nodiscard]] std::string_view trim_blanks(std::string_view text) noexcept {
+    while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) {
+        text.remove_prefix(1);
+    }
+    while (!text.empty() && (text.back() == ' ' || text.back() == '\t')) {
+        text.remove_suffix(1);
+    }
+    return text;
+}
+
+[[nodiscard]] bool only_digits(std::string_view text) noexcept {
+    return !text.empty() && std::ranges::all_of(text, [](char c) { return c >= '0' && c <= '9'; });
+}
+
+/// Upper case letters, digits and '_': what Kubernetes makes of a Service port name.
+[[nodiscard]] bool only_port_name_characters(std::string_view text) noexcept {
+    return !text.empty() && std::ranges::all_of(text, [](char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+    });
+}
+
+/// True for the variables Kubernetes adds to every pod for a Service called `wsrvd` (ADR-0030 A1):
+/// `<SERVICE>_SERVICE_HOST`, `<SERVICE>_SERVICE_PORT`, `<SERVICE>_SERVICE_PORT_<NAME>`,
+/// `<SERVICE>_PORT` (a `tcp://host:port` URL) and `<SERVICE>_PORT_<n>_<PROTO>[_PROTO|_PORT|_ADDR]`.
+/// `rest` is the name after the prefix. Only these exact shapes: a bare `WSRVD_PORT=8080` is a person
+/// meaning a setting and stays an error, like every other unknown name.
+[[nodiscard]] bool is_service_link(std::string_view rest, std::string_view value) noexcept {
+    constexpr std::string_view kServicePortPrefix = "SERVICE_PORT_";
+    if (rest == "SERVICE_HOST" || rest == "SERVICE_PORT") {
+        return true;
+    }
+    if (rest.starts_with(kServicePortPrefix)) {
+        rest.remove_prefix(kServicePortPrefix.size());
+        return only_port_name_characters(rest);
+    }
+    if (rest == "PORT") {
+        return value.starts_with("tcp://") || value.starts_with("udp://") ||
+               value.starts_with("sctp://");
+    }
+    constexpr std::string_view kPortPrefix = "PORT_";
+    if (!rest.starts_with(kPortPrefix)) {
+        return false;
+    }
+    rest.remove_prefix(kPortPrefix.size());
+    const std::size_t underscore = rest.find('_');
+    if (underscore == std::string_view::npos ||
+        !only_digits(std::string_view{rest.data(), underscore})) {
+        return false;
+    }
+    rest.remove_prefix(underscore + 1);
+    for (const std::string_view protocol : {std::string_view{"TCP"}, std::string_view{"UDP"},
+                                            std::string_view{"SCTP"}}) {
+        if (!rest.starts_with(protocol)) {
+            continue;
+        }
+        rest.remove_prefix(protocol.size());
+        return rest.empty() || rest == "_PROTO" || rest == "_PORT" || rest == "_ADDR";
+    }
+    return false;
+}
+
+/// One variable: the key is the name after the prefix in lower case; a repeatable key takes a comma
+/// list, one `set` per non-empty item.
+Result<void> apply_variable(DaemonConfig& config, std::string_view name, std::string_view value) {
+    const std::string key = lower_ascii(name.substr(kEnvironmentPrefix.size()));
+    if (!repeatable(key)) {
+        return config.set(key, value);
+    }
+    while (!value.empty()) {
+        const std::size_t comma = value.find(',');
+        const std::string_view item = trim_blanks(value.substr(0, comma));
+        value = comma == std::string_view::npos ? std::string_view{} : value.substr(comma + 1);
+        if (item.empty()) {
+            continue;
+        }
+        if (const Result<void> done = config.set(key, item); !done) {
+            return done;
+        }
+    }
+    return {};
+}
+
+/// The environment layer (ADR-0030 section 1). Entries without the prefix, without an `=`, or
+/// with an empty value are skipped; a prefixed one that is not a key is an error naming it.
+Result<void> apply_environment(DaemonConfig& config,
+                               std::span<const std::string_view> environment,
+                               std::string* detail) {
+    for (const std::string_view entry : environment) {
+        const std::size_t equals = entry.find('=');
+        if (!entry.starts_with(kEnvironmentPrefix) || equals == std::string_view::npos ||
+            equals == kEnvironmentPrefix.size() || equals + 1 == entry.size()) {
+            continue;
+        }
+        const std::string_view name = entry.substr(0, equals);
+        if (is_service_link(name.substr(kEnvironmentPrefix.size()), entry.substr(equals + 1))) {
+            continue;  // Kubernetes service discovery, not a setting (ADR-0030 A1)
+        }
+        if (const Result<void> done = apply_variable(config, name, entry.substr(equals + 1)); !done) {
+            if (detail != nullptr) {
+                *detail = std::string{name};
+            }
+            return done;
+        }
+    }
+    return {};
+}
 
 /// Read a whole config file, refusing one larger than kMaxConfigFileSize (reads one byte past the
 /// limit to tell "exactly at the limit" from "over it", never the whole file).
@@ -41,22 +165,26 @@ Result<void> apply(DaemonConfig& config, std::string_view arg) {
     return config.apply_file_text(*text);
 }
 
-}  // namespace
+[[nodiscard]] bool is_help(std::string_view arg) noexcept {
+    return arg == "--help" || arg == "-h";
+}
 
-Result<Startup> prepare(std::span<const std::string_view> args, ISyscalls& sys) {
-    Startup startup;
+/// The arguments in order (`--config=FILE` and `--key=value`); `--healthcheck` is a mode.
+Result<void> apply_arguments(Startup& startup, std::span<const std::string_view> args) {
     for (const std::string_view arg : args) {
-        if (arg == "--help" || arg == "-h") {
-            startup.help = true;
-            return startup;
-        }
-        if (const Result<void> done = apply(startup.config, arg); !done) {
-            return std::unexpected{done.error()};
+        if (arg == kHealthcheckFlag) {
+            startup.healthcheck = true;
+        } else if (const Result<void> done = apply(startup.config, arg); !done) {
+            return done;
         }
     }
-    if (const Result<void> done = startup.config.finish(); !done) {
-        return std::unexpected{done.error()};
-    }
+    return {};
+}
+
+/// The IPC token and the publish token, each read from its file with the permission checks of
+/// read_token_file. The publish token goes straight into the embedded config, never through the key
+/// table, and has the length floor of set_publish_token().
+Result<void> read_secrets(Startup& startup, ISyscalls& sys) {
     if (!startup.config.token_file().empty()) {
         Result<std::string> token = read_token_file(sys, startup.config.token_file());
         if (!token) {
@@ -65,16 +193,44 @@ Result<Startup> prepare(std::span<const std::string_view> args, ISyscalls& sys) 
         startup.token = std::move(*token);
     }
     if (!startup.config.publish_token_file().empty()) {
-        // The same checks as the IPC token (a regular file, ours, mode 0600), plus the length floor
-        // of set_publish_token(). The secret goes straight into the embedded config, never through
-        // the key table.
         Result<std::string> token = read_token_file(sys, startup.config.publish_token_file());
         if (!token) {
             return std::unexpected{token.error()};
         }
-        if (const Result<void> done = startup.config.set_publish_token(std::move(*token)); !done) {
-            return std::unexpected{done.error()};
-        }
+        return startup.config.set_publish_token(std::move(*token));
+    }
+    return {};
+}
+
+}  // namespace
+
+Result<Startup> prepare(std::span<const std::string_view> args, ISyscalls& sys) {
+    return prepare(args, {}, sys);
+}
+
+Result<Startup> prepare(std::span<const std::string_view> args,
+                        std::span<const std::string_view> environment,
+                        ISyscalls& sys,
+                        std::string* detail) {
+    Startup startup;
+    if (std::ranges::any_of(args, is_help)) {
+        startup.help = true;  // help wins over a bad variable or flag: it is how one finds out
+        return startup;
+    }
+    if (const Result<void> done = apply_environment(startup.config, environment, detail); !done) {
+        return std::unexpected{done.error()};
+    }
+    if (const Result<void> done = apply_arguments(startup, args); !done) {
+        return std::unexpected{done.error()};
+    }
+    if (const Result<void> done = startup.config.finish(); !done) {
+        return std::unexpected{done.error()};
+    }
+    if (startup.healthcheck) {
+        return startup;  // it only looks at the sockets: no secret needs reading
+    }
+    if (const Result<void> done = read_secrets(startup, sys); !done) {
+        return std::unexpected{done.error()};
     }
     return startup;
 }
@@ -89,6 +245,12 @@ std::string_view usage() noexcept {
            "  --ipc-stall-ms=MS          drop an application that reads nothing for MS (default "
            "10000)\n"
            "  --config=FILE              read 'key = value' lines (later arguments override)\n"
+           "  --log-level=error|warn|info|debug (info)  one line per event on stderr, as\n"
+           "                             key=value; see docs/OPERATIONS.md section 2\n"
+           "  --log-peer=BOOL (false)    put the client address in log lines (personal data)\n"
+           "  --healthcheck              probe the running daemon (GET /healthz on the admin port,\n"
+           "                             else connect to the websocket port and the IPC socket);\n"
+           "                             exit 0 = healthy, 1 = not; reads the same settings\n"
            "  --listen-host=ADDR  --listen-port=PORT  --threads=N  --allow-origin=ORIGIN\n"
            "  --max-message-size=BYTES  --max-connections=N  --shutdown-grace-ms=MS\n"
            "  --admin-port=PORT  --admin-host=ADDR (127.0.0.1)  serve /metrics, /healthz and\n"
@@ -112,7 +274,13 @@ std::string_view usage() noexcept {
            "  --deflate-server-no-context-takeover=BOOL (true)  --deflate-min-size=BYTES (128)\n"
            "  --deflate-max-ratio=1..1000 (100)  inflated size limit, times the compressed size\n"
            "\n"
-           "The token is never accepted on the command line: it would show in `ps`.\n";
+           "Every setting is also an environment variable: WSRVD_ and the key in upper case\n"
+           "(WSRVD_LISTEN_PORT, WSRVD_ALLOW_ORIGIN=a,b for repeatable keys). The environment is\n"
+           "the base layer; --config and flags override it. An unknown WSRVD_ variable is an\n"
+           "error; an empty one counts as unset.\n"
+           "\n"
+           "The token is never accepted on the command line or in the environment: it would show\n"
+           "in `ps` and /proc. Use ipc_token_file / publish_token_file.\n";
 }
 
 }  // namespace wsrv::wsrvd

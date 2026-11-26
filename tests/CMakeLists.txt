@@ -8,6 +8,8 @@ wsrv_add_test(NAME base_byte_buffer_test SOURCES base/byte_buffer_test.cpp LINK 
 wsrv_add_test(NAME base_ring_buffer_test SOURCES base/ring_buffer_test.cpp LINK wsrv::base)
 wsrv_add_test(NAME base_clock_test SOURCES base/clock_test.cpp LINK wsrv::base)
 wsrv_add_test(NAME base_logger_test SOURCES base/logger_test.cpp LINK wsrv::base)
+wsrv_add_test(NAME base_log_format_test SOURCES base/log_format_test.cpp LINK wsrv::base)
+wsrv_add_test(NAME base_log_rate_limiter_test SOURCES base/log_rate_limiter_test.cpp LINK wsrv::base)
 wsrv_add_test(NAME base_random_test SOURCES base/random_test.cpp LINK wsrv::base)
 wsrv_add_test(NAME base_metrics_test SOURCES base/metrics_test.cpp LINK wsrv::base)
 wsrv_add_test(NAME base_constant_time_test SOURCES base/constant_time_test.cpp LINK wsrv::base)
@@ -15,6 +17,7 @@ wsrv_add_test(NAME net_system_random_test SOURCES net/system_random_test.cpp LIN
 wsrv_add_test(NAME net_io_error_test SOURCES net/io_error_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_fd_test SOURCES net/fd_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_syscalls_test SOURCES net/syscalls_test.cpp LINK wsrv::net)
+wsrv_add_test(NAME net_stream_logger_test SOURCES net/stream_logger_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_fd_budget_test SOURCES net/fd_budget_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_timer_wheel_test SOURCES net/timer_wheel_test.cpp LINK wsrv::net)
 wsrv_add_test(NAME net_epoll_poller_test SOURCES net/epoll_poller_test.cpp LINK wsrv::net)
@@ -48,6 +51,8 @@ wsrv_add_test(NAME integration_server_test SOURCES integration/server_integratio
 wsrv_add_test(NAME integration_multithread_test SOURCES integration/multithread_stress_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_multi_loop_test SOURCES server/multi_loop_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_ip_limits_test SOURCES server/ip_limits_test.cpp LINK wsrv::server)
+wsrv_add_test(NAME server_client_ip_test SOURCES server/client_ip_test.cpp LINK wsrv::server)
+wsrv_add_test(NAME server_client_ip_server_test SOURCES server/client_ip_server_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_ip_limits_server_test SOURCES server/ip_limits_server_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_metrics_server_test SOURCES server/metrics_server_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_admin_http_test SOURCES server/admin_http_test.cpp LINK wsrv::server)
@@ -68,6 +73,7 @@ if(WSRV_ENABLE_DEFLATE)
 endif()
 wsrv_add_test(NAME capi_event_queue_test SOURCES capi/event_queue_test.cpp LINK wsrv::capi)
 wsrv_add_test(NAME capi_host_bridge_test SOURCES capi/host_bridge_test.cpp LINK wsrv::capi)
+wsrv_add_test(NAME capi_fork_guard_test SOURCES capi/fork_guard_test.cpp LINK wsrv::capi)
 wsrv_add_test(NAME capi_handshake_blob_test SOURCES capi/handshake_blob_test.cpp LINK wsrv::capi)
 wsrv_add_test(NAME capi_embedded_config_test SOURCES capi/embedded_config_test.cpp LINK wsrv::capi)
 wsrv_add_test(NAME capi_embedded_server_test SOURCES capi/embedded_server_test.cpp LINK wsrv::capi)
@@ -88,6 +94,7 @@ wsrv_add_test(NAME wsrvd_config_test SOURCES wsrvd/config_test.cpp LINK wsrv::ws
 wsrv_add_test(NAME wsrvd_token_file_test SOURCES wsrvd/token_file_test.cpp LINK wsrv::wsrvd)
 wsrv_add_test(NAME wsrvd_ipc_server_test SOURCES wsrvd/ipc_server_test.cpp LINK wsrv::wsrvd)
 wsrv_add_test(NAME wsrvd_startup_test SOURCES wsrvd/startup_test.cpp LINK wsrv::wsrvd)
+wsrv_add_test(NAME wsrvd_healthcheck_test SOURCES wsrvd/healthcheck_test.cpp LINK wsrv::wsrvd)
 wsrv_add_test(NAME wsrvd_event_convert_test SOURCES wsrvd/event_convert_test.cpp LINK wsrv::wsrvd)
 wsrv_add_test(NAME wsrvd_relay_test SOURCES wsrvd/relay_test.cpp LINK wsrv::wsrvd)
 wsrv_add_test(NAME wsrvd_reload_test SOURCES wsrvd/reload_test.cpp LINK wsrv::wsrvd)
@@ -139,6 +146,32 @@ if(WSRV_PHP)
         LABELS php TIMEOUT 120 ENVIRONMENT "WSRV_PHP_NO_SKIP=1")
 else()
     message(STATUS "php not found: the PHP binding tests are not registered")
+endif()
+
+# JavaScript client (ADR-0031, clients/js): unit tests with a fake WebSocket, and an interop test that
+# starts the REAL wsrvd and a supervised PHP worker and restarts both under a connected client. Needs
+# Node 22+ (the global WebSocket); the interop test also needs PHP. Optional, like the PHP tests; the
+# php CI job counts them (ctest -N) so they cannot go missing there unnoticed.
+find_program(WSRV_NODE node)
+if(WSRV_NODE)
+    execute_process(COMMAND ${WSRV_NODE} --version OUTPUT_VARIABLE WSRV_NODE_VERSION OUTPUT_STRIP_TRAILING_WHITESPACE)
+    string(REGEX REPLACE "^v([0-9]+).*" "\\1" WSRV_NODE_MAJOR "${WSRV_NODE_VERSION}")
+    if(WSRV_NODE_MAJOR GREATER_EQUAL 22)
+        add_test(NAME js_unit
+            COMMAND ${WSRV_NODE} --test ${PROJECT_SOURCE_DIR}/clients/js/test/client.test.js
+                ${PROJECT_SOURCE_DIR}/clients/js/test/platform.test.js)
+        set_tests_properties(js_unit PROPERTIES LABELS js TIMEOUT 120)
+        if(WSRV_PHP)
+            add_test(NAME js_interop
+                COMMAND ${WSRV_NODE} --test --test-timeout=100000 ${PROJECT_SOURCE_DIR}/clients/js/test/interop.test.js)
+            set_tests_properties(js_interop PROPERTIES LABELS js TIMEOUT 150
+                ENVIRONMENT "WSRVD=$<TARGET_FILE:wsrvd>;WSRV_PHP=${WSRV_PHP}")
+        endif()
+    else()
+        message(STATUS "node ${WSRV_NODE_VERSION} is older than 22: the JavaScript client tests are not registered")
+    endif()
+else()
+    message(STATUS "node not found: the JavaScript client tests are not registered")
 endif()
 
 # The embedded PHP binding (ADR-0025) loads libwsrv.so into the php process through FFI. PHP loads its

@@ -150,7 +150,6 @@ private:
     [[nodiscard]] Result<void> start_workers();
     void stop_workers();
     void on_accept(Fd client, const Endpoint& peer);
-    [[nodiscard]] static Metric refusal_metric(Admission verdict) noexcept;
     void refuse_for_ip_limit(Fd client, Admission verdict);
     void hand_off(std::size_t worker, Fd client, const Endpoint& peer, ConnectionId id);
     void begin_shutdown();

@@ -42,6 +42,8 @@ Protocol: [`docs/IPC_PROTOCOL.md`](../../docs/IPC_PROTOCOL.md). Lesson: [`docs/l
 | `Connection::send/sendBinary/close` | handle given to callbacks |
 | `Connection::subscribe($topic)` / `unsubscribe($topic)`, `Worker::publish($topic, $payload, $binary = false, $except = 0)` | rooms over IPC (daemon with `--broker=true`) |
 | `new Publisher($url, $token)` then `->publish($topic, $payload, $binary = false, $except = 0)` | publish from any process over HTTP; returns `PublishResult`, throws `PublishFailed` |
+| `new ClusterPublisher([$url1, $url2], $token)` then the same `->publish(...)` | publish to every daemon of a multi-node deployment; returns `ClusterPublishResult` (summed counts, `->failures` per node), throws `PublishFailed` only when no node took it |
+| `Supervisor::forSocket($socket, $token)->run(fn (Worker $w) => ...)` | the production loop: reconnects to the daemon with backoff and jitter, retries `BACKPRESSURE`, fails fast on a wrong token, reports throwing handlers without dropping the link, stops on `SIGTERM` (`installSignalHandlers()`) |
 | `Upgrade::accept($subprotocol = null)` / `reject($status = 403)` | answer a waiting upgrade (`authenticate`) |
 | `HandshakeRequest::cookie($name)` / `header($name)` / `headers($name)` | read the request in `authenticate` |
 
@@ -87,10 +89,10 @@ Using Laravel? `docs/LARAVEL.md` has the ticket login, an Artisan worker and a q
 
 No daemon, but you need `libwsrv.so` and PHP with `ext-ffi` (the CLI default allows it).
 
-**Get the library.** On glibc Linux (x86_64 or aarch64, glibc 2.39 or newer, OpenSSL 3) a release has a prebuilt one. Install it on purpose, with a checksum check (Composer never downloads it for you, ADR-0026):
+**Get the library.** On glibc Linux (x86_64 or aarch64, glibc 2.39 or newer, OpenSSL 3) a release has a prebuilt one (on macOS and Windows there is none: the server is Linux only, so run the Docker image and your worker beside it, see docs/DEPLOYMENT.md section 11; the sidecar client itself works there). Install it on purpose, with a checksum check (Composer never downloads it for you, ADR-0026):
 
 ```sh
-composer require wsrv/client                      # the PHP code (the package name may change before the first release)
+composer require wsrv/client                     # the PHP code
 vendor/bin/wsrv-install-lib --dir=wsrv-lib        # downloads libwsrv.so of this package's version, checks SHA-256
 export WSRV_LIBRARY=$PWD/wsrv-lib/libwsrv.so      # the command prints this line
 ```
@@ -124,6 +126,7 @@ $server->run();
 - `send()` returns `false` when a queue is full (backpressure; nothing was queued) and throws `ConnectionClosed` once the connection has ended.
 - It refuses PHP-FPM and any SAPI but `cli`/`phpdbg`. Create the server after `fork()`. Topics and rooms are not exposed yet.
 - **Authenticating** works as in the sidecar: set `'handshake_hook' => true` (and `'handshake_forward_header' => ['Cookie']`), register `on('authenticate', fn (Wsrv\Embedded\Upgrade $u) => $u->request->cookie('session') === lookup_session())`. Same return values; it fails closed (a throwing handler or an unusable value refuses with 500), and `start()` throws if the setting and the handler do not agree. See ADR-0025 A1.
+- **Logs**: the library's threads write one structured line per event (`event=listening`, `origin_refused`, `slow_consumer`...) to the process's stderr, never calling into PHP. `'log_level' => 'warn'` quiets it (`error`, `warn`, `info` default, `debug`); `'log_peer' => true` adds client addresses (personal data, off by default). The events are listed in `docs/OPERATIONS.md` section 2.
 - Under a sanitizer build the library cannot be loaded into `php` (PHP loads extensions with `RTLD_DEEPBIND`), so the end-to-end test `php_embedded_interop` runs in the release preset only; the cdef drift test runs everywhere.
 
 `src/Embedded/wsrv.cdef` is generated from the C header: `php tools/gen_cdef.php`. A test fails when it is stale.

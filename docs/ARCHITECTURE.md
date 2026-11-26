@@ -237,7 +237,7 @@ Invariants: `on_open` at most once and only from `Open`; `on_close` exactly once
 | New transport (TLS, Unix socket, PROXY protocol) | `ITransport` / decorator | `PlainTransport`, `TlsTransport` |
 | New handshake policy (auth, rate limit) | `IHandshakeRule` | origin, subprotocol, auth hook |
 | New WS extension | `IExtension` | permessage-deflate |
-| Logging/metrics backend | `ILogger`, `IMetrics` | stderr JSON, no-op |
+| Logging/metrics backend | `ILogger`, `IMetrics` | stderr key=value lines (`StreamLogger`), no-op |
 | Scheduling/assignment | `ILoopAssigner` | round-robin, least-loaded |
 
 ## 10. Memory strategy
@@ -248,7 +248,7 @@ Invariants: `on_open` at most once and only from `Open`; `on_close` exactly once
 
 ## 11. Observability hooks
 
-Logger, metrics, and a lightweight `ITraceSink` are injected via builder. Every connection has a 64-bit ID. Log fields: `ts level conn_id peer event code msg`. Log sanitiser strips control chars from peer-supplied strings.
+Logger, metrics, and a lightweight `ITraceSink` are injected via builder. Every connection has a 64-bit ID. A log record is `LogRecord{level, event, message, conn, peer}` (ADR-0037); the line is `ts level event conn peer suppressed dropped msg`, written by `net::StreamLogger` to stderr. The escaper in `base/log_format` is the only place a message becomes text, and it escapes everything a peer could use to forge a line.
 
 ## 12. Decision records
 

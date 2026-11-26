@@ -13,6 +13,7 @@
 #include "server/handler.hpp"
 #include "server/handshake_decider.hpp"
 #include "server/handshake_verdict.hpp"
+#include "server/ip_limits.hpp"
 #include "server/pending_gate.hpp"
 #include "server/session_handle.hpp"
 
@@ -41,6 +42,9 @@ struct ConnectionContext {
     PendingGate* pending = nullptr;
     /// Where events are counted (ADR-0023): this loop's bank. Null (tests) counts nothing.
     IMetrics* metrics = nullptr;
+    /// The per-IP table (ADR-0021), used here only to admit the client address a trusted proxy
+    /// names (ADR-0029). Null = no per-IP limits.
+    IpLimits* ip_limits = nullptr;
 };
 
 /// One client, from accept to close: the glue between a transport, the handshake, the
@@ -108,7 +112,13 @@ public:
     [[nodiscard]] ConnectionId id() const noexcept override {
         return id_;
     }
+    /// The client address: the TCP peer, or, behind a trusted proxy, the address its header named
+    /// once the upgrade request was read (ADR-0029). Port 0 in the second case.
     [[nodiscard]] const Endpoint& peer() const noexcept override {
+        return client_;
+    }
+    /// The address of the socket itself: what the accept-time slots were taken under.
+    [[nodiscard]] const Endpoint& tcp_peer() const noexcept {
         return peer_;
     }
     [[nodiscard]] Result<void> send_text(std::string_view text) override;
@@ -126,10 +136,11 @@ private:
     enum class Phase : std::uint8_t { Handshaking, AwaitingDecision, Established, Finished };
 
     // reading
-    void on_readable();
+    void on_readable(bool peer_closing);
     void on_read_failed(const Error& error);
     void on_bytes(MutableByteView chunk);
     void on_handshake_bytes(MutableByteView chunk);
+    [[nodiscard]] bool resolve_client();
     void establish(HandshakeOutcome& outcome, MutableByteView leftover);
     void await_decision(HandshakeOutcome& outcome, ByteView leftover);
     void on_waiting_event(PollEvents events);
@@ -187,11 +198,17 @@ private:
     template <class Call>
     void guarded(Call&& call);
 
-    void log(LogLevel level, std::string_view message) const;
+    void log(LogLevel level, std::string_view event, std::string_view message) const;
+    /// `conn_close` at debug level, with the close code in the text (no allocation).
+    void log_closed(CloseCode code) const;
     void count(Metric metric, std::uint64_t amount = 1) const noexcept;
 
     ConnectionId id_;
-    Endpoint peer_;
+    Endpoint peer_;    ///< the TCP peer
+    Endpoint client_;  ///< what peer() reports: peer_, or the client a trusted proxy named
+    /// The per-IP slot this connection took itself (a client behind a trusted proxy, ADR-0029);
+    /// given back by release(). Empty when the accept path took the slot, or none was needed.
+    std::optional<Endpoint> client_slot_;
     std::unique_ptr<ITransport> transport_;
     ConnectionContext ctx_;
     Phase phase_ = Phase::Handshaking;

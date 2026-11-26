@@ -581,4 +581,38 @@ TEST_F(EventLoopTest, AHandlerMayUnwatchItsOwnDescriptorFromInsideTheCallback) {
     EXPECT_EQ(handler.seen.size(), 1U);
 }
 
+TEST_F(EventLoopTest, TheIterationEndHookRunsOnceAfterEverythingElseInTheIteration) {
+    auto loop = make();
+    Pair pair;
+    std::vector<std::string> order;
+    Recorder recorder;
+    recorder.action = [&] {
+        order.emplace_back("event");
+        EXPECT_TRUE(loop->defer([&] { order.emplace_back("deferred"); }).has_value());
+    };
+    auto watch = loop->watch(pair.near.get(), PollEvents::Read, recorder);
+    ASSERT_TRUE(watch.has_value());
+    loop->set_iteration_end([&] { order.emplace_back("end"); });
+    pair.send("x");
+    ASSERT_TRUE(loop->post([&] { order.emplace_back("task"); }).has_value());
+    ASSERT_TRUE(loop->run_once(100ms).has_value());
+    EXPECT_EQ(order, (std::vector<std::string>{"event", "task", "deferred", "end"}));
+}
+
+TEST_F(EventLoopTest, TheIterationEndHookRunsEveryIterationEvenWhenNothingHappened) {
+    auto loop = make();
+    int calls = 0;
+    loop->set_iteration_end([&] { ++calls; });
+    ASSERT_TRUE(loop->run_once(0ms).has_value());
+    ASSERT_TRUE(loop->run_once(0ms).has_value());
+    EXPECT_EQ(calls, 2);
+}
+
+TEST_F(EventLoopTest, AnIterationEndHookThatThrowsIsContainedAndCounted) {
+    auto loop = make();
+    loop->set_iteration_end([] { throw std::runtime_error{"hook"}; });
+    EXPECT_TRUE(loop->run_once(0ms).has_value());
+    EXPECT_EQ(loop->task_failures(), 1U);
+    EXPECT_TRUE(loop->run_once(0ms).has_value()) << "the loop keeps running";
+}
 }  // namespace

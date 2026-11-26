@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "capi/embedded_server.hpp"
 
+#include "support/stderr_capture.hpp"
 #include "support/tcp_client.hpp"
 
 #include <gtest/gtest.h>
@@ -13,6 +14,7 @@
 #include <thread>
 #include <vector>
 
+#include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -42,6 +44,78 @@ std::string as_string(const std::vector<std::byte>& bytes) {
         out.push_back(static_cast<char>(b));
     }
     return out;
+}
+
+// ADR-0037: what an operator sees. These read the process's real stderr.
+
+TEST(EmbeddedServerLogging, StartingWritesOneListeningLineWithTheActualPort) {
+    StderrCapture capture;
+    auto server = started();
+    const std::string text = capture.wait_for("event=listening");
+    capture.restore();
+    EXPECT_NE(text.find(" level=info event=listening "), std::string::npos) << text;
+    EXPECT_NE(text.find("port " + std::to_string(server->port()) + "\""), std::string::npos)
+        << text;
+    EXPECT_EQ(text.rfind("ts=", 0), 0U) << "the line starts with its timestamp";
+}
+
+// The log goes to the descriptor that was stderr when the server was created, by a private copy,
+// not to "whatever is descriptor 2 now": a host that closes or redirects its stdio afterwards (a
+// daemon that closed 0-2 and then let a socket take number 2) must not receive log lines in a
+// client socket.
+TEST(EmbeddedServerLogging, TheLogDoesNotFollowDescriptorTwoWhenTheHostChangesIt) {
+    StderrCapture capture;
+    auto server = EmbeddedServer::create(base_config());
+    ASSERT_TRUE(server.has_value());
+    const int elsewhere = ::open("/dev/null", O_WRONLY | O_CLOEXEC);
+    ASSERT_GE(elsewhere, 0);
+    ASSERT_NE(::dup2(elsewhere, STDERR_FILENO), -1);  // the host redirects stderr after create()
+    ::close(elsewhere);
+    ASSERT_TRUE((*server)->start().has_value());
+    const std::string text = capture.wait_for("event=listening");
+    capture.restore();
+    EXPECT_NE(text.find("event=listening"), std::string::npos)
+        << "the line must reach the stderr of create() time, not /dev/null";
+}
+
+TEST(EmbeddedServerLogging, TheLevelKeepsInfoOut) {
+    StderrCapture capture;
+    EmbeddedConfig config = base_config();
+    ASSERT_TRUE(config.set("log_level", "warn").has_value());
+    auto server = started(config);
+    const std::string text = capture.take(200ms);
+    capture.restore();
+    EXPECT_EQ(text, "") << "a quiet server at warn level writes nothing while healthy";
+}
+
+TEST(EmbeddedServerLogging, ARefusedOriginIsLoggedWithoutTheAddressUnlessAsked) {
+    StderrCapture capture;
+    auto server = started();
+    {
+        TcpClient client{server->port()};
+        EXPECT_FALSE(client.upgrade("https://evil.example.x"));
+    }
+    const std::string text = capture.wait_for("event=origin_refused");
+    capture.restore();
+    EXPECT_NE(text.find(" level=warn event=origin_refused conn="), std::string::npos) << text;
+    EXPECT_EQ(text.find("peer="), std::string::npos)
+        << "an address is personal data: off by default";
+    EXPECT_EQ(text.find("evil.example.x"), std::string::npos)
+        << "what the peer sent is never logged";
+}
+
+TEST(EmbeddedServerLogging, WithLogPeerTheClientAddressIsNamed) {
+    StderrCapture capture;
+    EmbeddedConfig config = base_config();
+    ASSERT_TRUE(config.set("log_peer", "true").has_value());
+    auto server = started(config);
+    {
+        TcpClient client{server->port()};
+        EXPECT_FALSE(client.upgrade("https://evil.example.x"));
+    }
+    const std::string text = capture.wait_for("event=origin_refused");
+    capture.restore();
+    EXPECT_NE(text.find(" peer=127.0.0.1:"), std::string::npos) << text;
 }
 
 #ifndef WSRV_TEST_HAS_TLS

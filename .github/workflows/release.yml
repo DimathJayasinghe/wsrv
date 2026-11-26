@@ -4,6 +4,12 @@ name: release
 # for glibc Linux on x86_64 and aarch64, publish them with a SHA256SUMS file and a build attestation.
 # Users verify a download with `bin/wsrv-install-lib` (checksum) or `gh attestation verify` (provenance).
 # Tags with a '-' (v1.0.0-rc.1) become GitHub pre-releases, which Composer ignores by default.
+#
+# Supply chain (ADR-0033): each architecture's image is scanned with Trivy BEFORE it is pushed (fixable
+# HIGH or CRITICAL findings stop the release); the joined image is signed keyless with cosign and gets a
+# GitHub provenance attestation; an SPDX SBOM of the image becomes a release asset (and so is checksummed
+# and attested like the binaries). When the repository has the secrets DOCKERHUB_USERNAME and
+# DOCKERHUB_TOKEN, the same multi-arch image is copied to Docker Hub and signed there too.
 on:
   push:
     tags: ['v*']
@@ -79,7 +85,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Build and push (one architecture)
+      - name: Build (one architecture)
+        id: build
         env:
           GH_TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
@@ -90,31 +97,115 @@ jobs:
           docker build -f docker/wsrvd.Dockerfile \
             --build-arg "VERSION=$version" --build-arg "REVISION=$GITHUB_SHA" \
             -t "$repo:$version-${{ matrix.arch }}" .
+          echo "ref=$repo:$version-${{ matrix.arch }}" >> "$GITHUB_OUTPUT"
+      - name: The image starts and becomes healthy (natively, on this architecture)
+        # container.yml runs the same check on every push, on x86-64 only; this one runs on the arm64
+        # runner too, so an image that builds but does not start is never pushed.
+        run: |
+          docker run -d --name wsrvd-smoke "${{ steps.build.outputs.ref }}"
+          for i in $(seq 1 30); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' wsrvd-smoke)
+            [ "$status" = healthy ] && break
+            sleep 2
+          done
+          echo "health after wait: $status"
+          docker logs wsrvd-smoke
+          [ "$status" = healthy ]
+          docker logs wsrvd-smoke 2>&1 | grep -Eq '^ts=[0-9T:.Z-]+ level=info event=listening msg="'
+      - name: Scan the image, fixable HIGH and CRITICAL findings stop the release
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.build.outputs.ref }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Push (one architecture)
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/wsrvd"
           docker push "$repo:$version-${{ matrix.arch }}"
 
   image-manifest:
     needs: image
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: write
+      id-token: write        # keyless signing and attestation
+      attestations: write
     steps:
       - name: Join the two architectures under the version tag (and latest, for a final release)
+        id: join
         env:
           GH_TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           version="${GITHUB_REF_NAME#v}"
           repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/wsrvd"
           echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          latest=""
+          case "$version" in *-*) ;; *) latest=latest ;; esac
           tags="-t $repo:$version"
-          case "$version" in *-*) ;; *) tags="$tags -t $repo:latest" ;; esac
+          [ -n "$latest" ] && tags="$tags -t $repo:latest"
           docker buildx imagetools create $tags "$repo:$version-amd64" "$repo:$version-arm64"
           docker buildx imagetools inspect "$repo:$version"
+          digest="$(docker buildx imagetools inspect "$repo:$version" --format '{{json .Manifest}}' | jq -r .digest)"
+          echo "ghcr=$repo" >> "$GITHUB_OUTPUT"
+          echo "ghcr_digest=$digest" >> "$GITHUB_OUTPUT"
+          # Docker Hub is optional: it needs the two repository secrets. The same two image
+          # manifests are copied, so users on either registry run the same bytes.
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            hub="docker.io/${DOCKERHUB_USERNAME,,}/wsrvd"
+            echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+            hubtags="-t $hub:$version"
+            [ -n "$latest" ] && hubtags="$hubtags -t $hub:latest"
+            docker buildx imagetools create $hubtags "$repo:$version-amd64" "$repo:$version-arm64"
+            hub_digest="$(docker buildx imagetools inspect "$hub:$version" --format '{{json .Manifest}}' | jq -r .digest)"
+            echo "hub=$hub" >> "$GITHUB_OUTPUT"
+            echo "hub_digest=$hub_digest" >> "$GITHUB_OUTPUT"
+          else
+            echo "Docker Hub secrets are not set: skipping the Docker Hub copy"
+          fi
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Sign the image (keyless, the identity is this workflow, recorded in the public Rekor log)
+        env:
+          GHCR: ${{ steps.join.outputs.ghcr }}
+          GHCR_DIGEST: ${{ steps.join.outputs.ghcr_digest }}
+          HUB: ${{ steps.join.outputs.hub }}
+          HUB_DIGEST: ${{ steps.join.outputs.hub_digest }}
+        run: |
+          cosign sign --yes "$GHCR@$GHCR_DIGEST"
+          if [ -n "$HUB" ]; then cosign sign --yes "$HUB@$HUB_DIGEST"; fi
+      - uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with:
+          subject-name: ${{ steps.join.outputs.ghcr }}
+          subject-digest: ${{ steps.join.outputs.ghcr_digest }}
+          push-to-registry: true
+      - name: Directory for the SBOM
+        run: mkdir -p sbom
+      - name: SBOM of the image (SPDX)
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          image: ${{ steps.join.outputs.ghcr }}@${{ steps.join.outputs.ghcr_digest }}
+          format: spdx-json
+          output-file: sbom/wsrvd-${{ github.ref_name }}.spdx.json
+          upload-artifact: false
+      - name: Name the SBOM like the other release files
+        run: |
+          mkdir -p out
+          cp "sbom/wsrvd-${GITHUB_REF_NAME}.spdx.json" "out/wsrvd-${GITHUB_REF_NAME#v}.spdx.json"
+          ls -l out
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wsrv-sbom
+          path: out/*
+          if-no-files-found: error
 
   publish:
-    needs: build
+    needs: [build, image-manifest]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

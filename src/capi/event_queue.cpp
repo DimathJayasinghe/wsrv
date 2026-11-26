@@ -80,7 +80,7 @@ Result<void> EventQueue::admit(const HostEvent& event) {
     return {};
 }
 
-Result<PushOutcome> EventQueue::push(HostEvent event) {
+Result<PushOutcome> EventQueue::push(HostEvent event, Wake wake) {
     const std::lock_guard lock{mutex_};
     if (const Result<void> admitted = admit(event); !admitted) {
         return std::unexpected{admitted.error()};
@@ -93,7 +93,10 @@ Result<PushOutcome> EventQueue::push(HostEvent event) {
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::ResourceExhausted, "event queue: out of memory");
     }
-    if (was_empty) {
+    if (was_empty && wake == Wake::AtFlush) {
+        wake_owed_ = true;  // flush_wake() pays it at the end of the loop's iteration
+        owed_hint_.store(true, std::memory_order_relaxed);
+    } else if (was_empty) {
         const std::uint64_t one = 1;
         const Result<long> woke = retrying(
             [&] { return sys_.write(wake_.get(), &one, sizeof(one)); }, "event queue wake-up");
@@ -126,6 +129,27 @@ std::size_t EventQueue::pending() const {
     return events_.size();
 }
 
+void EventQueue::flush_wake() {
+    if (!owed_hint_.load(std::memory_order_relaxed)) {
+        return;
+    }
+    const std::lock_guard lock{mutex_};
+    if (!wake_owed_) {
+        return;
+    }
+    const std::uint64_t one = 1;
+    const Result<long> woke =
+        retrying([&] { return sys_.write(wake_.get(), &one, sizeof(one)); }, "event queue wake-up");
+    if (woke) {
+        wake_owed_ = false;
+        owed_hint_.store(false, std::memory_order_relaxed);
+    }
+    // A failed write (a closed descriptor, retries exhausted) leaves the wake-up owed. The next
+    // flush, from any loop's next iteration, tries again, and a host that polls still finds the
+    // events queued: it loses time, not events. An idle server has no next iteration until its
+    // next I/O.
+}
+
 std::optional<Popped> EventQueue::try_pop() {
     const std::lock_guard lock{mutex_};
     if (events_.empty()) {
@@ -134,7 +158,11 @@ std::optional<Popped> EventQueue::try_pop() {
     Popped popped{std::move(events_.front()), false};
     events_.pop_front();
     bytes_ -= popped.event.data.size();
-    if (events_.empty()) {
+    if (events_.empty() && wake_owed_) {
+        // Drained before the wake-up was paid: nothing was written, so there is nothing to clear.
+        wake_owed_ = false;
+        owed_hint_.store(false, std::memory_order_relaxed);
+    } else if (events_.empty()) {
         std::uint64_t counter = 0;
         // Clearing the counter makes the descriptor not readable. If this somehow fails the
         // descriptor stays readable and the host wakes up for nothing: harmless.

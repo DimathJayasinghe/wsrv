@@ -180,7 +180,7 @@ TEST_F(RelayTest, StaleConnectionsAreClosedWithTheGivenCodeAndNobodyElse) {
     open(2);
     relay_.detach();
     open(3);  // a connection the next application knows about
-    relay_.close_stale(1012, "service restart");
+    EXPECT_EQ(relay_.close_stale(1012, "service restart"), 0U);
     const auto commands = backend_.commands_of(RecordedCommand::Kind::Close);
     ASSERT_EQ(commands.size(), 2U);
     for (const auto& command : commands) {
@@ -189,6 +189,50 @@ TEST_F(RelayTest, StaleConnectionsAreClosedWithTheGivenCodeAndNobodyElse) {
         EXPECT_EQ(command.data, "service restart");
         EXPECT_NE(command.conn, 3U);
     }
+}
+
+// A close the loop refuses because its task queue is full (BufferFull) is not "gone": the
+// connection is still open and nobody serves it. Found by closing 5000 connections of one loop
+// after the worker was killed: 904 stayed open for good (ADR-0034).
+TEST_F(RelayTest, ClosesTheLoopsRefusedAreKeptAndCountedSoTheCallerCanTryAgain) {
+    open(1);
+    open(2);
+    open(3);
+    relay_.detach();
+    backend_.fail_commands_with(ErrorCode::BufferFull);
+    EXPECT_EQ(relay_.close_stale(1012, "service restart"), 3U) << "all three were refused";
+    backend_.fail_commands_with(std::nullopt);
+    EXPECT_EQ(relay_.close_stale(1012, "service restart"), 0U) << "now they are accepted";
+    EXPECT_EQ(backend_.commands_of(RecordedCommand::Kind::Close).size(), 6U);
+    EXPECT_EQ(relay_.close_stale(1012, "service restart"), 0U);
+    EXPECT_EQ(backend_.commands_of(RecordedCommand::Kind::Close).size(), 6U)
+        << "a connection whose close was accepted is not asked again";
+}
+
+TEST_F(RelayTest, OnlyTheRefusedClosesAreTriedAgain) {
+    open(1);
+    open(2);
+    relay_.detach();
+    backend_.fail_commands_with(ErrorCode::BufferFull);
+    EXPECT_EQ(relay_.close_stale(1012, "service restart"), 2U);
+    backend_.fail_commands_with(std::nullopt);
+    EXPECT_EQ(relay_.close_stale(1012, "service restart"), 0U);
+    open(3);          // a new application's connection is never touched
+    relay_.detach();  // ... until that one is lost too: only connection 3 is new work
+    EXPECT_EQ(relay_.close_stale(1012, "service restart"), 0U);
+    const auto commands = backend_.commands_of(RecordedCommand::Kind::Close);
+    EXPECT_EQ(commands.size(), 5U) << "1 and 2 refused once and accepted once, then 3 once";
+}
+
+TEST_F(RelayTest, ACloseForAConnectionThatIsGoneIsNotRetried) {
+    open(1);
+    open(2);
+    relay_.detach();
+    backend_.fail_commands_with(ErrorCode::Closing);
+    EXPECT_EQ(relay_.close_stale(1012, "service restart"), 0U) << "gone is gone";
+    backend_.fail_commands_with(std::nullopt);
+    EXPECT_EQ(relay_.close_stale(1012, "service restart"), 0U);
+    EXPECT_EQ(backend_.commands_of(RecordedCommand::Kind::Close).size(), 2U) << "one try each";
 }
 
 // ---- handshake answers (ADR-0018) --------------------------------------------------------------

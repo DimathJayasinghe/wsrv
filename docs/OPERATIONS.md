@@ -4,46 +4,25 @@ How the server is configured, observed, run, and shut down.
 
 ## 1. Configuration
 
-Precedence (low→high): built-in secure defaults < config file (TOML) < environment (`WSRV_*`) < CLI flags. Config is parsed once into an **immutable validated snapshot**; invalid config ⇒ startup failure with all errors listed (non-zero exit). Reloadable subset (SIGHUP): TLS certs, log level, limits, origin list — applied by atomic snapshot swap.
+One list of keys, three ways to set it. `wsrvd` takes flags (`--listen-port=8080`), a file (`--config=FILE`, one `key = value` per line, `#` comments) and environment variables (`WSRVD_LISTEN_PORT=8080`; a repeatable key takes a comma list). The embedded server (PHP FFI, C API) takes the same keys as text (`new Server(['listen_port' => 8080])`, `wsrv_config_set`). There is no TOML or YAML file, no `WSRV_*` variable and no config directory.
 
-```toml
-[listen]
-address = "0.0.0.0"
-port = 8080
-backlog = 1024
-reuse_port = true
+Precedence, lowest to highest: built-in defaults, then the environment, then `--config` files and flags in the order given (later wins). The configuration is checked once at start: a wrong key or value stops the start with exit code 1 and names the setting (and, for the environment, the variable). A key is never ignored silently. Nothing is reloaded while the server runs except the TLS certificate and key (`SIGHUP`, section 7); to change a limit, restart.
 
-[threads]
-loops = 0                 # 0 = hardware_concurrency
+The defaults and the allowed range of every limit are in `docs/REQUIREMENTS.md` section 4 (checked against the code in `docs/LIMITS_AUDIT.md`); there is a hard ceiling on every one of them and no value means "unlimited" except the per-address limits (section 1.2). The keys, by what they do:
 
-[limits]                  # see REQUIREMENTS §4 for defaults
-max_connections = 10000
-max_message_bytes = 1048576
-max_handshake_bytes = 8192
-per_ip_connections = 100            # 0 = no limit (ADR-0021)
-per_ip_new_connections_per_s = 50   # 0 = no limit (ADR-0021)
-idle_timeout_s = 60
+| Area | Keys |
+|---|---|
+| Listening | `listen_host`, `listen_port`, `threads` (event loops: start at the number of cores you give it) |
+| Who may connect | `allow_origin` (repeatable), `allow_missing_origin`, `trusted_proxy` (repeatable), `client_ip_header` |
+| Limits | `max_connections`, `max_connections_per_ip`, `max_new_connections_per_ip_per_second`, `max_message_size`, `max_frame_payload`, `max_fragments`, `max_data_frames_per_second`, `max_pending_send_bytes`, `event_queue_events`, `event_queue_bytes`, `shutdown_grace_ms` |
+| Authenticating upgrades | `handshake_hook`, `handshake_forward_header` (repeatable), `handshake_decision_timeout_ms`, `max_pending_handshakes` |
+| TLS | `tls_cert`, `tls_key`, `tls_sni` (repeatable) |
+| Compression | `permessage_deflate`, `deflate_server_max_window_bits`, `deflate_server_no_context_takeover`, `deflate_level`, `deflate_min_size`, `deflate_max_ratio` (section 1.1) |
+| Observability | `admin_host`, `admin_port` (section 3.1), `log_level`, `log_peer` (section 2) |
+| Rooms and publishing | `broker`, `broker_max_topics`, `broker_max_subscribers_per_topic`, `broker_max_topics_per_connection`, `broker_max_subscriptions`, `broker_max_payload_bytes`, `publish_host`, `publish_port`, `publish_token_file` (sections 3.1.1, 3.2) |
+| `wsrvd` only | `ipc_socket` (required), `ipc_token_file`, `ipc_max_frame`, `ipc_hello_timeout_ms`, `ipc_stall_ms` (section 7) |
 
-[security]
-allowed_origins = ["https://app.example.com"]
-allow_missing_origin = false
-trusted_proxies = []
-
-[tls]
-enabled = false
-cert = "/etc/wsrv/cert.pem"
-key  = "/etc/wsrv/key.pem"
-min_version = "1.2"
-
-[compression]
-permessage_deflate = false
-
-[log]
-level = "info"
-format = "json"           # json | text
-```
-
-Hard ceilings (compile-time) cap every limit to prevent dangerous values.
+The IPC and publish tokens are never keys: they would show in `ps` and `/proc`, so only a file (mode 0600, yours) can carry them.
 
 ### 1.1 Compression (permessage-deflate, RFC 7692, ADR-0020)
 
@@ -84,8 +63,26 @@ Two limits keep one client address from taking the whole server: `max_connection
 
 - **Who is "one address":** an IPv4 address; an IPv4-mapped IPv6 address counts as the IPv4 address it maps; any other IPv6 address counts as its **/64** (a subscriber owns at least a /64, so single addresses would let one machine rotate through 2^64 of them). The port is ignored.
 - **What the client sees:** `HTTP/1.1 429 Too Many Requests` with `Retry-After: 1` and a closed connection. A client that already sent its request may see a reset instead: the answer is best effort, the close is the guarantee. The global cap (`max_connections`) keeps its silent close.
-- **Behind a reverse proxy or NAT** every user shares one address, so the defaults can refuse real users. Raise the limits or set them to `0` and rate-limit at the proxy (real client addresses via the PROXY protocol are not implemented; EC-N21).
+- **Behind a reverse proxy** every user would share the proxy's address, so tell the server which peers are your proxies (section 1.2.1) and the limits then count real clients. **Behind a NAT or a PROXY-protocol-only load balancer** (no header) every user is still one address: raise the limits or set them to `0` and rate-limit at the balancer (the PROXY protocol is not implemented yet; ADR-0029 section 6).
 - **Cost:** a table of at most `2 * max_connections` entries (about 40 bytes plus the map node each), one mutex taken twice per connection life. An idle server holds no per-address state. When the table is full a new address is refused (fail closed), after one sweep of entries that carry no information.
+
+#### 1.2.1 The real client address behind a reverse proxy (ADR-0029)
+
+```ini
+trusted_proxy = 10.0.0.0/8      # repeatable: an address or a CIDR, at most 64; empty (default) = off
+trusted_proxy = 192.168.1.5
+client_ip_header = X-Forwarded-For   # default; any other name is read as one single address
+```
+
+- **Nothing is believed by default.** The header is read only when the TCP peer is inside `trusted_proxy`; from any other peer it is ignored, so a client that sends `X-Forwarded-For` straight to `wsrvd` gains nothing. List only machines you run.
+- **Which entry is the client:** for `X-Forwarded-For` (a list every proxy appends to) the **rightmost entry that is not itself a trusted proxy**; what lies left of it is controlled by the client and never used. For `X-Real-IP`, `CF-Connecting-IP`, `True-Client-IP` and the like, the single value. Your proxy must set or overwrite the header (nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` for a list, `proxy_set_header X-Real-IP $remote_addr;` for one value).
+- **Fail safe:** a missing header, an entry that is not an address, more than 32 entries or more than 1 KiB all leave the proxy's own address in place, so the limits only get stricter.
+- **What changes:** a connection from a trusted proxy takes no per-IP slot at accept (the proxy would exhaust its own budget) but still counts against `max_connections`. Once its upgrade request is valid, the client address is admitted through the per-IP limits (429 or 503 on refusal, like any handshake refusal) and the slot comes back when the connection ends. The application's `open` event, the handshake hook and the logs then show the client, with port 0.
+- **Not yet:** PROXY protocol v1/v2 and the `Forwarded` (RFC 7239) header.
+
+### 1.2.2 Application sends waiting for a loop (ADR-0032)
+
+An application (the C API, the PHP worker through `wsrvd`) sends from its own thread: each `send_text` / `send_binary` is copied and queued to the loop that owns the connection. The queue is bounded in count, and since ADR-0032 also in bytes: `max_pending_send_bytes` (per loop, default 64 MiB, 1 B to 1 GiB, no unlimited value; `WSRVD_MAX_PENDING_SEND_BYTES` in a container). When the budget is used up a send returns `BufferFull` (C: `WSRV_ERR_BACKPRESSURE`, a PHP worker sees status `BACKPRESSURE`): wait and retry. A single message larger than the whole budget is refused for good with `InvalidArgument`, so keep the budget above your largest message. Worst case memory is `threads x budget`. Broadcasts and control commands are not charged (one shared buffer, and they must always get through).
 
 ### 1.3 Frame, fragment and frame-rate limits (ADR-0016 A1)
 
@@ -99,14 +96,81 @@ Three per-connection limits protect the server from a single peer, and each has 
 
 None of them has an "off" value; a refused value changes nothing and `wsrv_config_set` reports `WSRV_ERR_INVALID_CONFIG`. Whoever sets `max_message_size` above the event-queue size must also raise `event_queue_bytes`: the host receives messages whole, so a queue smaller than one message cannot deliver it.
 
+**The event queue and the connection ceiling.** Events for the application (a connection opened, a message arrived, a connection closed) wait in a bounded queue between the I/O threads and the application. Every live connection holds one slot of it for its own `Close` event, so the queue must be larger than the number of connections: with `event_queue_events` unset (the default) it is `max_connections + 4096` and `event_queue_bytes` is `max_connections * 123 + 8 MiB`, so the default is consistent for any `max_connections`. If you set `event_queue_events` yourself, it is used as given, and a value below `max_connections` caps the server at that value (the connection beyond it is accepted, upgraded and closed with the overload close code 1013). Before 1.0 the queue was a fixed 4096 and capped every server at 4095 connections.
+
 ## 2. Logging
 
-- Structured, one event per line. Fields: `ts` (RFC 3339 UTC), `level`, `conn` (ID), `peer`, `event`, `code`, `msg`.
-- Levels: `error` (server cannot do its job), `warn` (peer misbehaviour at scale, config oddities), `info` (lifecycle: start, stop, reload), `debug` (per-connection events), `trace` (frames; compiled out in release).
-- Peer-supplied data is quoted and control-char-escaped; length-capped.
-- Rate-limited logs for noisy events (bad handshakes, resets) with a suppression counter.
-- No secrets, tokens, cookies, or payloads at any level above `trace`; `trace` payload logging requires an explicit unsafe flag.
-- Logging is asynchronous or non-blocking relative to the loop: a slow log sink must not stall I/O (bounded queue; drop-with-counter on overflow).
+`wsrvd` and the embedded server (PHP FFI) write **one line per event to stderr**. Nothing else is written there while the server runs, and nothing is ever written to a file by wsrv: systemd (`journalctl -u wsrvd`), Docker (`docker logs`) and Kubernetes (`kubectl logs`) already collect, rotate and ship stderr. Decision record: ADR-0037.
+
+```
+ts=2026-11-26T12:00:00.123Z level=info event=listening msg="server: websocket listening on port 8080"
+ts=2026-11-26T12:00:07.884Z level=warn event=origin_refused conn=17 msg="handshake refused: the Origin header is not allowed"
+ts=2026-11-26T12:00:09.001Z level=warn event=ip_limit suppressed=412 msg="server: per-IP limit reached, refusing clients"
+```
+
+### 2.1 The line
+
+| Field | Meaning |
+|---|---|
+| `ts` | RFC 3339, UTC, milliseconds |
+| `level` | `error`, `warn`, `info` or `debug` |
+| `event` | a stable name (section 2.3): match on this in alerts, not on the text |
+| `conn` | the connection number, to follow one connection through its lines; absent when the line is not about one (the same number the application sees as the connection id) |
+| `peer` | the client address, **only with `log_peer`** (section 2.2) |
+| `suppressed` | present when the line stands for more than one: how many of this event were held back since the last line (section 2.4) |
+| `dropped` | present when earlier lines could not be written (section 2.4) |
+| `msg` | a short sentence for people, always in double quotes |
+
+Field names and event names are stable within 1.x (new ones may be added; a parser must ignore what it does not know). The `msg` text is not: do not match on it.
+
+One event is exactly one line, whatever a client sent: `msg` is quoted, `\` `"` and every control character and byte above 0x7e are escaped (`\n`, `\xNN`), so a hostile client cannot forge a line or smuggle a terminal escape. A line is at most 512 bytes. In practice the message is fixed text and carries nothing the client sent.
+
+### 2.2 Settings
+
+| Key | Default | |
+|---|---|---|
+| `log_level` | `info` | `error`, `warn`, `info` or `debug`. A value below the level costs one comparison. Any other word is a startup error (a typo does not silently mean `info`). |
+| `log_peer` | `false` | Put the client's address in the lines about a connection. An IP address is personal data (GDPR), so it is off unless you decide you need it: turn it on to find out who is hitting a limit, leave it off to keep the logs free of personal data. |
+
+Flags, `--config` lines and environment: `--log-level=warn`, `log_level = warn`, `WSRVD_LOG_LEVEL=warn`, `WSRVD_LOG_PEER=true`. In the embedded server they are ordinary keys (`log_level`, `log_peer`).
+
+Never logged at any level: tokens and credentials, cookies and other headers, message payloads, anything the client chose (an Origin, a path, a close reason). The line says that the Origin was refused, not which one it was.
+
+### 2.3 Events
+
+| Event | Level | Meaning and what to do |
+|---|---|---|
+| `listening` | info | the WebSocket port is open (`msg` has the port) |
+| `publish_listening`, `admin_listening` | info | the publish / admin endpoint is open (`msg` has the address) |
+| `publish_exposed`, `admin_exposed` | warn | that endpoint is not on loopback: keep it on a private network (sections 3.1 and 3.1.1) |
+| `ipc_ready` | info | `wsrvd` is ready for the application on its socket |
+| `ipc_no_token` | warn | no `ipc_token_file`: only the peer uid check protects the socket |
+| `app_connected`, `app_disconnected` | info (warn if cut off for not reading) | the application's link came and went: connections it knew are closed with 1012 after `shutdown_grace_ms` unless a new one connects |
+| `app_rejected` | warn | an application was refused: another user, a second one, a wrong token or version, no HELLO in time. Many of these: a misconfigured worker (compare tokens and the socket path) |
+| `tls_reloaded` | info | SIGHUP picked up a new certificate |
+| `tls_reload_skipped` | info | SIGHUP, but TLS is off |
+| `tls_reload_failed`, `tls_config` | error | the certificate or key cannot be used; `tls_config` lines name the file and the reason. The old certificate stays in use |
+| `conn_limit`, `ip_limit`, `loop_overloaded` | warn | a limit refused a client (section 1.2 and `max_connections`) |
+| `origin_refused` | warn | the Origin header is not in `allow_origin`. A wrong list shows up here at once; scanners show up as a rate-limited stream |
+| `handshake_refused` | info | the upgrade was refused for another reason (malformed, too large). Any client can cause it, so it is deliberately not a warning |
+| `handshake_undecided` | warn | the application could not be asked about an upgrade (its queue is full or it is gone), so the client was refused with 503. This one is about your server, not the client |
+| `handshake_timeout`, `handshake_decision_timeout` | info, warn | the upgrade was not completed in time (slow clients; the application did not answer the handshake hook) |
+| `decision_queue_full` | warn | too many upgrades waiting for the application's decision |
+| `slow_consumer`, `peer_stalled` | warn | a connection was closed for not reading what was sent to it |
+| `protocol_error` | info | the peer broke RFC 6455 |
+| `handler_misuse` | warn | the application's handler did something not allowed (an unfinished message, a close code that cannot be sent) |
+| `publish_rejected` | warn | the publish endpoint refused a request; `msg` has the status (401: wrong token) |
+| `conn_open`, `conn_close` | debug | each connection, and its close code |
+| `descriptor_limit` | error | the start failed: `ulimit -n` is below what `max_connections` needs |
+| `descriptor_limit_raised` | info | the soft descriptor limit was raised to what is needed |
+| `start_failed`, `internal_error`, `out_of_memory`, `poller_failure`, `timer_failure`, `transport_failed`, `handler_exception`, `no_handler`, `shutdown_failed` | error | the server could not do its job for this connection or loop; a steady stream is a bug or an exhausted machine: collect the lines and report them |
+| `shutdown` | info | the stop signal arrived |
+
+### 2.4 It never stalls the server, and it cannot be flooded
+
+- **Per event, a burst then a trickle.** Each event may write 10 lines at once, then one a second. What was held back is counted and the next line of that event says `suppressed=N`. A client causing a million refused handshakes costs about one line a second. This holds at every level, `debug` too: on a busy server `conn_open` and `conn_close` are a sample, and `suppressed=` tells you how many there were (the connection counters on `/metrics` are exact).
+- **A stuck destination costs lines, never time.** Each line goes out in one non-blocking write after a check that the descriptor can take it. If stderr is a pipe that nobody reads (a hung log driver), the line is dropped and counted, the I/O loop never waits, and the next line that gets out says `dropped=N`. The counters on `/metrics` are the record that does not depend on the log.
+- **No log thread**, no file, no rotation: stderr is the interface.
 
 ## 3. Metrics (Prometheus text exposition on a separate admin listener, loopback by default)
 
@@ -124,10 +188,10 @@ ADR-0023. Counters live in one bank per loop (relaxed atomics, no lock) and are 
 | `wsrv_tls_handshake_failures_total` | counter | done: TLS failures before the upgrade |
 | `wsrv_broker_publishes_total` | counter | done: validated publishes on the pub/sub broker (section 3.2); only once the application attaches the broker with `Broker::use_metrics(server.shared_metrics())` |
 | `wsrv_broker_deliveries_total{result}` | counter | done: `accepted` (the subscriber's loop took the message for delivery), `refused` (its task queue was full, out of memory, or the server is gone); every subscriber of a publish is one or the other |
-| `wsrv_handshake_seconds` | histogram | planned (ADR-0023 section 5) |
-| `wsrv_loop_lag_seconds{loop}` | histogram (detects blocking handlers) | planned |
-| `wsrv_outbound_queue_bytes` | histogram | planned |
-| `wsrv_config_reload_total{result}` | counter | planned (`wsrvd` reload) |
+| `wsrv_handshake_seconds` | histogram | not in 1.0, planned (ADR-0023 section 5) |
+| `wsrv_loop_lag_seconds{loop}` | histogram (detects blocking handlers) | not in 1.0, planned |
+| `wsrv_outbound_queue_bytes` | histogram | not in 1.0, planned |
+| `wsrv_config_reload_total{result}` | counter | not in 1.0, planned (`wsrvd` reload) |
 
 ### 3.1 Admin endpoint
 Off unless configured: embedded/`wsrvd` keys `admin_port` (setting it switches the listener on; 0 lets the kernel choose) and `admin_host` (default `127.0.0.1`); `wsrvd --admin-port=9100`. Plain HTTP, **no authentication**: keep it on loopback or behind a network policy (a non-loopback bind logs a warning at start). It serves exactly three pages:
@@ -180,26 +244,26 @@ ADR-0024. `Broker` is an object of the application's composition root: handlers 
 
 Two cautions (ADR-0024 amendments). **Compression:** with permessage-deflate negotiated every subscriber compresses its own copy of each broadcast, so a publish to thousands of subscribers costs thousands of zlib runs on their loops; for a broker deployment leave compression off or lower `max_payload_bytes`. **Shared bounds:** the limits above are global; they cannot tell one user from another, so an application that serves strangers must apply its own quota per account or address before calling `subscribe`. Broadcasts use a reserved share of each loop's task queue: they are refused once it is three quarters full, so new connections, handshake decisions, `close` and shutdown still get through while a publish flood is being shed.
 
-What to watch: `wsrv_broker_deliveries_total{result="refused"}` rising means a loop's task queue is full (the publish rate outruns a loop); a `PublishReport` says the same per call. Delivery is "accepted for delivery", never acknowledged; a subscriber that cannot keep up is closed or dropped by its own connection's slow-consumer policy (`wsrv_slow_consumer_drops_total`), and the other subscribers of the same publish are unaffected. The C ABI and the PHP `Client::publish()` are not available yet (ADR-0024 section 7).
+What to watch: `wsrv_broker_deliveries_total{result="refused"}` rising means a loop's task queue is full (the publish rate outruns a loop); a `PublishReport` says the same per call. A loop accepts a broadcast in chunks of 256 recipients, one queue slot per chunk (ADR-0034), so the size of a room alone never fills it: a loop takes a publish to hundreds of thousands of recipients at once, and refuses a chunk only when publishes arrive faster than the loop drains them (a refused chunk counts all its recipients as refused). Delivery is "accepted for delivery", never acknowledged; a subscriber that cannot keep up is closed or dropped by its own connection's slow-consumer policy (`wsrv_slow_consumer_drops_total`), and the other subscribers of the same publish are unaffected. The C ABI and the PHP `Client::publish()` are not available yet (ADR-0024 section 7).
 
 ## 4. Lifecycle
 
 - **Start:** validate config → check `RLIMIT_NOFILE` ≥ `max_connections + 64 + 4 × threads` (ADR-0022: a lower soft limit is raised to exactly that when the hard limit allows, otherwise the start fails with `FdLimit` and a log line naming needed, soft and hard) → bind → (optionally drop privileges) → start loops → log `listening`.
 - **Embedded hosts (C API, PHP):** the same check runs in `wsrv_server_start` and a raise changes the soft limit of the *host* process (only upwards, only to what the configuration needs). A host that must keep a small limit lowers `max_connections`.
-- **Reload (SIGHUP):** reload snapshot; on failure keep old and increment `config_reload_total{result="error"}`.
-- **Graceful stop (SIGTERM/SIGINT):** stop accepting (readyz fails) → send Close 1001 to all → wait up to `shutdown_grace` (default 10 s) → force close remaining → join threads → exit 0. Second signal ⇒ immediate exit.
+- **Reload (SIGHUP):** `wsrvd` re-reads the TLS certificate and key only (section 7); a failed reload keeps the certificate in use and logs why. Everything else needs a restart.
+- **Graceful stop (SIGTERM/SIGINT):** stop accepting (readyz fails) → send Close 1001 to all → wait up to `shutdown_grace` (default 10 s) → force close remaining → join threads → exit 0. A second signal is not special (see "Signals and exit codes"): use `SIGKILL` to stop at once.
 - **Crash policy:** invariant violation ⇒ abort with core dump (supervisor restarts); never continue in an unknown state.
 
 ## 5. Deployment hardening
 
 - Run as non-root; bind low ports via `CAP_NET_BIND_SERVICE` or reverse proxy.
 - systemd unit: `NoNewPrivileges=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`, `PrivateDevices=yes`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `SystemCallFilter=@system-service`, `LimitNOFILE=…`, `MemoryMax=…`, `Restart=on-failure`.
-- Container: distroless/minimal image, read-only rootfs, drop all capabilities, non-root user, no shell.
+- Container: the official image runs as uid 10001 with a built-in `HEALTHCHECK` and only the libraries the daemon links against. Run it with a read-only root filesystem and every capability dropped, as `deploy/kubernetes/wsrv.yaml` does.
 - Kernel tuning (documented, not applied by the server): `net.core.somaxconn`, `net.ipv4.tcp_max_syn_backlog`, `tcp_syncookies=1`, `fs.file-max`, ephemeral port range, `tcp_keepalive_*`.
-- Behind a reverse proxy: configure `trusted_proxies`, ensure proxy timeouts > heartbeat, forward `Upgrade/Connection`, pass real client IP via PROXY protocol or `X-Forwarded-For` from trusted hops only.
-- Capacity planning: memory/connection × max_connections + buffer pool headroom; documented in `docs/perf/`.
+- Behind a reverse proxy: configure `trusted_proxy`, ensure proxy timeouts > heartbeat, forward `Upgrade/Connection`, pass the real client IP in `X-Forwarded-For` (or another single-address header) and list the proxies in `trusted_proxy` (section 1.2.1); the PROXY protocol is not implemented yet.
+- Capacity planning: memory/connection × max_connections + buffer pool headroom; measured in `docs/PERFORMANCE.md` and `docs/BENCHMARKS.md`.
 
-## 6. Runbook (seed, expand in M10)
+## 6. Runbook
 
 | Symptom | Check | Likely cause |
 |---|---|---|
@@ -215,7 +279,9 @@ What to watch: `wsrv_broker_deliveries_total{result="refused"}` rising means a l
 
 ## 7. Running `wsrvd` (the sidecar)
 
-What the daemon does today (ADR-0017, IPC protocol in `docs/IPC_PROTOCOL.md`). Metrics and an admin listener arrive with M10.
+Every setting below is also an environment variable, `WSRVD_` plus the key in upper case (`WSRVD_LISTEN_PORT`); the environment is the base layer and `--config` and flags override it. `wsrvd --healthcheck` probes a running daemon (exit 0 = healthy). An unknown `WSRVD_*` variable stops the start. Tokens are files, never variables (ADR-0030).
+
+What the daemon does (ADR-0017, IPC protocol in `docs/IPC_PROTOCOL.md`). Metrics and the admin listener are in section 3.
 
 ### Start-up
 ```sh
@@ -229,14 +295,14 @@ wsrvd --ipc-socket=/run/wsrv/ipc.sock --ipc-token-file=/etc/wsrv/ipc.token \
 - `--config=FILE` reads `key = value` lines; later arguments override earlier ones. Keys: `ipc_socket`, `ipc_token_file`, `ipc_max_frame`, `ipc_hello_timeout_ms`, `ipc_stall_ms`, the handshake-hook keys below, plus every embedded-server key (`listen_host`, `listen_port`, `threads`, `tls_cert`, `tls_key`, `allow_origin`, `allow_missing_origin`, `max_message_size`, `max_connections`, `shutdown_grace_ms`, ...).
 - **wss:// (TLS)**: add `--tls-cert=/etc/wsrv/cert.pem --tls-key=/etc/wsrv/key.pem` (PEM; the certificate file holds the server certificate first, then any intermediates). Setting either makes the port TLS-only (TLS 1.2 and 1.3, forward-secret AEAD suites only, ALPN `http/1.1`); plain `ws://` is not served on that port. The key file must not be readable by "others" (mode `0640` or `0600`) and must have no passphrase; an expired certificate, a key that does not match, a missing file, only one of the two options, or a build without TLS (`WSRV_ENABLE_TLS=OFF`) all stop the start-up with the reason on stderr: the daemon never falls back to plain text. Details and the threat model: ADR-0019.
 - **Several certificates (SNI)**: repeat `--tls-sni=NAME=CERT_FILE:KEY_FILE` (at most 64), for example `--tls-sni=app.example.com=/etc/wsrv/app.pem:/etc/wsrv/app.key --tls-sni='*.example.org=/etc/wsrv/org.pem:/etc/wsrv/org.key'`. The client names the host it wants in its TLS hello; matching ignores case, an exact name beats a wildcard, and `*.example.org` covers exactly one label (`a.example.org`, not `example.org` or `a.b.example.org`; `*.org` is refused). A client that sends no name (or an IP address, or an unknown name) receives the `--tls-cert` certificate, so that one is required and acts as the default. Every certificate is held to the same rules as the default (valid now, key matches, key file not open to others), and all of them are re-read on `SIGHUP`; if any one fails, nothing changes. Paths must not contain `:`.
-- The daemon prints `ipc socket ... ready` and `websocket server listening on port N` on stderr when it is ready.
+- The daemon logs `event=ipc_ready` and `event=listening` on stderr when it is ready (section 2). Mistakes in the command line itself are printed plainly with the usage text, before any logger exists.
 
 ### Signals and exit codes
 - `SIGTERM` / `SIGINT`: graceful stop. The IPC server closes first (the socket file is removed), then the WebSocket server sends Close 1001 to every connection, waits up to `shutdown_grace_ms`, closes the rest and joins its threads. Exit code 0.
 - A **second** signal during the graceful stop is not treated specially today (it does not force an immediate exit); use `SIGKILL` if a stop hangs. A stale socket file left by `SIGKILL` is recovered by the next start (it probes the socket and removes it only if nothing answers and it is ours).
 - `wsrvd` installs its signal handling before it creates any other thread (signals are read from a descriptor), so every thread it starts inherits the mask.
 - Exit code 1: bad configuration, unusable socket path or token file, bind failure, or an event-loop error. The reason is printed on stderr.
-- `SIGHUP`: re-read the TLS certificate and key (`tls_cert`, `tls_key`) and use them for new connections; open connections keep the old one. Nothing else is reloaded yet. The daemon logs `tls certificate reloaded`, or `tls reload failed, keeping the old certificate: <file and reason>`, or `tls is not enabled, nothing to reload`. A failed reload never stops the server. Typical use: after the certificate renewal tool (certbot, acme.sh) writes the new files, run `kill -HUP $(pidof wsrvd)` (for systemd: `ExecReload=/bin/kill -HUP $MAINPID`).
+- `SIGHUP`: re-read the TLS certificate and key (`tls_cert`, `tls_key`) and use them for new connections; open connections keep the old one. Nothing else is reloaded yet. The daemon logs `event=tls_reloaded`, or `event=tls_config` lines naming the file and the reason followed by `event=tls_reload_failed` (the old certificate stays), or `event=tls_reload_skipped` when TLS is off. A failed reload never stops the server. Typical use: after the certificate renewal tool (certbot, acme.sh) writes the new files, run `kill -HUP $(pidof wsrvd)` (for systemd: `ExecReload=/bin/kill -HUP $MAINPID`).
 
 ### Fork and process rules
 - `wsrvd` never forks. Run it under a supervisor (systemd, supervisord, a container runtime).
@@ -271,6 +337,7 @@ The application receives each upgrade as a Handshake event (`docs/IPC_PROTOCOL.m
 | Daemon restarts | Browsers see the close or a dropped connection and must reconnect; messages in flight are lost (at-most-once). |
 
 ### systemd example
+The complete, hardened unit (with the worker's unit and an environment file) is in [`deploy/systemd/`](../deploy/systemd/); [DEPLOYMENT.md](DEPLOYMENT.md) covers Docker, Kubernetes and reverse proxies. The essentials:
 ```ini
 [Service]
 User=wsrv

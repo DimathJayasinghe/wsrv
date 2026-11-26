@@ -2,12 +2,14 @@
 #pragma once
 
 #include "base/error.hpp"
+#include "base/logger.hpp"
 #include "server/broker.hpp"
 #include "server/config.hpp"
 #include "server/server_builder.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -29,6 +31,20 @@ struct TlsSniSetting {
     std::string key;
 };
 
+namespace detail {
+/// Sums that stop at the largest size_t instead of wrapping: a huge max_connections must give a
+/// huge (and then refused by create()) queue, never a small one.
+[[nodiscard]] constexpr std::size_t saturating_sum(std::size_t a, std::size_t b) noexcept {
+    return a > std::numeric_limits<std::size_t>::max() - b ? std::numeric_limits<std::size_t>::max()
+                                                           : a + b;
+}
+[[nodiscard]] constexpr std::size_t saturating_product(std::size_t a, std::size_t b) noexcept {
+    return b != 0 && a > std::numeric_limits<std::size_t>::max() / b
+               ? std::numeric_limits<std::size_t>::max()
+               : a * b;
+}
+}  // namespace detail
+
 /// The settings a host can give an embedded server, as text key/value pairs (ADR-0016 section 6).
 /// Text keys are the one configuration shape every binding can express without sharing any C++
 /// type, and a key is never removed or changes meaning, so adding settings is always compatible.
@@ -38,13 +54,18 @@ struct TlsSniSetting {
 /// EventQueue::create() validate once, so the rules live in one place each.
 ///
 /// Keys: listen_host, listen_port, threads, allow_origin (repeatable), allow_missing_origin,
+/// log_level (error, warn, info, debug; default info) and log_peer (default false; ADR-0037),
 /// max_message_size, max_connections, max_connections_per_ip (default 100) and
 /// max_new_connections_per_ip_per_second (default 50), both 0 = no limit (ADR-0021),
+/// trusted_proxy (repeatable address or CIDR, at most 64) and client_ip_header (default
+/// X-Forwarded-For): the client address behind a reverse proxy (ADR-0029),
 /// shutdown_grace_ms, event_queue_events, event_queue_bytes, and for the handshake hook (ADR-0018):
 /// handshake_hook (bool, off), handshake_forward_header (repeatable header name),
-/// handshake_decision_timeout_ms (> 0), max_pending_handshakes (> 0). and for TLS (ADR-0019):
-/// tls_cert (certificate chain file, PEM), tls_key (private key file, PEM), tls_sni (repeatable
-/// "name=cert_file:key_file", at most 64: a certificate for one host name or one
+/// handshake_decision_timeout_ms (> 0), max_pending_handshakes (> 0). max_pending_send_bytes
+/// (default 64 MiB, 1 .. 1 GiB, per loop): payload bytes of direct sends waiting for the loop
+/// (ADR-0032). and for TLS (ADR-0019): tls_cert (certificate chain file, PEM), tls_key (private key
+/// file, PEM), tls_sni (repeatable "name=cert_file:key_file", at most 64: a certificate for one
+/// host name or one
 /// "*.example.com" wildcard; the paths must not contain a colon).
 /// and for permessage-deflate (ADR-0020 section 6, off by default): permessage_deflate (bool),
 /// deflate_server_max_window_bits (9..15, default 12), deflate_server_no_context_takeover (bool,
@@ -82,6 +103,11 @@ public:
     [[nodiscard]] std::uint16_t port() const noexcept {
         return port_;
     }
+    /// The least severe level that is written (`log_level`: error, warn, info or debug; default
+    /// info).
+    [[nodiscard]] LogLevel log_level() const noexcept {
+        return log_level_;
+    }
     /// The admin listener (ADR-0023): on only once a port was given.
     [[nodiscard]] bool admin_requested() const noexcept {
         return admin_port_.has_value();
@@ -95,8 +121,23 @@ public:
     [[nodiscard]] const ServerConfig& server() const noexcept {
         return server_;
     }
+    /// The event queue's limits. A live connection holds one slot (and kReservedCloseBytes) of the
+    /// queue for its Close event for as long as it lives, so a queue smaller than max_connections
+    /// would quietly cap the server below that number. A limit the operator did not set therefore
+    /// follows max_connections (never below the 4096 events / 8 MiB default, plus that much room
+    /// for events in flight); a limit the operator did set is returned exactly as set.
     [[nodiscard]] EventQueueConfig queue() const noexcept {
-        return queue_;
+        EventQueueConfig out = queue_;
+        const std::size_t connections = server_.max_connections;
+        if (!queue_events_set_) {
+            out.max_events = detail::saturating_sum(connections, EventQueueConfig{}.max_events);
+        }
+        if (!queue_bytes_set_) {
+            out.max_bytes = detail::saturating_sum(
+                detail::saturating_product(connections, EventQueue::kReservedCloseBytes),
+                EventQueueConfig{}.max_bytes);
+        }
+        return out;
     }
 
     /// True when the host wants to be asked before each upgrade (handshake_hook).
@@ -161,13 +202,15 @@ public:
     void apply_to(ServerBuilder& builder) const;
 
 private:
-    [[nodiscard]] std::optional<Result<void>> set_broker_key(std::string_view key,
-                                                             std::string_view value);
+    [[nodiscard]] std::optional<Result<void>> set_more_key(std::string_view key,
+                                                           std::string_view value);
     [[nodiscard]] Result<void> set_listen_host(std::string_view value);
     [[nodiscard]] Result<void> set_listen_port(std::string_view value);
     [[nodiscard]] Result<void> set_threads(std::string_view value);
     [[nodiscard]] Result<void> add_allow_origin(std::string_view value);
     [[nodiscard]] Result<void> set_allow_missing_origin(std::string_view value);
+    [[nodiscard]] Result<void> set_log_level(std::string_view value);
+    [[nodiscard]] Result<void> set_log_peer(std::string_view value);
     [[nodiscard]] Result<void> set_max_message_size(std::string_view value);
     [[nodiscard]] Result<void> set_max_frame_payload(std::string_view value);
     [[nodiscard]] Result<void> set_max_fragments(std::string_view value);
@@ -182,8 +225,11 @@ private:
     [[nodiscard]] Result<void> set_event_queue_bytes(std::string_view value);
     [[nodiscard]] Result<void> set_handshake_hook(std::string_view value);
     [[nodiscard]] Result<void> add_handshake_forward_header(std::string_view value);
+    [[nodiscard]] Result<void> add_trusted_proxy(std::string_view value);
+    [[nodiscard]] Result<void> set_client_ip_header(std::string_view value);
     [[nodiscard]] Result<void> set_handshake_decision_timeout_ms(std::string_view value);
     [[nodiscard]] Result<void> set_max_pending_handshakes(std::string_view value);
+    [[nodiscard]] Result<void> set_max_pending_send_bytes(std::string_view value);
     [[nodiscard]] Result<void> set_tls_cert(std::string_view value);
     [[nodiscard]] Result<void> set_tls_key(std::string_view value);
     [[nodiscard]] Result<void> add_tls_sni(std::string_view value);
@@ -205,6 +251,7 @@ private:
     // Ordered by size, largest first, so the padding analyzer is satisfied (ServerConfig and the
     // strings first, the small integers and flags last).
     ServerConfig server_;
+    LogLevel log_level_ = LogLevel::Info;  ///< ADR-0037: the logger's filter, not the server's
     BrokerConfig broker_;
     EventQueueConfig queue_;
     std::vector<TlsSniSetting> tls_sni_;
@@ -218,6 +265,8 @@ private:
     std::optional<std::uint16_t> admin_port_;    // set = the admin listener is on
     std::optional<std::uint16_t> publish_port_;  // set = the publish listener is on
     std::uint16_t port_ = 0;
+    bool queue_events_set_ = false;  ///< event_queue_events was given: queue() must not derive it
+    bool queue_bytes_set_ = false;   ///< event_queue_bytes was given: queue() must not derive it
     bool handshake_hook_ = false;
     bool broker_enabled_ = false;
     bool deflate_enabled_ = false;
