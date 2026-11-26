@@ -1,6 +1,6 @@
 # ADR-0039: The publish token must be a generated one
 
-- Status: **Proposed** (2026-11-26; the project owner chose the scope in chat the same day: a hard requirement in 1.1, not a warning; the owner moves it to Accepted). Amends ADR-0028 section 3 ("the token is required").
+- Status: **Accepted** (2026-11-26, by the project owner in chat; the owner also chose the scope: a hard requirement in 1.1, not a warning). Amends ADR-0028 section 3 ("the token is required").
 - Date: 2026-11-26
 - Deciders: project owner, maintainer assistant
 

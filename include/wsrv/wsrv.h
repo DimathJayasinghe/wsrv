@@ -131,6 +131,10 @@ WSRV_API void wsrv_config_free(wsrv_config *config); /* NULL is fine */
  *                        loop, default 67108864 (1 .. 1073741824); over it a send returns
  *                        WSRV_ERR_BACKPRESSURE (wait and retry), a message larger than the whole
  *                        budget WSRV_ERR_INVALID_ARGUMENT
+ *   max_buffered_bytes   the whole server: the most bytes its connections may hold in partial
+ *                        inbound messages and outbound queues together, default 1073741824
+ *                        (1 .. 1099511627776); above it new clients get a 503 and the connected
+ *                        ones are left alone (ADR-0040)
  *   tls_cert             path of the server certificate chain (PEM, certificate first)
  *   tls_key              path of its private key (PEM, not readable by "others"; no passphrase)
  *                        Setting either asks for wss://: connections are then TLS only (1.2 and

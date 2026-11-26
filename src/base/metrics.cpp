@@ -73,6 +73,7 @@ constexpr std::array<MetricInfo, kMetricCount> kInfo{{
                        "Connections by outcome at accept and handshake."),
     connections_series("rejected_ip_rate", "Connections by outcome at accept and handshake."),
     connections_series("rejected_ip_table", "Connections by outcome at accept and handshake."),
+    connections_series("rejected_buffer_budget", "Connections by outcome at accept and handshake."),
     connections_series("handshake_failed", "Connections by outcome at accept and handshake."),
     messages_series("in", "text"),
     messages_series("in", "binary"),
@@ -195,6 +196,18 @@ std::string render_prometheus(const MetricsSnapshot& snapshot, const MetricsGaug
             "wsrv_connections_current", "Connections currently open.", true, "", "", "", ""});
     out += "wsrv_connections_current ";
     append_number(out, gauges.connections_current);
+    out += '\n';
+    append_header(
+        out,
+        MetricInfo{"wsrv_buffered_bytes",
+                   "Bytes held in partial inbound messages and outbound queues (ADR-0040).",
+                   true,
+                   "",
+                   "",
+                   "",
+                   ""});
+    out += "wsrv_buffered_bytes ";
+    append_number(out, gauges.buffered_bytes);
     out += '\n';
     std::string_view previous;
     for (std::size_t i = 0; i < kMetricCount; ++i) {

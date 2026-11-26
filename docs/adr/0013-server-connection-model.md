@@ -28,4 +28,4 @@ The outbound queue bound is `OutboundConfig::max_queued_bytes`. When `send_*` re
 + `server` may now include `http` directly (ARCHITECTURE section 2.1, `tools/check_includes.py`, module graph): it configures the request parser limits (`HttpLimits`) that `ServerConfig` carries. It already depended on `http` through `protocol`; the edge is now explicit.
 + Teardown ordering is one rule, testable with ASAN. Handlers cannot crash the loop. The unstable API can change freely until 1.0-rc.
 - `defer()` is a small `net` addition (reviewed as such). The catch-all is a deliberate, documented exception to "no catch(...)"; it never swallows silently.
-- Per-IP caps, handshake rate limits and the global buffered-bytes budget (`LimitsEnforcer`) are **not** in M6; only the global connection cap is. They land in M10.
+- Per-IP caps, handshake rate limits and the global buffered-bytes budget (`LimitsEnforcer`) are **not** in M6; only the global connection cap is. They land in M10 (per-IP caps and handshake rates did, ADR-0021; the global buffered-bytes budget landed in 1.1, ADR-0040).

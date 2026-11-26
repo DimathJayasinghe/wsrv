@@ -23,6 +23,7 @@ enum class Metric : std::uint8_t {
     RejectedIpConnections,
     RejectedIpRate,
     RejectedIpTable,
+    RejectedBufferBudget,
     HandshakeFailed,
     // wsrv_messages_total{direction,type}
     MessagesInText,
@@ -167,6 +168,7 @@ private:
 /// Values that are state, not events.
 struct MetricsGauges {
     std::uint64_t connections_current = 0;
+    std::uint64_t buffered_bytes = 0;  ///< what the connections hold together (ADR-0040)
 };
 
 /// The text of the `/metrics` page never exceeds this (the enumeration is fixed and every value

@@ -1,6 +1,6 @@
 # ADR-0038: A TCP transport for the IPC link
 
-- Status: **Proposed** (2026-11-26; built at the project owner's request, the owner moves it to Accepted). Amended 2026-11-26, before the first release, after a security audit of the merged slices: sections 3 and 5 and slice 4.
+- Status: **Accepted** (2026-11-26, by the project owner in chat; built at the owner's request). Amended 2026-11-26, before the first release, after a security audit of the merged slices: sections 3 and 5 and slice 4.
 - Date: 2026-11-26
 - Deciders: project owner, maintainer assistant
 

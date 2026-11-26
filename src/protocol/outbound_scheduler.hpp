@@ -84,6 +84,12 @@ public:
         return queued_;
     }
 
+    /// Bytes waiting for the peer to take them, wherever they wait: the queue (charged against
+    /// max_queued_bytes) plus what is already framed in the wire buffer and not yet written. A
+    /// client that reads nothing keeps its first message in the wire buffer, so queued_bytes()
+    /// alone under-counts (ADR-0040).
+    [[nodiscard]] std::size_t held_bytes() const noexcept;
+
     /// Queue a Ping. One may wait at a time: Error{Backpressure} if one is unsent,
     /// Error{InvalidArgument} if payload > 125 bytes, Error{Closing} after queue_close().
     [[nodiscard]] Result<void> queue_ping(ByteView payload);

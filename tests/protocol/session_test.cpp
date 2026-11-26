@@ -166,6 +166,55 @@ TEST(Session, APingBetweenFragmentsWithASplitCharacterIsAnsweredAndTheMessageCom
     EXPECT_EQ(rig.take_output().frames, (std::vector<WireFrame>{{Opcode::Pong, true, "x"}}));
 }
 
+// ADR-0040: the bytes a peer can make a session hold on the inbound side are the message it has
+// not finished. They are counted while the message is partial and not once it was delivered (the
+// assembler keeps the delivered bytes until the next call, but they are no longer held for anyone).
+TEST(Session, BufferedInputBytesCountsAPartialMessageAndForgetsItOnceDelivered) {
+    Rig rig;
+    EXPECT_EQ(rig.session().buffered_input_bytes(), 0U);
+    EXPECT_TRUE(rig.feed(client_frame(Opcode::Binary, false, std::string(1000, 'a'))).empty());
+    EXPECT_EQ(rig.session().buffered_input_bytes(), 1000U);
+    EXPECT_TRUE(rig.feed(client_frame(Opcode::Continuation, false, std::string(500, 'b'))).empty());
+    EXPECT_EQ(rig.session().buffered_input_bytes(), 1500U);
+    const auto events = rig.feed(client_frame(Opcode::Continuation, true, "cc"));
+    ASSERT_EQ(events.size(), 1U);
+    EXPECT_EQ(events[0].data.size(), 1502U);
+    EXPECT_EQ(rig.session().buffered_input_bytes(), 0U) << "delivered: held for nobody";
+}
+
+// The outbound side counts what is waiting to be written, wherever it waits: in the queue, or
+// already framed in the wire buffer (a message moves there as soon as the transport asks for
+// output, and a client that reads nothing keeps it there).
+TEST(Session, BufferedOutputBytesCountsAMessageUntilItIsWrittenAndNotAfter) {
+    Rig rig;
+    EXPECT_EQ(rig.session().buffered_output_bytes(), 0U);
+    ASSERT_TRUE(rig.session().send_text(std::string(3000, 'x')).has_value());
+    EXPECT_GE(rig.session().buffered_output_bytes(), 3000U) << "queued";
+    const wsrv::ByteView framed = rig.session().pending_output();  // the transport asks for output
+    ASSERT_FALSE(framed.empty());
+    EXPECT_GE(rig.session().buffered_output_bytes(), 3000U) << "framed, still unwritten";
+    rig.session().consume_output(framed.size() / 2);
+    EXPECT_GE(rig.session().buffered_output_bytes(), framed.size() - framed.size() / 2);
+    rig.session().consume_output(framed.size() - framed.size() / 2);
+    EXPECT_EQ(rig.session().buffered_output_bytes(), 0U) << "written";
+}
+
+TEST(Session, ASingleFrameMessageThatFitsInOneReadIsNeverCharged) {
+    Rig rig;
+    const auto events = rig.feed(client_frame(Opcode::Text, true, std::string(4000, 'x')));
+    ASSERT_EQ(events.size(), 1U);
+    EXPECT_EQ(rig.session().buffered_input_bytes(), 0U);
+}
+
+TEST(Session, ADiscardedPartialMessageIsNoLongerCharged) {  // a Close mid-message drops it
+    Rig rig;
+    EXPECT_TRUE(rig.feed(client_frame(Opcode::Binary, false, std::string(2000, 'a'))).empty());
+    ASSERT_EQ(rig.session().buffered_input_bytes(), 2000U);
+    ASSERT_TRUE(rig.session().close(CloseCode::Normal, "").has_value());
+    const auto after = rig.feed(client_frame(Opcode::Continuation, true, "z"));
+    EXPECT_EQ(rig.session().buffered_input_bytes(), 0U) << after.size() << " events followed";
+}
+
 TEST(Session, AnUnsolicitedPongIsSurfacedAndAnswersNothing) {  // EC-C03
     Rig rig;
     EXPECT_EQ(rig.feed(client_frame(Opcode::Pong, true, "?")), (std::vector<Seen>{pong("?")}));

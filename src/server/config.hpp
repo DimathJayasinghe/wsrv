@@ -32,6 +32,12 @@ struct ReadBudget {
     std::size_t max_bytes_per_event = std::size_t{64} * 1024;
 };
 
+/// The budget for the bytes all connections buffer together (ADR-0040): 1 GiB by default, at most
+/// 1 TiB. wsrv targets 64-bit hosts (epoll, Linux).
+static_assert(sizeof(std::size_t) >= 8, "wsrv targets 64-bit hosts");
+inline constexpr std::size_t kDefaultMaxBufferedBytes = std::size_t{1} << 30;
+inline constexpr std::size_t kMaxConfiguredBufferedBytes = std::size_t{1} << 40;
+
 /// Everything configurable about one server, as plain data. Defaults are REQUIREMENTS section 4.
 /// Build it with ServerBuilder (which calls validate() and throws ConfigError); nothing outside
 /// the composition root constructs a Server from an unvalidated config.
@@ -91,6 +97,10 @@ struct ServerConfig {
     /// Per loop: payload bytes of direct sends (SessionHandle::send_text / send_binary) that may
     /// wait for the loop at once (ADR-0032). 1 .. kMaxConfiguredQueue; no unlimited value.
     std::size_t max_pending_send_bytes = kDefaultMaxPendingSendBytes;
+    /// The whole server: the most bytes its connections may hold in partial inbound messages and
+    /// outbound queues together before new clients are refused with a 503 (ADR-0040). A soft cap:
+    /// connections that exist are left alone. 1 .. kMaxConfiguredBufferedBytes; no unlimited value.
+    std::size_t max_buffered_bytes = kDefaultMaxBufferedBytes;
 };
 
 /// Hard ceilings (SECURITY_DESIGN section 3): a misconfiguration is rejected, never honoured.

@@ -34,7 +34,8 @@ RestartSec=2
 
 # One descriptor per connection plus a few: size this above max_connections (docs/OPERATIONS.md section 4).
 LimitNOFILE=1048576
-# MemoryMax=2G      # uncomment and size from max_connections x memory per connection
+# MemoryMax=2G      # uncomment and size from max_connections x memory per connection; then set
+#                   # WSRVD_MAX_BUFFERED_BYTES to about half of it (docs/OPERATIONS.md section 1.2.3)
 
 # Hardening (docs/OPERATIONS.md section 5). wsrvd needs only its sockets and, for TLS, to read its key.
 NoNewPrivileges=yes

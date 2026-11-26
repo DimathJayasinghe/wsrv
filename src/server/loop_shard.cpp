@@ -66,7 +66,8 @@ LoopShard::LoopShard(Key /*unused*/,
                                                                      shared_.decider,
                                                                      shared_.pending,
                                                                      &bank_,
-                                                                     shared_.ip_limits});
+                                                                     shared_.ip_limits,
+                                                                     &shared_.buffered});
 }
 
 LoopShard::~LoopShard() {

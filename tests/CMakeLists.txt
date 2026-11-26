@@ -54,6 +54,8 @@ wsrv_add_test(NAME server_ip_limits_test SOURCES server/ip_limits_test.cpp LINK 
 wsrv_add_test(NAME server_client_ip_test SOURCES server/client_ip_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_client_ip_server_test SOURCES server/client_ip_server_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_ip_limits_server_test SOURCES server/ip_limits_server_test.cpp LINK wsrv::server)
+wsrv_add_test(NAME server_buffer_ledger_test SOURCES server/buffer_ledger_test.cpp LINK wsrv::server)
+wsrv_add_test(NAME server_buffer_budget_server_test SOURCES server/buffer_budget_server_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_metrics_server_test SOURCES server/metrics_server_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_admin_http_test SOURCES server/admin_http_test.cpp LINK wsrv::server)
 wsrv_add_test(NAME server_publish_http_test SOURCES server/publish_http_test.cpp LINK wsrv::server)

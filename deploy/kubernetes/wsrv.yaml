@@ -17,6 +17,10 @@ data:
   # The ingress controller's pod network, so per-IP limits count real clients (ADR-0029). Adjust to your cluster.
   WSRVD_TRUSTED_PROXY: "10.0.0.0/8"
   WSRVD_MAX_CONNECTIONS: "10000"
+  # The bytes all connections may hold in partial messages and unwritten output before new clients get a 503
+  # (ADR-0040). The default is 1 GiB, which is this pod's whole memory limit: keep it at about a quarter to a half
+  # of the limit below.
+  WSRVD_MAX_BUFFERED_BYTES: "268435456"
   # /healthz, /readyz and /metrics for the kubelet and Prometheus; protected by the NetworkPolicy below.
   WSRVD_ADMIN_HOST: "0.0.0.0"
   WSRVD_BROKER: "true"

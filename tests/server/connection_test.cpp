@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <memory>
@@ -138,7 +139,8 @@ struct ConnectionTest : public ::testing::Test {
     std::vector<std::byte> scratch = std::vector<std::byte>(16 * 1024);
     FakeTransport* transport = nullptr;
     std::unique_ptr<Connection> conn;
-    wsrv::CounterBank bank;  // what the connection counts (ADR-0023)
+    wsrv::CounterBank bank;                // what the connection counts (ADR-0023)
+    std::atomic<std::size_t> buffered{0};  // the shared buffered-bytes counter (ADR-0040)
 
     void open(std::size_t scratch_size = 16 * 1024) {
         scratch.resize(scratch_size);
@@ -155,7 +157,9 @@ struct ConnectionTest : public ::testing::Test {
                                                                     nullptr,
                                                                     nullptr,
                                                                     nullptr,
-                                                                    &bank});
+                                                                    &bank,
+                                                                    nullptr,
+                                                                    &buffered});
         ASSERT_TRUE(conn->start().has_value());
     }
     void readable() {
@@ -1822,6 +1826,69 @@ TEST_F(DeflateHookTest, ADifferentSubprotocolKeepsTheExtensionInThe101AndTheSess
     transport->feed(wsrv::ByteView{frame});
     readable();
     EXPECT_EQ(script.texts, std::vector<std::string>{"hi"});
+}
+
+// ---- the global buffered-bytes budget (ADR-0040) -----------------------------------------------
+
+TEST_F(ConnectionTest, APartialMessageIsChargedToTheBudgetAndGivenBackWhenItEnds) {
+    establish();
+    EXPECT_EQ(buffered.load(), 0U);
+    send_frame(Opcode::Binary, std::string(1000, 'a'), false);
+    EXPECT_EQ(buffered.load(), 1000U);
+    send_frame(Opcode::Continuation, std::string(500, 'b'), false);
+    EXPECT_EQ(buffered.load(), 1500U) << "the difference is charged, not the total again";
+    send_frame(Opcode::Continuation, "c", true);
+    EXPECT_EQ(buffered.load(), 0U) << "delivered: held for nobody";
+}
+
+TEST_F(ConnectionTest, AMessageThatArrivesWholeIsNeverCharged) {
+    establish();
+    send_frame(Opcode::Text, std::string(4000, 'x'));
+    EXPECT_EQ(buffered.load(), 0U);
+}
+
+TEST_F(ConnectionTest, OutputTheKernelDoesNotTakeIsChargedUntilItIsWritten) {
+    establish();
+    script.echo = true;
+    transport->set_write_capacity(0);  // a client that reads nothing
+    send_frame(Opcode::Text, std::string(3000, 'x'));
+    EXPECT_GE(buffered.load(), 3000U)
+        << "the queued echo counts, payload plus per-message overhead";
+    transport->set_write_capacity(static_cast<std::size_t>(-1));
+    conn->on_event(PollEvents::Write);
+    EXPECT_EQ(buffered.load(), 0U) << "written: no longer buffered";
+}
+
+// The reason the budget exists: however a connection ends, what it charged comes back, or the
+// counter only grows and the server ends up refusing everyone.
+TEST_F(ConnectionTest, TheChargeIsGivenBackWhenThePeerHangsUp) {
+    establish();
+    send_frame(Opcode::Binary, std::string(2000, 'a'), false);
+    ASSERT_EQ(buffered.load(), 2000U);
+    transport->feed_eof();
+    readable();
+    EXPECT_TRUE(conn->finished());
+    EXPECT_EQ(buffered.load(), 0U) << "before the table destroys the connection";
+}
+
+TEST_F(ConnectionTest, TheChargeIsGivenBackWhenTheServerAbortsTheConnection) {
+    establish();
+    send_frame(Opcode::Binary, std::string(2000, 'a'), false);
+    ASSERT_EQ(buffered.load(), 2000U);
+    conn->abort();
+    EXPECT_EQ(buffered.load(), 0U);
+}
+
+TEST_F(ConnectionTest, TheChargeIsGivenBackWhenAConnectionIsDestroyedWhileItStillHoldsBytes) {
+    establish();
+    script.echo = true;
+    transport->set_write_capacity(0);
+    send_frame(Opcode::Text,
+               std::string(1000, 'x'));  // the echo waits for a client that reads nothing
+    send_frame(Opcode::Binary, std::string(2000, 'a'), false);  // and a message is half way in
+    ASSERT_GE(buffered.load(), 3000U) << "both a partial message and queued output";
+    conn.reset();  // a server torn down with live clients
+    EXPECT_EQ(buffered.load(), 0U);
 }
 
 }  // namespace

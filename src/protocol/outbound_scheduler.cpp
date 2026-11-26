@@ -280,6 +280,11 @@ void OutboundScheduler::consume(std::size_t count) noexcept {
     wire_.consume(count);
 }
 
+std::size_t OutboundScheduler::held_bytes() const noexcept {
+    // Both are bounded (max_queued_bytes, and the wire buffer's own bound), so the sum cannot wrap.
+    return queued_ + wire_.size();
+}
+
 bool OutboundScheduler::has_pending() const noexcept {
     return !failed_ &&
            (wire_.size() > 0 || !pongs_.empty() || ping_.present || close_.present || data_ready());
