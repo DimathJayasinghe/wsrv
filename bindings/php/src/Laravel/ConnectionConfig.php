@@ -39,12 +39,12 @@ final class ConnectionConfig
         'activity_timeout' => ['activityTimeout', 'int'],
         'max_frame_bytes' => ['maxFrameBytes', 'int'],
         'max_channels_per_connection' => ['maxChannelsPerConnection', 'int'],
-        'max_pending_per_connection' => ['maxPendingPerConnection', 'int'],
         'max_presence_members' => ['maxPresenceMembers', 'int'],
         'max_channel_data_bytes' => ['maxChannelDataBytes', 'int'],
         'client_events' => ['clientEvents', 'bool'],
         'client_events_per_second' => ['clientEventsPerSecond', 'int'],
         'messages_per_second' => ['messagesPerSecond', 'int'],
+        'message_burst' => ['messageBurst', 'int'],
         'max_strikes' => ['maxStrikes', 'int'],
     ];
 

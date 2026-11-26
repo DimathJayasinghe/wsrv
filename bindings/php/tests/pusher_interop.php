@@ -282,6 +282,41 @@ $check('check_app_key: the right key (with the query pusher-js adds) is let in, 
     }
 });
 
+// ---- a page that joins all the channels it may in one burst, with the default limits --------------------
+
+$check('the defaults carry a page that subscribes to 64 channels at once, and the 65th is refused', function () use ($strict, $strictSettle) {
+    // pusher-js sends every subscribe back to back on load and after each reconnect, before the daemon
+    // has answered one. This is that, against a real daemon, with a GatewayConfig left at its defaults
+    // (quota 64, which is also the daemon's default broker_max_topics_per_connection).
+    // (This daemon runs the handshake hook, so its worker must be stepped while the upgrade waits.)
+    $pending = ws_request_async($strict['port'], '', '/app/' . KEY . '?protocol=7&client=js&version=8.4.0&flash=false');
+    $strictSettle();
+    [$ws, $head] = ws_finish($pending);
+    assertTrue(str_starts_with($head, 'HTTP/1.1 101'), 'upgrade: ' . strtok($head, "\r\n"));
+    $strictSettle();
+    assertSame('pusher:connection_established', pusher_read($ws)['event']);
+    for ($i = 0; $i < 64; $i++) {
+        pusher_send($ws, 'pusher:subscribe', ['channel' => "burst.$i"]);
+    }
+    $strictSettle(1.0);
+    $joined = [];
+    for ($i = 0; $i < 64; $i++) {
+        $f = pusher_read($ws);
+        assertSame('pusher_internal:subscription_succeeded', $f['event'], "answer $i: " . json_encode($f));
+        $joined[$f['channel']] = true;
+    }
+    assertSame(64, count($joined), 'every one of the 64 channels was answered once');
+    pusher_send($ws, 'pusher:subscribe', ['channel' => 'burst.64']);
+    $strictSettle();
+    $f = pusher_read($ws);
+    assertSame('pusher:subscription_error', $f['event']);
+    assertSame('LimitReached', $f['data']['type']);
+    pusher_send($ws, 'pusher:ping', []);
+    $strictSettle();
+    assertSame('pusher:pong', pusher_read($ws)['event'], 'the connection is still open and served');
+    fclose($ws);
+});
+
 proc_terminate($strict['process'], SIGTERM);
 
 fclose($a);

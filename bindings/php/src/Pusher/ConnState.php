@@ -15,12 +15,15 @@ final class ConnState
     public int $strikes = 0;
     /** The gateway asked the daemon to close it; further frames are ignored. */
     public bool $closing = false;
-    public int $messageWindow = 0;
-    public int $messageCount = 0;
+    /** The message limiter's bucket (Gateway::takeMessageToken): frames left in it, and when it was last refilled. */
+    public float $messageTokens;
+    public float $messageStamp;
     public int $whisperWindow = 0;
     public int $whisperCount = 0;
 
-    public function __construct(public readonly string $socketId)
+    public function __construct(public readonly string $socketId, float $messageTokens, float $now)
     {
+        $this->messageTokens = $messageTokens;
+        $this->messageStamp = $now;
     }
 }

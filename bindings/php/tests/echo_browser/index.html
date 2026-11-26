@@ -46,6 +46,20 @@ function next(channel, event, ms = 5000) {
     return within(new Promise((resolve) => channel.listen(event, resolve)), ms, event);
 }
 
+// A page that uses many channels subscribes to all of them in one burst when it connects, and again after every
+// reconnect, before the daemon has answered a single one. The default limits must carry that: 30 public and
+// 30 private channels are 60 of the 64 a connection may hold.
+const BULK = 30;
+function subscribeMany(echo) {
+    const channels = [];
+    for (let i = 0; i < BULK; i++) {
+        channels.push(echo.channel('bulk.' + i));
+        channels.push(echo.private('chat.' + (100 + i)));
+    }
+    return channels;
+}
+const allSubscribed = (channels) => channels.every((c) => c.subscription.subscribed);
+
 // POSTs to the application: JSON, with the CSRF token a Laravel page carries in its head.
 const csrf = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
 function post(path, body, headers = {}) {
@@ -179,15 +193,32 @@ async function check(name, body) {
         same(left, [{ name: 'Ada' }], 'leaving');
     });
 
+    await check('many channels at once: a page that joins 60 channels in one burst gets every one, with the default limits', async () => {
+        const M = mk('ada');
+        const channels = subscribeMany(M);   // in one tick, before the socket is even open
+        await Promise.all(channels.map(ready));
+        same(M.connectionStatus(), 'connected', 'the connection is still open');
+        same(allSubscribed(channels), true, 'every channel subscribed');
+        const first = next(channels[0], '.Bulk');                    // public bulk.0
+        const last = next(channels[channels.length - 1], '.Bulk');   // private chat.129
+        subscribers(await emit('bulk.0', 'Bulk', { i: 0 }), 1, 'subscribers of bulk.0');
+        subscribers(await emit('private-chat.129', 'Bulk', { i: 129 }), 1, 'subscribers of private-chat.129');
+        same(await first, { i: 0 }, 'public payload');
+        same(await last, { i: 129 }, 'private payload');
+        M.disconnect();
+    });
+
     await check('the daemon and the worker restart under connected browsers: Echo reconnects, re-authorizes and resubscribes', async () => {
         const C = mk('ada');
         const D = mk('bob');
+        const M = mk('ada');
+        const many = subscribeMany(M);   // 60 channels that must all come back in one burst
         await within((async () => { while (!C.socketId() || !D.socketId()) await sleep(50); })(), 5000, 'connect');
         const pc = C.private('chat.9');
         const pd = D.private('chat.9');
         const roomD = D.join('room.4');
         const roomC = C.join('room.4');
-        await Promise.all([ready(pc), ready(pd), ready(roomD), ready(roomC)]);
+        await Promise.all([ready(pc), ready(pd), ready(roomD), ready(roomC), ...many.map(ready)]);
         await sleep(300);
         same(roomD.subscription.members.count, 2, 'members before the restart');
         const before = C.socketId();
@@ -197,13 +228,18 @@ async function check(name, body) {
         await within((async () => { while (!(await (await fetch('/restarted')).json()).done) await sleep(100); })(), 40000, 'the restart');
         await within((async () => {
             while (!(C.connectionStatus() === 'connected' && D.connectionStatus() === 'connected' && C.socketId() !== before
-                && pc.subscription.subscribed && pd.subscription.subscribed && roomD.subscription.subscribed && roomC.subscription.subscribed)) await sleep(100);
+                && pc.subscription.subscribed && pd.subscription.subscribed && roomD.subscription.subscribed && roomC.subscription.subscribed
+                && M.connectionStatus() === 'connected' && allSubscribed(many))) await sleep(100);
         })(), 40000, 'both browsers reconnected and resubscribed');
         await sleep(300);
         same(roomD.subscription.members.count, 2, 'members after the restart');
         subscribers(await emit('private-chat.9', 'After', { n: 2 }), 2, 'subscribers after the restart');
         await sleep(300);
         same(got, [{ n: 2 }], 'event after the restart');
+        const afterM = next(many[many.length - 1], '.After');        // the last private channel of the many
+        subscribers(await emit('private-chat.129', 'After', { n: 3 }), 1, 'subscribers of private-chat.129 after the restart');
+        same(await afterM, { n: 3 }, 'event on a page with 60 channels after the restart');
+        M.disconnect();
     });
 
     document.getElementById('status').textContent = results.every((r) => r.ok) ? 'ALL OK' : 'FAILED';

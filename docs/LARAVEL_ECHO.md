@@ -2,7 +2,7 @@
 
 Use Laravel's own broadcasting (`broadcast(new Event)`, `Broadcast::channel()`, `routes/channels.php`, Laravel Echo in the browser) with `wsrvd` as the WebSocket server, so a Laravel app gets real-time events without a Node service, a paid broker or a second WebSocket server to learn.
 
-> **Status.** Planned for wsrv 1.2 (ADR-0042). The gateway, the broadcaster, encrypted channels and `php artisan wsrv:echo` are implemented and tested: unit tests, a run against a real `wsrvd` with raw WebSocket clients, a run of the glue inside a real Laravel 13 application, and and two runs of the real browser libraries (`pusher-js` 8.6.0 and `laravel-echo` 2.6.3, in Chrome): against a real `wsrvd`, and against a real Laravel 13 application with a real `wsrvd`. Section 9 says what each run covers and what was not run.
+> **Status.** Planned for wsrv 1.2 (ADR-0042). The gateway, the broadcaster, encrypted channels and `php artisan wsrv:echo` are implemented and tested: unit tests, a run against a real `wsrvd` with raw WebSocket clients, a run of the glue inside a real Laravel 13 application, and two runs of the real browser libraries (`pusher-js` 8.6.0 and `laravel-echo` 2.6.3, in Chrome): against a real `wsrvd`, and against a real Laravel 13 application with a real `wsrvd`. Section 9 says what each run covers and what was not run.
 
 If you want rooms without Echo (your own join messages, your own tickets), see [LARAVEL.md](LARAVEL.md). The two ways use the same daemon, but one daemon serves one of them at a time (one worker per daemon).
 
@@ -128,14 +128,16 @@ Every bound has a default for a public site, and each is range-checked. They are
 |---|---|---|
 | `activity_timeout` | 30 | seconds of silence before the browser pings |
 | `max_frame_bytes` | 16384 | a larger frame from a browser is a bad frame |
-| `max_channels_per_connection` | 64 | the daemon's own `broker_max_topics_per_connection` (config file, default 64) must be at least this |
-| `max_pending_per_connection` | 8 | subscriptions waiting for the daemon's answer |
+| `max_channels_per_connection` | 64 | joins on one connection, counting those still waiting for the daemon's answer; the daemon's own `broker_max_topics_per_connection` (config file, default 64) must be at least this |
 | `max_presence_members` | 100 | users in one presence channel (a user with two tabs counts once) |
 | `max_channel_data_bytes` | 2048 | the signed member data of a presence member |
 | `client_events` | true | allow whispers |
-| `client_events_per_second` | 10 | whispers per connection |
-| `messages_per_second` | 30 | all frames per connection |
-| `max_strikes` | 8 | bad frames before the connection is closed with 1008 |
+| `client_events_per_second` | 10 | whispers per connection per second; one over the rate is answered with `4301` and costs no strike |
+| `messages_per_second` | 30 | all frames from one connection, sustained (see "Why a burst" below) |
+| `message_burst` | `max_channels_per_connection` + 64 (128) | frames one connection may send at once; the configuration refuses less than `max_channels_per_connection` + 16 |
+| `max_strikes` | 8 | bad frames, and frames over the message rate, before the connection is closed with 1008 |
+
+**Why a burst.** `pusher-js` sends the subscribe for every channel of a page back to back, on load and again after every reconnect, before the daemon has answered a single one. The limit on all frames is therefore a *token bucket*: it holds `message_burst` frames and gets `messages_per_second` of them back every second, so a page with all of its 64 channels connects without an error, while a connection that keeps sending faster than the sustained rate is answered with `4301` and, after `max_strikes` of those, closed with 1008 (`pusher-js` reconnects by itself). A whisper over its own rate is only refused: a typing indicator that your application does not throttle must not cost a user the connection, and a real flood is stopped by the limit on all frames.
 
 A frame that is not valid JSON, has no event, carries a channel name wsrv cannot hold, or holds a number JSON cannot carry back out (such as `1e999`) is answered with Pusher's `4200` error and counts as a strike. A signature that does not verify is answered with `4009`.
 
@@ -153,11 +155,11 @@ A frame that is not valid JSON, has no event, carries a channel name wsrv cannot
 | Run | What it covers | Where |
 |---|---|---|
 | Unit tests (`php tests/run.php`) | frames, signatures (with Pusher's published vectors), presence, every limit, hostile input, a fuzz, the config checker | CI |
-| `php tests/pusher_interop.php WSRVD` | a real `wsrvd`, the gateway and raw WebSocket clients: join, private signatures, presence, whispers, `toOthers`, hostile frames, quotas, `check_app_key` | CI (`ctest -R php_pusher_interop`) |
+| `php tests/pusher_interop.php WSRVD` | a real `wsrvd`, the gateway and raw WebSocket clients: join, private signatures, presence, whispers, `toOthers`, hostile frames, quotas, `check_app_key`, and 64 channels subscribed in one burst with the default limits | CI (`ctest -R php_pusher_interop`) |
 | `php tests/laravel_check.php APP` | the driver, `/broadcasting/auth`, `Broadcast::channel()`, `broadcast()->toOthers()`, encrypted channels and the artisan command inside a real Laravel 13 application | by hand (needs an application with `vendor/`) |
 | `bash tests/echo_browser/laravel/run.sh` (settings in its header) | the same scenario with the whole product: a real Laravel 13 application (a copy of a skeleton is used, never modified) with its session, CSRF and `auth` middleware, `Broadcast::routes`, the `wsrv` driver through `broadcast(...)->toOthers()`, the documented `config/broadcasting.php`, `php artisan wsrv:echo` (its supervisor reconnects after the daemon restart by itself), a real `wsrvd`, and the real libraries in Chrome | by hand (needs a Laravel 11+ application on disk, the two npm bundles and a browser) |
-| `php tests/echo_browser/run.php WSRVD PUSHER_JS ECHO_JS` | the real `pusher-js` 8.6.0 and `laravel-echo` 2.6.3 in Chrome against a real `wsrvd`: connect, public, private (signature through an auth endpoint, and a refused one), presence `here`/`joining`/`leaving`, whispers, `toOthers`, encrypted channels decrypted in the browser, a join followed at once by a leave, a clean disconnect, and a restart of the daemon and the worker under connected browsers (Echo reconnects, re-authorizes and resubscribes) | by hand (needs the two npm packages and a browser) |
+| `php tests/echo_browser/run.php WSRVD PUSHER_JS ECHO_JS` | the real `pusher-js` 8.6.0 and `laravel-echo` 2.6.3 in Chrome against a real `wsrvd`: connect, public, private (signature through an auth endpoint, and a refused one), presence `here`/`joining`/`leaving`, whispers, `toOthers`, encrypted channels decrypted in the browser, a join followed at once by a leave, a clean disconnect, a page that joins 60 channels in one burst, and a restart of the daemon and the worker under connected browsers (Echo reconnects, re-authorizes and resubscribes, including that page's 60 channels) | by hand (needs the two npm packages and a browser) |
 
-The `run.php` variant uses a small stand-in for your Laravel routes (`tests/echo_browser/router.php`), so it needs no Laravel; `laravel/run.sh` runs the same page against a real application. Last runs: 11 of 11 checks passed in each (2026-11-27, Chrome, `wsrvd` built from this branch; the Laravel run on Laravel Framework 13.43.0).
+The `run.php` variant uses a small stand-in for your Laravel routes (`tests/echo_browser/router.php`), so it needs no Laravel; `laravel/run.sh` runs the same page against a real application. Last runs: 12 of 12 checks passed in each (2026-11-27, Chrome, `wsrvd` built from this branch; the Laravel run on Laravel Framework 13.43.0).
 
 **Not run:** Safari and Firefox; Echo's `pusher` broadcaster; Laravel 11 and 12 (13.43 was used; the broadcaster uses only the long-stable `Broadcaster` contract, and `laravel_check.php` runs against any version you have); more than a few connections (see [BENCHMARKS.md](BENCHMARKS.md) for what is measured, which does not include the Pusher gateway); `Echo.user()` and the watchlist, which are not supported.

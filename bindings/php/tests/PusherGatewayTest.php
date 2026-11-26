@@ -152,6 +152,10 @@ test('pusher config: a weak secret, an odd key or a nonsense bound is refused', 
     assertThrows(InvalidArgumentException::class, fn () => new GatewayConfig(GW_KEY, GW_SECRET, maxFrameBytes: 0));
     assertThrows(InvalidArgumentException::class, fn () => new GatewayConfig(GW_KEY, GW_SECRET, maxPresenceMembers: 0));
     assertThrows(InvalidArgumentException::class, fn () => new GatewayConfig(GW_KEY, GW_SECRET, messagesPerSecond: 0));
+    // a page must be able to resubscribe all its channels at once, so the burst cannot be smaller than the quota
+    assertThrows(InvalidArgumentException::class, fn () => new GatewayConfig(GW_KEY, GW_SECRET, maxChannelsPerConnection: 64, messageBurst: 70));
+    assertThrows(InvalidArgumentException::class, fn () => new GatewayConfig(GW_KEY, GW_SECRET, messageBurst: 0));
+    new GatewayConfig(GW_KEY, GW_SECRET, maxChannelsPerConnection: 64, messageBurst: 80);
     assertThrows(InvalidArgumentException::class, fn () => new GatewayConfig(GW_KEY, GW_SECRET, activityTimeout: 5));
 });
 
@@ -249,7 +253,7 @@ test('pusher gateway: a name wsrv cannot carry is refused before the daemon is a
 });
 
 test('pusher gateway: the channel quota of one connection is enforced, counting joins in progress', function () {
-    [$gw, $link] = gateway(['maxChannelsPerConnection' => 3, 'maxPendingPerConnection' => 8]);
+    [$gw, $link] = gateway(['maxChannelsPerConnection' => 3, 'messageBurst' => 20]);
     $sock = open_conn($gw, $link, 1);
     join_channel($gw, $link, 1, $sock, 'a');
     join_channel($gw, $link, 1, $sock, 'b');
@@ -260,13 +264,30 @@ test('pusher gateway: the channel quota of one connection is enforced, counting 
     assertSame(3, count($link->subscribed));
 });
 
-test('pusher gateway: joins in progress are bounded', function () {
-    [$gw, $link] = gateway(['maxChannelsPerConnection' => 100, 'maxPendingPerConnection' => 2]);
+test('pusher gateway: a page that joins every channel it may at once, with the default limits, gets them all', function () {
+    // pusher-js sends all its subscribes back to back, on load and again after every reconnect, before
+    // the daemon has answered any of them. Nothing in the defaults may turn that into an error.
+    [$gw, $link] = gateway();
     $sock = open_conn($gw, $link, 1);
-    foreach (['a', 'b', 'c', 'd'] as $c) {
-        $gw->received(1, subscribe_frame($c, $sock));
+    $max = (new GatewayConfig(GW_KEY, GW_SECRET))->maxChannelsPerConnection;
+    $requests = [];
+    for ($i = 0; $i < $max; $i++) {
+        $gw->received(1, subscribe_frame("bulk.$i", $sock));
+        $requests[] = $link->lastRequest();
     }
-    assertSame(2, count($link->subscribed));
+    $gw->received(1, '{"event":"pusher:ping"}');
+    $gw->received(1, '{"event":"pusher:ping"}');
+    assertSame($max, count($link->subscribed), 'every join was passed to the daemon');
+    foreach ($requests as $request) {
+        $gw->status($request, StatusCode::OK);
+    }
+    $events = array_count_values(array_column($link->frames(1), 'event'));
+    assertSame($max, $events['pusher_internal:subscription_succeeded'] ?? 0, 'every join succeeded');
+    assertTrue(!isset($events['pusher:error']) && !isset($events['pusher:subscription_error']), 'no error: ' . json_encode($events));
+    assertSame([], $link->closed, 'the connection is still open');
+    assertSame($max, $gw->channelsOf(1));
+    // one more is over the quota, as it should be
+    $gw->received(1, subscribe_frame('one-too-many', $sock));
     assertSame('LimitReached', $link->lastFrame(1)['data']['type']);
 });
 
@@ -515,19 +536,70 @@ test('pusher gateway: events that are neither pusher: nor client- are ignored wi
     assertSame([], $link->published);
 });
 
-test('pusher gateway: messages are rate limited per connection and the window moves on', function () {
-    [$gw, $link, $clock] = gateway(['messagesPerSecond' => 3, 'maxStrikes' => 100]);
+test('pusher gateway: messages are limited by a bucket: a burst is allowed, the rate refills it, it never holds more than the burst', function () {
+    [$gw, $link, $clock] = gateway(['messagesPerSecond' => 3, 'messageBurst' => 17, 'maxChannelsPerConnection' => 1, 'maxStrikes' => 1000]);
     open_conn($gw, $link, 1);
-    for ($i = 0; $i < 3; $i++) {
+    $ping = function () use ($gw, $link): string {
         $gw->received(1, '{"event":"pusher:ping"}');
+        return $link->lastFrame(1)['event'];
+    };
+    for ($i = 0; $i < 17; $i++) {
+        assertSame('pusher:pong', $ping(), "burst message $i");
     }
-    assertSame('pusher:pong', $link->lastFrame(1)['event']);
     $gw->received(1, '{"event":"pusher:ping"}');
     $f = $link->lastFrame(1);
     assertSame(4301, $f['data']['code']);
-    $clock->now += 1.0;
+    assertSame('Rate limit exceeded', $f['data']['message']);
+    $clock->now += 1.0;                                   // 3 tokens come back
+    for ($i = 0; $i < 3; $i++) {
+        assertSame('pusher:pong', $ping(), "refilled message $i");
+    }
+    assertSame('pusher:error', $ping(), 'the fourth is over the rate again');
+    $clock->now += 3600.0;                                // an hour of silence is not an hour of credit
+    for ($i = 0; $i < 17; $i++) {
+        assertSame('pusher:pong', $ping(), "after the pause $i");
+    }
+    assertSame('pusher:error', $ping(), 'only the burst, not more');
+});
+
+test('pusher gateway: a flood that keeps going past the burst is closed, a client that stays within the rate never is', function () {
+    [$gw, $link, $clock] = gateway(['messagesPerSecond' => 3, 'messageBurst' => 17, 'maxChannelsPerConnection' => 1, 'maxStrikes' => 4]);
+    open_conn($gw, $link, 1);
+    open_conn($gw, $link, 2);
+    for ($i = 0; $i < 17; $i++) {
+        $gw->received(1, '{"event":"pusher:ping"}');
+    }
+    assertSame([], $link->closed, 'the burst itself costs nothing');
+    for ($i = 0; $i < 4; $i++) {
+        $gw->received(1, '{"event":"pusher:ping"}');
+    }
+    assertSame([[1, 1008, 'protocol violations']], $link->closed, 'four refused messages are four strikes');
+    for ($i = 0; $i < 100; $i++) {                         // 3 per second for a while: always within the rate
+        $clock->now += 1.0;
+        $gw->received(2, '{"event":"pusher:ping"}');
+        $gw->received(2, '{"event":"pusher:ping"}');
+        $gw->received(2, '{"event":"pusher:ping"}');
+    }
+    assertSame(1, count($link->closed));
+});
+
+test('pusher gateway: a clock that steps back gives a connection no credit, and time moving on from there does', function () {
+    // The real clock is monotonic; this is the guard for one that is not (and for a test double).
+    [$gw, $link, $clock] = gateway(['messagesPerSecond' => 3, 'messageBurst' => 17, 'maxChannelsPerConnection' => 1, 'maxStrikes' => 1000]);
+    open_conn($gw, $link, 1);
+    for ($i = 0; $i < 17; $i++) {
+        $gw->received(1, '{"event":"pusher:ping"}');
+    }
+    $clock->now -= 600.0;
     $gw->received(1, '{"event":"pusher:ping"}');
-    assertSame('pusher:pong', $link->lastFrame(1)['event']);
+    assertSame('pusher:error', $link->lastFrame(1)['event'], 'going back in time is not a refill');
+    $clock->now += 1.0;
+    for ($i = 0; $i < 3; $i++) {
+        $gw->received(1, '{"event":"pusher:ping"}');
+        assertSame('pusher:pong', $link->lastFrame(1)['event'], "refilled message $i");
+    }
+    $gw->received(1, '{"event":"pusher:ping"}');
+    assertSame('pusher:error', $link->lastFrame(1)['event'], 'one second is three messages, no more');
 });
 
 test('pusher gateway: nothing the gateway sends or throws contains the app secret', function () {
@@ -542,7 +614,7 @@ test('pusher gateway: nothing the gateway sends or throws contains the app secre
 });
 
 test('pusher gateway: random and hostile frames never throw and never break a bound', function () {
-    [$gw, $link, $clock] = gateway(['maxChannelsPerConnection' => 4, 'maxPendingPerConnection' => 2, 'maxStrikes' => 1_000_000, 'messagesPerSecond' => 1_000_000]);
+    [$gw, $link, $clock] = gateway(['maxChannelsPerConnection' => 4, 'maxStrikes' => 1_000_000, 'messagesPerSecond' => 1_000_000, 'messageBurst' => 1_000_000]);
     $sock = open_conn($gw, $link, 1);
     mt_srand(7);
     $events = ['pusher:subscribe', 'pusher:unsubscribe', 'pusher:ping', 'client-x', 'pusher:bogus', 'x', 5, null, ['a'], ''];
@@ -572,6 +644,7 @@ test('pusher gateway: random and hostile frames never throw and never break a bo
         }
     }
     assertTrue($gw->channelsOf(1) <= 4, 'channel quota held: ' . $gw->channelsOf(1));
+    assertTrue($gw->pendingCount() <= 4, 'joins in progress are bounded by the quota: ' . $gw->pendingCount());
     $gw->closed(1);
     assertSame(0, $gw->pendingCount(), 'no join survives its connection');
     assertSame(0, $gw->presenceChannels(), 'no member survives its connection');
@@ -655,6 +728,18 @@ test('pusher gateway: whispers can be switched off, and are rate limited', funct
     assertSame(3, count($link->published));
 });
 
+test('pusher gateway: a whisper over its rate is refused with an error and costs no strike (as Reverb does)', function () {
+    // A fast typist whose application does not throttle `typing` must not be disconnected for it.
+    [$gw, $link] = gateway(['clientEventsPerSecond' => 1, 'maxStrikes' => 2]);
+    $s1 = open_conn($gw, $link, 1);
+    join_channel($gw, $link, 1, $s1, 'private-a');
+    for ($i = 0; $i < 50; $i++) {
+        $gw->received(1, whisper('private-a', 'client-x', ['i' => $i]));
+    }
+    assertSame(4301, $link->lastFrame(1)['data']['code']);
+    assertSame([], $link->closed, 'the connection is still open');
+});
+
 test('pusher gateway: a whisper cannot forge the fields the server adds', function () {
     [$gw, $link] = gateway();
     $s1 = open_conn($gw, $link, 1);
@@ -712,7 +797,8 @@ test('pusher gateway: presence user_info that cannot be encoded again is refused
     assertSame([], $link->subscribed);
 });
 
-// ---- leaving while a join is still on its way (an SPA does join() then leave() on a route change) --------
+// ---- leaving before the daemon has answered the join (pusher-js itself waits for the success first, but
+// ---- another client may send the unsubscribe early) ---------------------------------------------------------
 
 test('pusher gateway: unsubscribing before the daemon answers cancels the join and leaves the room again', function () {
     [$gw, $link] = gateway();

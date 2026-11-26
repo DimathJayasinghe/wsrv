@@ -39,7 +39,13 @@ final class Gateway
 
     /** @var array<int, ConnState> */
     private array $conns = [];
-    /** @var array<int, array{conn: int, channel: string, userId: ?string, info: ?array, cancelled: bool}> */
+    /**
+     * Joins waiting for the daemon's answer, by request id. Bounded: each one counts against its
+     * connection's channel quota, so there are never more than connections x maxChannelsPerConnection,
+     * and a connection that sends faster than its message rate is refused before it can add one.
+     *
+     * @var array<int, array{conn: int, channel: string, userId: ?string, info: ?array, cancelled: bool}>
+     */
     private array $pending = [];
     private readonly PresenceTable $presence;
     private readonly \Closure $clock;
@@ -51,7 +57,8 @@ final class Gateway
         ?callable $clock = null,
     ) {
         $this->presence = new PresenceTable($config->maxPresenceMembers);
-        $this->clock = $clock !== null ? \Closure::fromCallable($clock) : static fn (): float => microtime(true);
+        // Monotonic, so a step of the wall clock gives no credit to the limiters and takes none away.
+        $this->clock = $clock !== null ? \Closure::fromCallable($clock) : static fn (): float => hrtime(true) / 1e9;
     }
 
     /**
@@ -93,7 +100,7 @@ final class Gateway
 
     public function opened(int $conn): void
     {
-        $state = new ConnState(SocketId::generate($conn));
+        $state = new ConnState(SocketId::generate($conn), (float) $this->config->messageBurst, ($this->clock)());
         $this->conns[$conn] = $state;
         $this->link->send($conn, Frame::encode('pusher:connection_established', [
             'socket_id' => $state->socketId,
@@ -107,7 +114,7 @@ final class Gateway
         if ($state === null || $state->closing) {
             return;
         }
-        if ($this->overLimit($state->messageWindow, $state->messageCount, $this->config->messagesPerSecond)) {
+        if (!$this->takeMessageToken($state)) {
             $this->error($conn, self::ERR_CLIENT_EVENTS, 'Rate limit exceeded');
             $this->strike($conn, $state);
             return;
@@ -241,10 +248,6 @@ final class Gateway
                 $this->subscriptionError($conn, $channel, 'LimitReached', 'Connection is over channel quota');
                 return;
             }
-            if (count($state->pending) >= $this->config->maxPendingPerConnection) {
-                $this->subscriptionError($conn, $channel, 'LimitReached', 'Too many subscriptions in progress');
-                return;
-            }
         }
 
         $kind = ChannelName::kind($channel);
@@ -372,8 +375,9 @@ final class Gateway
             return;
         }
         if (!array_key_exists($channel, $state->channels)) {
-            // A join still waiting for the daemon (an SPA joins and leaves on a route change): mark it,
-            // and status() takes the connection out of the room again when the answer comes.
+            // A join still waiting for the daemon (pusher-js waits for the success before it unsubscribes,
+            // but another client may not): mark it, and status() takes the connection out of the room
+            // again when the answer comes.
             foreach (array_keys($state->pending) as $request) {
                 if ($this->pending[$request]['channel'] === $channel) {
                     $this->pending[$request]['cancelled'] = true;
@@ -422,8 +426,10 @@ final class Gateway
             return;
         }
         if ($this->overLimit($state->whisperWindow, $state->whisperCount, $this->config->clientEventsPerSecond)) {
+            // Refused, not punished (Reverb answers a client over its rate with this error alone): a typing
+            // indicator that an application does not throttle must not cost its user the connection. A real
+            // flood is ended by the limiter on all frames, which does strike.
             $this->error($conn, self::ERR_CLIENT_EVENTS, 'Rate limit exceeded');
-            $this->strike($conn, $state);
             return;
         }
         // The user id is the signed one the connection joined with, never one the browser sent.
@@ -456,6 +462,26 @@ final class Gateway
             $state->closing = true;
             $this->link->close($conn, self::CLOSE_POLICY, 'protocol violations');
         }
+    }
+
+    /**
+     * Take one frame from the connection's bucket, which holds up to messageBurst and gets messagesPerSecond
+     * back each second. A page that has just connected sends all its subscribes at once (the burst); one that
+     * keeps sending faster than the rate empties the bucket, is answered 4301 and collects strikes.
+     */
+    private function takeMessageToken(ConnState $state): bool
+    {
+        $now = ($this->clock)();
+        $state->messageTokens = min(
+            (float) $this->config->messageBurst,
+            $state->messageTokens + max(0.0, $now - $state->messageStamp) * $this->config->messagesPerSecond,
+        );
+        $state->messageStamp = $now;
+        if ($state->messageTokens < 1.0) {
+            return false;
+        }
+        $state->messageTokens -= 1.0;
+        return true;
     }
 
     /** Count one event in the current second; true if that is more than $limit. */

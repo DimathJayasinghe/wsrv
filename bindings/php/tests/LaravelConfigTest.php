@@ -18,6 +18,9 @@ test('laravel config: a complete connection builds the gateway, the publisher an
     assertSame(5, $c->gateway()->maxPresenceMembers);
     assertSame(false, $c->gateway()->clientEvents);
     assertSame(null, $c->encryption());
+    // the defaults carry a page that joins all 64 of its channels in one burst
+    assertSame(64, $c->gateway()->maxChannelsPerConnection);
+    assertSame(128, $c->gateway()->messageBurst);
     assertSame('/run/wsrv/ipc.sock', $c->ipcEndpoint());
     assertSame('', $c->ipcToken());
     assertSame(false, $c->checkAppKey());
@@ -28,6 +31,16 @@ test('laravel config: a typo in a key or an option is an error, not a silent def
     assertThrows(InvalidArgumentException::class, fn () => ConnectionConfig::fromArray(laravel_config(['options' => ['max_presence_member' => 5]])));
     assertThrows(InvalidArgumentException::class, fn () => ConnectionConfig::fromArray(laravel_config(['options' => ['max_presence_members' => '5']])));
     assertThrows(InvalidArgumentException::class, fn () => ConnectionConfig::fromArray(laravel_config(['options' => ['client_events' => 1]])));
+    // an option that was removed before release (the quota bounds joins in progress) is named, not ignored
+    assertThrows(InvalidArgumentException::class, fn () => ConnectionConfig::fromArray(laravel_config(['options' => ['max_pending_per_connection' => 8]])));
+});
+
+test('laravel config: the message burst is an option, and cannot be smaller than the channel quota allows', function () {
+    $c = ConnectionConfig::fromArray(laravel_config(['options' => ['max_channels_per_connection' => 10, 'message_burst' => 40, 'messages_per_second' => 5]]));
+    assertSame(40, $c->gateway()->messageBurst);
+    assertSame(5, $c->gateway()->messagesPerSecond);
+    assertSame(74, ConnectionConfig::fromArray(laravel_config(['options' => ['max_channels_per_connection' => 10]]))->gateway()->messageBurst);
+    assertThrows(InvalidArgumentException::class, fn () => ConnectionConfig::fromArray(laravel_config(['options' => ['max_channels_per_connection' => 64, 'message_burst' => 70]]))->gateway());
 });
 
 test('laravel config: missing or weak credentials are refused, and the message never contains the secret', function () {
