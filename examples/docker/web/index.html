@@ -139,6 +139,7 @@
     client.on('message', ({ data }) => line('in', `< ${typeof data === 'string' ? data : `[${data.byteLength ?? data.size} bytes]`}`));
     client.on('reconnecting', ({ attempt, delay }) => {
       show('wait', `reconnecting (attempt ${attempt})`);
+      if (attempt === 3) line('sys', 'still not connected: is the address right, and is the daemon up? Try: docker compose logs wsrvd (an origin_refused line means this page is opened from an address the daemon does not list)');
       line('sys', `the connection was lost; trying again in ${Math.round(delay)} ms`);
     });
     client.on('close', ({ code, reason, willRetry }) => {

@@ -43,8 +43,8 @@ wsrv is not the only way to push messages to browsers from PHP, and for many app
 
 | Your situation | Probably the best fit |
 |---|---|
-| A Laravel app where `broadcast(new Event)` and Laravel Echo should work by changing environment variables | [Laravel Reverb](https://reverb.laravel.com). wsrv is not a Broadcasting driver (you call `Wsrv\Publisher` yourself; [guide](docs/LARAVEL.md)). |
-| A PHP app, a modest number of connections, and you want everything in one PHP process | [Workerman](https://github.com/walkor/workerman) or [Swoole](https://github.com/swoole/swoole-src): one process, one language, and faster per core on echo ([numbers](docs/BENCHMARKS.md)). |
+| A Laravel app where `broadcast(new Event)` and Laravel Echo should work by changing environment variables | Laravel Reverb. wsrv is not a Broadcasting driver (you call `Wsrv\Publisher` yourself; [guide](docs/LARAVEL.md)). |
+| A PHP app, a modest number of connections, and you want everything in one PHP process | Workerman or Swoole: one process, one language, and faster per core on echo ([numbers](docs/BENCHMARKS.md)). |
 | A PHP app (Laravel, Symfony, plain) that wants connections, TLS, limits and metrics in a separate hardened daemon, a PHP worker that only reacts to events, and more throughput as cores are added | **wsrv** |
 | A language other than PHP | **wsrv**, through the [IPC protocol](docs/IPC_PROTOCOL.md) or the [C ABI](docs/BINDINGS.md). Only PHP has a ready-made worker client today. |
 

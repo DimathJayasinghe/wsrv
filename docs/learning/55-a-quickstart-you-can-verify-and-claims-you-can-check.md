@@ -13,9 +13,9 @@ wsrv at 1.0 was correct and well tested, but a newcomer had to read about ten do
 ## 1. A quickstart is a test you do not control
 The author's machine has the right Docker cache, the right ports free, the right image. A reader has none of that. So the quickstart was *run*, end to end, the way a reader would, and what went wrong is the lesson:
 
-- **A stale cached image** (the PHP worker image had an old `wsrv/client`) crash-looped with `Class "Wsrv\Supervisor" not found`. The fix for the quickstart: both PHP services build from one definition (`x-php-image` anchor in `compose.yaml`), pinned by the `WSRV_CLIENT` argument.
+- **A stale cached image** (the PHP worker image had an old `wsrv/client`) crash-looped with `Class "Wsrv\Supervisor" not found`. Compose reuses an image with the same name from an earlier run. The fix: both PHP services build from one definition (`x-php-image` anchor in `compose.yaml`, so the page's server costs no second build), `pull_policy: build` so a cached image is never reused, and `WSRV_CLIENT` to pin the PHP package.
 - **A busy port** (8080 was taken). The page therefore takes the daemon's address from an input field, and the hint says which environment variables to set.
-- **The Origin check** (RFC 6455 section 10.2) is on by default, so a page on `http://localhost:8000` is refused unless the daemon lists that exact origin. The compose file sets `WSRVD_ALLOW_ORIGIN` to match `WSRV_WEB_PORT`. A quickstart that disables a security default "to make it work" teaches the wrong thing.
+- **The Origin check** (RFC 6455 section 10.2) is on by default, so a page is refused unless the daemon lists its exact origin. `localhost` and `127.0.0.1` are different origins to a browser, so the compose file lists both, with the port of `WSRV_WEB_PORT`. After three failed reconnects the page tells you to read the daemon's log, where `origin_refused` names the cause. A quickstart that disables a security default "to make it work" teaches the wrong thing.
 - **Restart behaviour is the point.** The page has no special code for it; `clients/js` reconnects and joins its rooms again, and the log shows `closed: code 1001 (server shutting down)`, a retry in about half a second, `reconnected`, `joined room.1`. A thing you can watch is a thing you believe.
 
 How: bring the stack up in a scratch project name, drive the page in a real browser (connect, send, join, publish from a second process, restart the daemon), read the console, tear everything down, and delete any stand-in image you built so it cannot mask the real one later.
@@ -40,7 +40,7 @@ The README's "Is wsrv right for you?" table recommends Laravel Reverb for an app
 - **A demo server mistaken for a feature.** PHP's built-in server serves the page in the demo, bound to your loopback. It is said to be a demo convenience in the compose file and the README; the daemon never serves files.
 
 ## Exercises
-1. Change `WSRV_WEB_PORT` to 18000 and start the stack. What breaks if you forget the daemon's `WSRVD_ALLOW_ORIGIN`, and which log line tells you?
+1. Change `WSRV_WEB_PORT` to 18000 and start the stack. What breaks if you open the page as `http://127.0.0.1:18000` and the daemon lists only `localhost`, and which log line tells you?
 2. Add a fifth row to the "Is wsrv right for you?" table for a case you know. What evidence would you want in `EVIDENCE.md` before writing it?
 3. Pick one row of `EVIDENCE.md`, run its check on your machine, and compare with "last result". If they differ, which document do you fix?
 4. The page prints `data.byteLength ?? data.size` for binary messages. Why does it not try to decode them?

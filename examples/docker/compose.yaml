@@ -41,7 +41,8 @@ services:
       dockerfile: docker/wsrvd.Dockerfile
     # Every setting is WSRVD_<KEY> (ADR-0030); the image has a built-in default IPC socket (/run/wsrv/ipc.sock) and sets the listen address and port 8080.
     environment:
-      WSRVD_ALLOW_ORIGIN: http://localhost:${WSRV_WEB_PORT:-8000}   # the `web` page below; browsers must come from here
+      # The `web` page below, by either name a browser may use for your machine (a comma list: the key is repeatable).
+      WSRVD_ALLOW_ORIGIN: http://localhost:${WSRV_WEB_PORT:-8000},http://127.0.0.1:${WSRV_WEB_PORT:-8000}
       WSRVD_ALLOW_MISSING_ORIGIN: "true"             # command-line clients (wscat, websocat); remove in production
       WSRVD_BROKER: "true"                           # rooms
       WSRVD_PUBLISH_HOST: 0.0.0.0                    # reachable inside the compose network only (see expose below)
@@ -60,6 +61,7 @@ services:
 
   worker:
     build: *php-image
+    pull_policy: build   # always build from ./worker: a cached image from an older run is never reused
     user: "10001:10001"
     depends_on:
       - wsrvd
@@ -77,6 +79,7 @@ services:
   # to pull) and gets the JavaScript client from clients/js, mounted read-only next to the page.
   web:
     build: *php-image
+    pull_policy: build
     user: "10001:10001"
     depends_on:
       - worker
