@@ -87,7 +87,7 @@ final class Supervisor
         };
     }
 
-    /** The usual case: connect to the daemon's Unix socket (and token) each time. */
+    /** The usual case: connect to the daemon (a Unix socket path, or `tcp://host:port`) with the token each time. */
     public static function forSocket(string $socketPath, string $token = '', float $helloTimeout = 5.0): self
     {
         return new self(static fn (): Client => Client::connect($socketPath, $token, $helloTimeout));

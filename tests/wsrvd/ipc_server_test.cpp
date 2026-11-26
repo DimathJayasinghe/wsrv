@@ -1164,6 +1164,10 @@ TEST_F(TcpIpcTest, AConnectionThatHasNotSaidHelloDoesNotHoldTheSlotAgainstANewco
     const auto told = idle->receive();
     ASSERT_TRUE(told);
     EXPECT_EQ(told->status, kBackpressure);
+    // And it leaves a trace an operator can see (a warning).
+    const std::string line = logs.wait_for("app_replaced");
+    EXPECT_FALSE(line.empty());
+    EXPECT_NE(line.find("|3|"), std::string::npos) << line;
 }
 
 TEST_F(TcpIpcTest, AHelloThatAlreadyArrivedIsProcessedBeforeAnyDisplacement) {
@@ -1260,6 +1264,9 @@ TEST_F(TcpIpcTest, ALingeringSocketEndsWhenThePeerClosesSoManyRefusalsInARowAreA
         ASSERT_TRUE(answer) << "refusal " << i;
         ASSERT_EQ(answer->status, kBackpressure) << "refusal " << i;
     }
+    // Each peer closed at once, so each lingering socket ended at EOF: the cap was never reached.
+    // (If the daemon waited for the deadline instead, 100 refusals in a row would fill it.)
+    EXPECT_EQ(logs.everything().find("ipc_linger_full"), std::string::npos);
     first->send_message(ipc::Ping{});
     EXPECT_EQ(first->receive()->kind, Reply::Kind::Pong);
 }

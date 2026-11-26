@@ -7,6 +7,12 @@ require __DIR__ . '/vendor/autoload.php';
 
 use Wsrv\{Connection, Supervisor, Worker, WsrvException};
 
+if (!method_exists(Wsrv\Client::class, 'isTcpEndpoint')) {
+    // wsrv/client 1.0 would read "tcp://..." as a socket path and fail with a confusing message.
+    fwrite(STDERR, "this needs wsrv/client 1.1 or newer for TCP: composer require \"wsrv/client:^1.1\"\n");
+    exit(2);
+}
+
 $endpoint = getenv('WSRV_IPC') ?: 'tcp://127.0.0.1:9300';
 $token = getenv('WSRV_TOKEN') ?: '';
 if (strlen($token) < 32) {

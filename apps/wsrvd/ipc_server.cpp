@@ -871,7 +871,9 @@ void IpcServer::admit(Fd client) noexcept {
     // not said HELLO holds no state, so it must not keep the real application out: replace it
     // (ADR-0038 section 5). An authenticated application is never displaced.
     if (tcp && peer_ != nullptr && peer_->awaiting_hello()) {
-        note(LogLevel::Debug, "app_replaced", "ipc: a connection that had not said HELLO was replaced");
+        // A warning, not debug: a worker that keeps getting BACKPRESSURE because something else keeps
+        // connecting first is exactly what an operator needs to see (the logger rate-limits repeats).
+        note(LogLevel::Warn, "app_replaced", "ipc: a connection that had not said HELLO was replaced by a newcomer");
         // Tell it why, as any application we turn away is told, instead of cutting it off silently.
         Fd displaced = peer_->surrender();
         peer_.reset();

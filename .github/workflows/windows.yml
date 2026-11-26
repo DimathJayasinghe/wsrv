@@ -42,10 +42,20 @@ jobs:
         with:
           php-version: ${{ matrix.php }}
           coverage: none
-      - name: The client and the worker over TCP (any notice or warning fails; the fork-based test skips itself)
+      - name: The whole PHP suite (any notice or warning fails; tests that need pcntl, the daemon or libwsrv skip themselves)
         run: |
           php --version | head -1
-          for filter in 'client:' 'worker:'; do
-            php bindings/php/tests/run.php "$filter" 2>&1 | tee "$RUNNER_TEMP/php.log"
-            grep -E '^[0-9]+ passed, 0 failed' "$RUNNER_TEMP/php.log"
-          done
+          php bindings/php/tests/run.php 2>&1 | tee "$RUNNER_TEMP/php.log"
+          grep -E '^[0-9]+ passed, 0 failed' "$RUNNER_TEMP/php.log"
+      - name: Which tests skipped, and why
+        run: grep '^SKIP' "$RUNNER_TEMP/php.log" || echo "nothing skipped"
+      - name: The package installs with Composer on Windows and its autoloader works
+        run: |
+          # What `composer require wsrv/client` does for a Windows developer, from this checkout.
+          consumer="$RUNNER_TEMP/consumer"
+          mkdir "$consumer" && cd "$consumer"
+          composer init --no-interaction --name=ci/consumer --stability=dev > /dev/null
+          composer config repositories.wsrv --json "{\"type\":\"path\",\"url\":\"$(cygpath -m "$GITHUB_WORKSPACE")\",\"options\":{\"symlink\":false}}"
+          composer require --no-interaction --no-progress "wsrv/client:@dev"
+          php -r 'require "vendor/autoload.php"; exit(Wsrv\Client::isTcpEndpoint("tcp://127.0.0.1:9300") && class_exists(Wsrv\Supervisor::class) ? 0 : 1);'
+          echo "installed and loaded"

@@ -6,7 +6,7 @@
 cd examples/host-worker
 docker compose up -d
 export WSRV_TOKEN="$(docker compose run --rm --no-deps --entrypoint cat token-init /run/wsrv/ipc.token)"
-composer require wsrv/client      # PHP 8.2 or newer on the host
+composer require "wsrv/client:^1.1"   # PHP 8.2 or newer on the host; 1.0 cannot speak TCP
 php worker.php
 ```
 
