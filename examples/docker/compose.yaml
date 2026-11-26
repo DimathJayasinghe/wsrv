@@ -2,7 +2,8 @@
 #   docker compose up -d           # pulls ghcr.io/dimathjayasinghe/wsrvd:1.1.0 and builds the tiny PHP worker
 #   docker compose up --build      # same, but also rebuilds the daemon image from this repository's source
 #   WSRV_VERSION=1.1.0 docker compose up -d   # another published version (1.1 or newer: see the token below; WSRV_CLIENT sets the PHP package's)
-#   then connect any WebSocket client to ws://localhost:8080/ and send a message: the worker echoes it.
+#   then open http://localhost:8000 (a page served by the `web` service below) and press Connect, or connect any
+#   WebSocket client to ws://localhost:8080/ and send a message: the worker echoes it.
 #
 # Rooms and publishing (ADR-0028): the daemon also runs the pub/sub broker and an HTTP publish endpoint on
 # port 9200 that only the other containers can reach (`expose:`, never `ports:`). `token-init` runs
@@ -12,6 +13,13 @@
 #
 # The services share /run/wsrv (the daemon's private IPC socket directory). The socket is mode 0600
 # and the daemon checks the peer uid (ADR-0017), so both containers run as the same uid, 10001.
+# The PHP image the worker and the page's static server both use: one definition, so the second build is a
+# cache hit and nothing extra is pulled.
+x-php-image: &php-image
+  context: ./worker
+  args:
+    WSRV_CLIENT: ${WSRV_CLIENT:-1.0.0}   # pin another version of the PHP package here
+
 services:
   # Runs once and exits: makes /run/wsrv/publish.token with `wsrvd --generate-token` unless a generated one is
   # already there. The generator never overwrites, so a file of another form (a 1.0 token, which 1.1 refuses)
@@ -33,7 +41,8 @@ services:
       dockerfile: docker/wsrvd.Dockerfile
     # Every setting is WSRVD_<KEY> (ADR-0030); the image has a built-in default IPC socket (/run/wsrv/ipc.sock) and sets the listen address and port 8080.
     environment:
-      WSRVD_ALLOW_ORIGIN: http://localhost:8000      # the page below; browsers must come from here
+      # The `web` page below, by either name a browser may use for your machine (a comma list: the key is repeatable).
+      WSRVD_ALLOW_ORIGIN: http://localhost:${WSRV_WEB_PORT:-8000},http://127.0.0.1:${WSRV_WEB_PORT:-8000}
       WSRVD_ALLOW_MISSING_ORIGIN: "true"             # command-line clients (wscat, websocat); remove in production
       WSRVD_BROKER: "true"                           # rooms
       WSRVD_PUBLISH_HOST: 0.0.0.0                    # reachable inside the compose network only (see expose below)
@@ -51,10 +60,8 @@ services:
     restart: unless-stopped
 
   worker:
-    build:
-      context: ./worker
-      args:
-        WSRV_CLIENT: ${WSRV_CLIENT:-1.0.0}   # pin another version of the PHP package here
+    build: *php-image
+    pull_policy: build   # always build from ./worker: a cached image from an older run is never reused
     user: "10001:10001"
     depends_on:
       - wsrvd
@@ -64,6 +71,24 @@ services:
       - ipc:/run/wsrv
       - ./worker/worker.php:/app/worker.php:ro
       - ./worker/publish.php:/app/publish.php:ro
+    restart: unless-stopped
+
+  # The page of the quickstart (web/index.html): a static file server so a browser has an origin to come from.
+  # PHP's built-in server is for development only and is bound to the host's loopback here; the library
+  # itself speaks WebSocket and never serves files. It builds the same PHP image as the worker (no extra image
+  # to pull) and gets the JavaScript client from clients/js, mounted read-only next to the page.
+  web:
+    build: *php-image
+    pull_policy: build
+    user: "10001:10001"
+    depends_on:
+      - worker
+    command: ["php", "-S", "0.0.0.0:8000", "-t", "/app/public"]
+    ports:
+      - "127.0.0.1:${WSRV_WEB_PORT:-8000}:8000"
+    volumes:
+      - ./web/index.html:/app/public/index.html:ro
+      - ../../clients/js/src:/app/public/js:ro
     restart: unless-stopped
 
 volumes:

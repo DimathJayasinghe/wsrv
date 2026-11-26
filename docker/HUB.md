@@ -24,6 +24,12 @@ $worker->run();
 
 A complete Docker Compose stack with a PHP worker and a publish example is in [examples/docker](https://github.com/DimathJayasinghe/wsrv/tree/main/examples/docker); a Laravel guide is in [docs/LARAVEL.md](https://github.com/DimathJayasinghe/wsrv/blob/main/docs/LARAVEL.md).
 
+## A worker on another machine, or on macOS and Windows (1.1)
+
+By default the worker reaches the daemon over a Unix socket, which cannot cross out of a container. Since 1.1 the link can be TCP: set `WSRVD_IPC_PORT=9300` (and `WSRVD_IPC_HOST=0.0.0.0` inside a container so a published port arrives) with `WSRVD_IPC_TOKEN_FILE` pointing at a token that `wsrvd --generate-token=FILE` made; the worker passes the same token. The link is **not encrypted**: publish the port on `127.0.0.1`, or put it behind a VPN or an SSH tunnel. A complete setup is [examples/host-worker](https://github.com/DimathJayasinghe/wsrv/tree/main/examples/host-worker).
+
+The publish token (`WSRVD_PUBLISH_TOKEN_FILE`) must also be one `wsrvd --generate-token` made; the daemon accepts no other. `WSRVD_ADMIN_TOKEN_FILE` makes `GET /metrics` need a bearer token, and `WSRVD_MAX_BUFFERED_BYTES` bounds the memory the connections hold together (new clients get `503` above it): set it to about half of the memory you give the container.
+
 ## Configuration
 
 Every setting is an environment variable: `WSRVD_` plus the key in upper case (`WSRVD_MAX_CONNECTIONS_PER_IP`, `WSRVD_LISTEN_PORT`, `WSRVD_TRUSTED_PROXY`, ...). Command-line flags and `--config=FILE` still work and override the environment. A mistyped `WSRVD_` variable stops the start and names itself instead of starting a weaker server. All keys: [docs/OPERATIONS.md](https://github.com/DimathJayasinghe/wsrv/blob/main/docs/OPERATIONS.md).
