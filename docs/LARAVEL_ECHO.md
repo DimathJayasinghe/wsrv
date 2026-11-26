@@ -2,7 +2,7 @@
 
 Use Laravel's own broadcasting (`broadcast(new Event)`, `Broadcast::channel()`, `routes/channels.php`, Laravel Echo in the browser) with `wsrvd` as the WebSocket server, so a Laravel app gets real-time events without a Node service, a paid broker or a second WebSocket server to learn.
 
-> **Status.** Planned for wsrv 1.2 (ADR-0042). The gateway, the broadcaster, encrypted channels and `php artisan wsrv:echo` are implemented and tested: unit tests, a run against a real `wsrvd` with raw WebSocket clients, and a run of the glue inside a real Laravel 13 application (`bindings/php/tests/laravel_check.php`). The words "works with Laravel Echo" are held back until the real `pusher-js` and `laravel-echo` libraries have been run against it; see section 9 for the state of that run.
+> **Status.** Planned for wsrv 1.2 (ADR-0042). The gateway, the broadcaster, encrypted channels and `php artisan wsrv:echo` are implemented and tested: unit tests, a run against a real `wsrvd` with raw WebSocket clients, a run of the glue inside a real Laravel 13 application, and and two runs of the real browser libraries (`pusher-js` 8.6.0 and `laravel-echo` 2.6.3, in Chrome): against a real `wsrvd`, and against a real Laravel 13 application with a real `wsrvd`. Section 9 says what each run covers and what was not run.
 
 If you want rooms without Echo (your own join messages, your own tickets), see [LARAVEL.md](LARAVEL.md). The two ways use the same daemon, but one daemon serves one of them at a time (one worker per daemon).
 
@@ -101,6 +101,8 @@ Echo.private('chat.7').listenForWhisper('typing', (e) => console.log(e.name));
 Echo.join('room.1').here(users => {}).joining(user => {}).leaving(user => {});
 ```
 
+Checked with `broadcaster: 'reverb'` (the options above); the `'pusher'` broadcaster reaches the same `pusher-js` code but was not run. In a Laravel app Echo adds the CSRF header itself, and `/broadcasting/auth` is Laravel's route.
+
 The browser's `Origin` must be in `--allow-origin`. Channel names are limited to letters, digits and `. _ : / @ -` (up to 128 bytes); a name with `=`, `,` or `;` is refused with an error, never rewritten.
 
 ## 6. What works, and what does not
@@ -146,13 +148,16 @@ A frame that is not valid JSON, has no event, carries a channel name wsrv cannot
 - `check_app_key => true` (with the daemon's `--handshake-hook=true`) refuses a URL that does not end in `/app/<key>`; it is off by default, because the key is public and the signature is what protects a channel.
 - The publish endpoint (port 9200) is for your app servers only: never expose it to the internet.
 
-## 9. Testing the glue
+## 9. What was tested, and how to run it
 
-```
-php tests/pusher_interop.php build/dev/apps/wsrvd/wsrvd      # a real wsrvd, the gateway, raw WebSocket clients
-php tests/laravel_check.php /path/to/a/laravel-app            # the driver, the auth route and toOthers() in a real Laravel app
-```
+| Run | What it covers | Where |
+|---|---|---|
+| Unit tests (`php tests/run.php`) | frames, signatures (with Pusher's published vectors), presence, every limit, hostile input, a fuzz, the config checker | CI |
+| `php tests/pusher_interop.php WSRVD` | a real `wsrvd`, the gateway and raw WebSocket clients: join, private signatures, presence, whispers, `toOthers`, hostile frames, quotas, `check_app_key` | CI (`ctest -R php_pusher_interop`) |
+| `php tests/laravel_check.php APP` | the driver, `/broadcasting/auth`, `Broadcast::channel()`, `broadcast()->toOthers()`, encrypted channels and the artisan command inside a real Laravel 13 application | by hand (needs an application with `vendor/`) |
+| `bash tests/echo_browser/laravel/run.sh` (settings in its header) | the same scenario with the whole product: a real Laravel 13 application (a copy of a skeleton is used, never modified) with its session, CSRF and `auth` middleware, `Broadcast::routes`, the `wsrv` driver through `broadcast(...)->toOthers()`, the documented `config/broadcasting.php`, `php artisan wsrv:echo` (its supervisor reconnects after the daemon restart by itself), a real `wsrvd`, and the real libraries in Chrome | by hand (needs a Laravel 11+ application on disk, the two npm bundles and a browser) |
+| `php tests/echo_browser/run.php WSRVD PUSHER_JS ECHO_JS` | the real `pusher-js` 8.6.0 and `laravel-echo` 2.6.3 in Chrome against a real `wsrvd`: connect, public, private (signature through an auth endpoint, and a refused one), presence `here`/`joining`/`leaving`, whispers, `toOthers`, encrypted channels decrypted in the browser, a join followed at once by a leave, a clean disconnect, and a restart of the daemon and the worker under connected browsers (Echo reconnects, re-authorizes and resubscribes) | by hand (needs the two npm packages and a browser) |
 
-The first runs in CI (`ctest -R php_pusher_interop`). The second needs a Laravel application with `vendor/` installed, so CI does not run it.
+The `run.php` variant uses a small stand-in for your Laravel routes (`tests/echo_browser/router.php`), so it needs no Laravel; `laravel/run.sh` runs the same page against a real application. Last runs: 11 of 11 checks passed in each (2026-11-27, Chrome, `wsrvd` built from this branch; the Laravel run on Laravel Framework 13.43.0).
 
-State of the browser-library run (`pusher-js` and `laravel-echo` against this gateway): not yet done; this guide is updated when it is.
+**Not run:** Safari and Firefox; Echo's `pusher` broadcaster; Laravel 11 and 12 (13.43 was used; the broadcaster uses only the long-stable `Broadcaster` contract, and `laravel_check.php` runs against any version you have); more than a few connections (see [BENCHMARKS.md](BENCHMARKS.md) for what is measured, which does not include the Pusher gateway); `Echo.user()` and the watchlist, which are not supported.
