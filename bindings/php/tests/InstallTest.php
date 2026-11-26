@@ -88,7 +88,8 @@ test('install: a verified library is written executable, and nothing else is', f
         $written = (new LibraryInstaller(install_fetcher($files)))->install('1.2.3', 'x86_64', "$dir/out");
         assertSame(["$dir/out/libwsrv.so"], array_values($written));
         assertSame("LIB\x7fELF", file_get_contents("$dir/out/libwsrv.so"));
-        assertTrue(is_executable("$dir/out/libwsrv.so"), 'executable');
+        // The installer sets mode 0755; a Windows file system has no exec bit to check (and no use for a .so).
+        PHP_OS_FAMILY === 'Windows' || assertTrue(is_executable("$dir/out/libwsrv.so"), 'executable');
         assertSame(['libwsrv.so'], array_values(array_diff(scandir("$dir/out"), ['.', '..'])), 'no temporary file left');
     });
 });
