@@ -31,3 +31,12 @@ A mode of the same binary that reads the same configuration (environment and fla
 + No new dependency: the check uses plain POSIX sockets in the composition root (`apps/wsrvd`).
 − The healthcheck cannot see flags given only to the daemon; documented, and the environment is the recommended way in containers.
 − Anyone who set a `WSRVD_`-prefixed variable for another purpose now gets a startup error: the prefix is ours, and failing loudly beats guessing.
+
+## Amendment A1 (2026-11-26): Kubernetes service variables are not settings
+
+A readiness review found that a Service named `wsrvd` (the natural name) makes Kubernetes put `WSRVD_SERVICE_HOST`, `WSRVD_SERVICE_PORT`, `WSRVD_PORT=tcp://10.96.0.12:8080` and the like into every pod of its namespace (service links). Under the rule "an unknown `WSRVD_*` variable is a startup error" every such pod, and its `--healthcheck` probe, would have refused to start, and the failure names a variable the operator never set.
+
+Decision: the daemon ignores the variables that Kubernetes generates for a Service called `wsrvd`, and only those exact shapes: `WSRVD_SERVICE_HOST`, `WSRVD_SERVICE_PORT`, `WSRVD_SERVICE_PORT_<NAME>`, `WSRVD_PORT` **when its value is a `tcp://`, `udp://` or `sctp://` URL**, and `WSRVD_PORT_<n>_<TCP|UDP|SCTP>` with an optional `_PROTO`, `_PORT` or `_ADDR`. No setting has any of these names, so nothing real is shadowed. Everything else under the prefix stays an error, including `WSRVD_PORT=8080` (a person who means a port gets told, not ignored) and near misses such as `WSRVD_SERVICE_HOSTS`. `enableServiceLinks: false` in the pod spec removes the variables at the source; the reference manifest sets it too.
+
+The other half of the safety rule is unchanged: a typo must still stop the start (`WSRVD_ALLOW_ORIGINS`).
+

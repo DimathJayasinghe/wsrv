@@ -40,6 +40,54 @@ constexpr std::string_view kHealthcheckFlag = "--healthcheck";
     return text;
 }
 
+[[nodiscard]] bool only_digits(std::string_view text) noexcept {
+    return !text.empty() && std::ranges::all_of(text, [](char c) { return c >= '0' && c <= '9'; });
+}
+
+/// Upper case letters, digits and '_': what Kubernetes makes of a Service port name.
+[[nodiscard]] bool only_port_name_characters(std::string_view text) noexcept {
+    return !text.empty() && std::ranges::all_of(text, [](char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+    });
+}
+
+/// True for the variables Kubernetes adds to every pod for a Service called `wsrvd` (ADR-0030 A1):
+/// `<SERVICE>_SERVICE_HOST`, `<SERVICE>_SERVICE_PORT`, `<SERVICE>_SERVICE_PORT_<NAME>`,
+/// `<SERVICE>_PORT` (a `tcp://host:port` URL) and `<SERVICE>_PORT_<n>_<PROTO>[_PROTO|_PORT|_ADDR]`.
+/// `rest` is the name after the prefix. Only these exact shapes: a bare `WSRVD_PORT=8080` is a person
+/// meaning a setting and stays an error, like every other unknown name.
+[[nodiscard]] bool is_service_link(std::string_view rest, std::string_view value) noexcept {
+    constexpr std::string_view kServicePortPrefix = "SERVICE_PORT_";
+    if (rest == "SERVICE_HOST" || rest == "SERVICE_PORT") {
+        return true;
+    }
+    if (rest.starts_with(kServicePortPrefix)) {
+        return only_port_name_characters(rest.substr(kServicePortPrefix.size()));
+    }
+    if (rest == "PORT") {
+        return value.starts_with("tcp://") || value.starts_with("udp://") ||
+               value.starts_with("sctp://");
+    }
+    constexpr std::string_view kPortPrefix = "PORT_";
+    if (!rest.starts_with(kPortPrefix)) {
+        return false;
+    }
+    rest.remove_prefix(kPortPrefix.size());
+    const std::size_t underscore = rest.find('_');
+    if (underscore == std::string_view::npos || !only_digits(rest.substr(0, underscore))) {
+        return false;
+    }
+    rest.remove_prefix(underscore + 1);
+    for (const std::string_view protocol : {"TCP", "UDP", "SCTP"}) {
+        if (!rest.starts_with(protocol)) {
+            continue;
+        }
+        const std::string_view tail = rest.substr(protocol.size());
+        return tail.empty() || tail == "_PROTO" || tail == "_PORT" || tail == "_ADDR";
+    }
+    return false;
+}
+
 /// One variable: the key is the name after the prefix in lower case; a repeatable key takes a comma
 /// list, one `set` per non-empty item.
 Result<void> apply_variable(DaemonConfig& config, std::string_view name, std::string_view value) {
@@ -73,6 +121,9 @@ Result<void> apply_environment(DaemonConfig& config,
             continue;
         }
         const std::string_view name = entry.substr(0, equals);
+        if (is_service_link(name.substr(kEnvironmentPrefix.size()), entry.substr(equals + 1))) {
+            continue;  // Kubernetes service discovery, not a setting (ADR-0030 A1)
+        }
         if (const Result<void> done = apply_variable(config, name, entry.substr(equals + 1)); !done) {
             if (detail != nullptr) {
                 *detail = std::string{name};
