@@ -111,11 +111,11 @@ See [SECURITY_DESIGN.md](SECURITY_DESIGN.md). Secure by default; unsafe options 
 | Incomplete-message timeout | 30 s | close 1008 |
 | Max outbound frame payload (auto-fragmentation size) | 64 KiB | — |
 | Data-frame rate per connection | 10 000 / s | close 1008 |
-| Max concurrent connections (global) | 10 000 | refuse accept / 503 |
+| Max concurrent connections (global) | 10 000 | refused at accept: closed at once, no answer (FR-S1: minimal cost) |
 | Max connections per IP | 100 | 429 / close |
 | Handshake rate per IP | 50 / s | 429 |
 | Outbound queue per connection | 1 MiB | slow-consumer policy (default: close 1008) |
-| Inbound read buffer per connection | 64 KiB (grows to frame limit only when needed) | — |
+| Inbound read buffer | 16 KiB per event loop, shared by its connections; per connection only the unfinished frame is held (nothing reserved up front, bounded by the frame limit) | — |
 | Idle timeout | 60 s without any frame | close 1001 |
 | Ping interval / pong timeout | 30 s / 10 s | close 1002/1001 |
 | Close handshake timeout | 5 s | force TCP close |

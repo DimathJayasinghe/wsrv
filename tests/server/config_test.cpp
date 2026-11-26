@@ -37,6 +37,9 @@ TEST(ServerConfig, DefaultsMatchTheRequirementsTable) {  // REQUIREMENTS section
     EXPECT_EQ(config.session.outbound.max_frame_payload, 64U * 1024U);
     EXPECT_EQ(config.session.outbound.max_queued_bytes, 1U << 20U);
     EXPECT_EQ(config.session.idle_timeout, 60s);
+    EXPECT_EQ(config.session.ping_interval, 30s);
+    EXPECT_EQ(config.session.pong_timeout, 10s);
+    EXPECT_EQ(config.session.incomplete_message_timeout, 30s);
     EXPECT_EQ(config.session.close_timeout, 5s);
     EXPECT_EQ(config.session.max_control_frames_per_second, 100U);
     EXPECT_EQ(config.session.max_data_frames_per_second, 10000U);
