@@ -3,6 +3,7 @@
 // sockets, and the bounds that keep it from being a weak spot: a few clients at once, a deadline
 // for a request that never ends, a size limit for its head, and off unless asked for.
 #include "server/server_builder.hpp"
+#include "support/fakes.hpp"
 #include "support/running_server.hpp"
 #include "support/tcp_client.hpp"
 
@@ -245,6 +246,109 @@ TEST(AdminServer, TheConfigurationBoundsAreChecked) {
     wsrv::ServerBuilder never = with_admin(factory);
     never.config().admin_request_timeout = 0ms;
     EXPECT_THROW(static_cast<void>(never.build()), wsrv::ConfigError);
+}
+
+// ADR-0041: the optional bearer token on /metrics, on a running server and real sockets.
+
+const std::string kAdminToken =
+    "wsrv1_4f2a9c0b7e1d3a5c8b6f0e2d4a6c8e0b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c_deadbeef";
+
+std::string metrics_request(const std::string& header = {}) {
+    return "GET /metrics HTTP/1.1\r\nHost: wsrvd\r\n" + header + "\r\n";
+}
+
+TEST(AdminServerToken, MetricsNeedTheTokenAndTheProbesDoNot) {
+    SilentFactory factory;
+    wsrv::ServerBuilder builder;
+    builder.listen("127.0.0.1", 0).handler_factory(factory).admin("127.0.0.1", 0, kAdminToken);
+    builder.config().handshake.allowed_origins = {"https://app.example.com"};
+    RunningServer running{builder};
+    const std::uint16_t port = running.server().admin_endpoint()->port;
+
+    const std::string refused = get(port, metrics_request());
+    EXPECT_EQ(refused.rfind("HTTP/1.1 401 Unauthorized\r\n", 0), 0U) << refused;
+    EXPECT_NE(refused.find("WWW-Authenticate: Bearer\r\n"), std::string::npos);
+    EXPECT_EQ(refused.find("wsrv_connections_current"), std::string::npos)
+        << "no counter reaches a peer without the credential";
+
+    const std::string wrong = get(port, metrics_request("Authorization: Bearer wrong\r\n"));
+    EXPECT_EQ(wrong, refused) << "a wrong credential gets the very same bytes";
+
+    const std::string allowed =
+        get(port, metrics_request("Authorization: Bearer " + kAdminToken + "\r\n"));
+    EXPECT_EQ(allowed.rfind("HTTP/1.1 200 OK\r\n", 0), 0U) << allowed;
+    EXPECT_NE(allowed.find("wsrv_connections_current"), std::string::npos);
+
+    // The reason the token is on one page only: a kubelet probe and `wsrvd --healthcheck` send
+    // none.
+    EXPECT_EQ(get(port, "GET /healthz HTTP/1.1\r\n\r\n").rfind("HTTP/1.1 200 OK\r\n", 0), 0U);
+    EXPECT_EQ(get(port, "GET /readyz HTTP/1.1\r\n\r\n").rfind("HTTP/1.1 200 OK\r\n", 0), 0U);
+}
+
+TEST(AdminServerToken, WithoutATokenEveryPageIsOpenAsBefore) {
+    SilentFactory factory;
+    RunningServer running{with_admin(factory)};
+    const std::uint16_t port = running.server().admin_endpoint()->port;
+    EXPECT_EQ(get(port, metrics_request()).rfind("HTTP/1.1 200 OK\r\n", 0), 0U);
+}
+
+TEST(AdminServerToken, ARefusedRequestIsLoggedWithTheFirstSecondAndFourthOnly) {
+    SilentFactory factory;
+    wsrv::test::SharedLogger logs;
+    wsrv::ServerBuilder builder;
+    builder.listen("127.0.0.1", 0).handler_factory(factory).admin("127.0.0.1", 0, kAdminToken);
+    builder.logger(logs);
+    builder.config().handshake.allowed_origins = {"https://app.example.com"};
+    RunningServer running{builder};
+    const std::uint16_t port = running.server().admin_endpoint()->port;
+    for (int i = 0; i < 3; ++i) {
+        static_cast<void>(get(port, metrics_request()));
+    }
+    const std::string seen = logs.everything();
+    std::size_t lines = 0;
+    for (std::size_t at = seen.find("admin_unauthorized|"); at != std::string::npos;
+         at = seen.find("admin_unauthorized|", at + 1)) {
+        ++lines;
+    }
+    EXPECT_EQ(lines, 2U) << "refusals 1 and 2 are logged, 3 is not (rate limit): " << seen;
+    EXPECT_EQ(seen.find(kAdminToken), std::string::npos) << "the token is never logged";
+    EXPECT_EQ(seen.find("Bearer"), std::string::npos) << "nor is any credential a peer sent";
+}
+
+// With a token, an exposed bind no longer says "has no authentication" (it would be untrue for
+// /metrics); without one the warning is exactly as before.
+TEST(AdminServerToken, TheExposedWarningIsKeptWithoutATokenAndReplacedByAnInfoLineWithOne) {
+    SilentFactory factory;
+    {
+        wsrv::test::SharedLogger logs;
+        wsrv::ServerBuilder builder;
+        builder.listen("127.0.0.1", 0).handler_factory(factory).admin("0.0.0.0", 0);
+        builder.logger(logs);
+        builder.config().handshake.allowed_origins = {"https://app.example.com"};
+        RunningServer running{builder};
+        EXPECT_TRUE(logs.wait_for("admin_exposed").has_value());
+    }
+    wsrv::test::SharedLogger logs;
+    wsrv::ServerBuilder builder;
+    builder.listen("127.0.0.1", 0).handler_factory(factory).admin("0.0.0.0", 0, kAdminToken);
+    builder.logger(logs);
+    builder.config().handshake.allowed_origins = {"https://app.example.com"};
+    RunningServer running{builder};
+    const auto listening = logs.wait_for("admin_listening");
+    ASSERT_TRUE(listening.has_value());
+    EXPECT_NE(listening->message.find("/metrics needs the admin token"), std::string::npos)
+        << listening->message;
+    EXPECT_EQ(logs.everything().find("admin_exposed"), std::string::npos);
+}
+
+TEST(AdminServerToken, AGuessableTokenStopsTheServerFromStarting) {
+    SilentFactory factory;
+    for (const char* weak : {"", "short", "a-chosen-but-too-short-token"}) {
+        const std::string token{weak};
+        wsrv::ServerBuilder builder;
+        builder.listen("127.0.0.1", 0).handler_factory(factory).admin("127.0.0.1", 0, token);
+        EXPECT_THROW(static_cast<void>(builder.build()), wsrv::ConfigError) << weak;
+    }
 }
 
 }  // namespace

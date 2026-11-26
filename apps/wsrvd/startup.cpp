@@ -231,6 +231,30 @@ Result<void> read_secrets(Startup& startup, ISyscalls& sys) {
         }
         startup.token = std::move(*token);
     }
+    if (!startup.config.admin_token_file().empty()) {
+        Result<std::string> token = read_token_file(sys, startup.config.admin_token_file());
+        if (!token) {
+            return std::unexpected{token.error()};
+        }
+        // Plain HTTP and the only credential for /metrics, so a long token somebody chose is as
+        // guessable here as anywhere (ADR-0041, as ADR-0039). A scraper holds this token, so it must
+        // not also open the publish endpoint or speak as the application's worker. The messages name
+        // the fix and never echo a token.
+        if (!is_generated_token(*token)) {
+            return fail(ErrorCode::InvalidConfig,
+                        "config: the admin token must be one made by `wsrvd --generate-token=FILE` "
+                        "(a token you chose, however long, can be guessed)");
+        }
+        if (*token == startup.token) {
+            return fail(ErrorCode::InvalidConfig,
+                        "config: the admin token must differ from the ipc token (a scraper that "
+                        "held it could speak as the application); make a new one with `wsrvd "
+                        "--generate-token=FILE`");
+        }
+        if (const Result<void> set = startup.config.set_admin_token(std::move(*token)); !set) {
+            return set;
+        }
+    }
     if (!startup.config.publish_token_file().empty()) {
         Result<std::string> token = read_token_file(sys, startup.config.publish_token_file());
         if (!token) {
@@ -244,6 +268,13 @@ Result<void> read_secrets(Startup& startup, ISyscalls& sys) {
                         "config: from wsrv 1.1 the publish token must be one made by `wsrvd "
                         "--generate-token=FILE` (a token you chose, however long, can be guessed); "
                         "make a new one and give it to your publishers");
+        }
+        const std::string& admin = startup.config.embedded().admin_token();
+        if (!admin.empty() && *token == admin) {
+            return fail(ErrorCode::InvalidConfig,
+                        "config: the publish token must differ from the admin token (a scraper that "
+                        "held it could publish into rooms); make a new one with `wsrvd "
+                        "--generate-token=FILE`");
         }
         return startup.config.set_publish_token(std::move(*token));
     }
@@ -279,8 +310,15 @@ constexpr std::string_view kUsageText =
            "  --max-message-size=BYTES  --max-connections=N  --shutdown-grace-ms=MS\n"
            "  --admin-port=PORT  --admin-host=ADDR (127.0.0.1)  serve /metrics, /healthz and\n"
            "                             /readyz over plain HTTP on this address; off unless\n"
-           "                             a port is given; there is no authentication, so keep\n"
-           "                             it on loopback or behind a network policy\n"
+           "                             a port is given; there is no authentication (but see\n"
+           "                             --admin-token-file), so keep it on loopback or behind\n"
+           "                             a network policy\n"
+           "  --admin-token-file=FILE    with --admin-port: GET /metrics then needs `Authorization:\n"
+           "                             Bearer <token>`; /healthz and /readyz stay open (probes\n"
+           "                             cannot send one). FILE holds a token made by\n"
+           "                             --generate-token, mode 0600, different from the publish\n"
+           "                             and IPC tokens. The token travels in clear: this keeps\n"
+           "                             out whoever can reach the port, not whoever can read it\n"
            "  --publish-port=PORT  --publish-host=ADDR (127.0.0.1)  --publish-token-file=FILE\n"
            "                             accept `POST /publish?topic=T` from other processes and\n"
            "                             send the body to the subscribers of T (needs\n"

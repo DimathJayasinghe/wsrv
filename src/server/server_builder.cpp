@@ -63,6 +63,14 @@ ServerBuilder::publish(std::string_view ip, std::uint16_t port, const PublishSou
 
 ServerBuilder& ServerBuilder::admin(std::string_view ip, std::uint16_t port) {
     admin_ = std::make_pair(std::string{ip}, port);
+    deps_.admin_token = nullptr;  // a listener set up again without a token has none
+    return *this;
+}
+
+ServerBuilder&
+ServerBuilder::admin(std::string_view ip, std::uint16_t port, const std::string& token) {
+    admin_ = std::make_pair(std::string{ip}, port);
+    deps_.admin_token = &token;
     return *this;
 }
 

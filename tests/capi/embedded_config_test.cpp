@@ -241,6 +241,23 @@ TEST(EmbeddedConfig, MalformedAdminSettingsAreRefusedAndChangeNothing) {
     EXPECT_EQ(config.admin_host(), "127.0.0.1") << "loopback unless the operator opts out";
 }
 
+// ADR-0041: like the publish token, the admin token is not a key: only the C++ setter takes it, so
+// it cannot come from a config file, a command line or the C ABI's string settings.
+TEST(EmbeddedConfig, TheAdminTokenIsNotAKeyAndNeedsAnAdminPortAndEnoughBytes) {
+    EmbeddedConfig config;
+    EXPECT_TRUE(config.admin_token().empty()) << "open unless a token is given";
+    EXPECT_FALSE(config.set("admin_token", std::string(40, 'a')).has_value());
+    EXPECT_FALSE(config.set("admin_token_file", "/run/secrets/admin").has_value())
+        << "the file key belongs to the daemon, not to the embedded config";
+
+    EXPECT_FALSE(config.set_admin_token(std::string(40, 'a')).has_value()) << "no admin_port yet";
+    ASSERT_TRUE(config.set("admin_port", "9100").has_value());
+    EXPECT_FALSE(config.set_admin_token(std::string(31, 'a')).has_value()) << "one byte short";
+    EXPECT_TRUE(config.admin_token().empty()) << "a refused token is not kept";
+    ASSERT_TRUE(config.set_admin_token(std::string(32, 'a')).has_value());
+    EXPECT_EQ(config.admin_token(), std::string(32, 'a'));
+}
+
 TEST(EmbeddedConfig, BooleansAcceptOnlyTrueFalseOneZero) {
     EmbeddedConfig config;
     for (const char* yes : {"true", "1"}) {

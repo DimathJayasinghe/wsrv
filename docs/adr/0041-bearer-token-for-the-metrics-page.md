@@ -20,7 +20,7 @@ There is a precedent. The publish endpoint (ADR-0028, ADR-0039) already has a be
 
 The key needs `admin_port`: a token without an admin listener is a configuration error that says so, as `publish_token_file` without `publish_port` is.
 
-For an application that embeds the server, the credential is a C++ setter on `EmbeddedConfig` (`set_admin_token`) and a borrowed pointer in `ServerDeps`, like the publish token. **It is not a C ABI key or symbol**: the publish token is not one either, and a secret does not belong in a `wsrv_config_set` string. The C ABI stays 1.1 (ADR-0040).
+For an application that embeds the server, the credential is a C++ setter on `EmbeddedConfig` (`set_admin_token`) and a borrowed pointer in `ServerDeps`, like the publish token. **It is not a C ABI key or symbol**: the publish token is not one either, and a secret does not belong in a `wsrv_config_set` string. The C ABI stays 1.1 (ADR-0040). The embedded path keeps the length floor of the publish token as the last defence (`kMinAdminTokenBytes` = 32): `set_admin_token` refuses a shorter token, and so does `Server::start_admin()` for a builder used directly; the generated form is enforced by `wsrvd` only, as for the publish token (a library user who chooses a weak token has chosen it).
 
 ### 2. What it protects: `/metrics` only
 With a token configured, `GET /metrics` needs `Authorization: Bearer <token>`. `GET /healthz` and `GET /readyz` stay open, for the reason in the Context. Without a token nothing changes: every page answers as before, and the existing `admin_exposed` warning stays for a non-loopback bind.

@@ -42,7 +42,7 @@ The settings most deployments need:
 | `allow_origin` | The sites whose pages may open a socket. Required unless you really want any origin (`allow_missing_origin` is for non-browser clients only). |
 | `trusted_proxy` | Your reverse proxy's address or CIDR, so limits and logs see real clients (OPERATIONS 1.2.1). |
 | `max_connections`, `max_connections_per_ip`, `max_new_connections_per_ip_per_second` | Capacity and abuse limits (OPERATIONS 1). |
-| `admin_port` | `/healthz`, `/readyz` and `/metrics` (loopback, no authentication). |
+| `admin_port`, `admin_token_file` | `/healthz`, `/readyz` and `/metrics` (loopback, no authentication by default); `admin_token_file` makes `/metrics` need a bearer token, for an admin port a scraper reaches over a network (OPERATIONS 3.1). |
 | `broker`, `publish_port`, `publish_token_file` | Rooms and HTTP publishing from other processes. |
 | `tls_cert`, `tls_key` | TLS on `wsrvd` itself; or terminate TLS at the proxy and leave these out. |
 | `log_level`, `log_peer` | One structured line per event on stderr (`docker logs`, `kubectl logs`, `journalctl -u wsrvd`), at `info` by default; the client address is left out unless `log_peer` is on (OPERATIONS 2). |

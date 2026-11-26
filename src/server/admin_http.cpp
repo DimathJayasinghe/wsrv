@@ -1,8 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "server/admin_http.hpp"
 
+#include "base/bytes.hpp"
+#include "base/constant_time.hpp"
+#include "http/bearer.hpp"
+#include "http/request_parser.hpp"
+
 #include <algorithm>
 #include <array>
+#include <optional>
+#include <utility>
 
 namespace wsrv {
 
@@ -56,6 +63,45 @@ bool printable(std::string_view line) noexcept {
     });
 }
 
+/// ADR-0041: the answer that keeps a peer from `/metrics`, or nothing when it may have the page.
+/// The head is parsed with the same strict parser as every other head in the project (CRLF only, no
+/// obs-fold, no control characters, token names), limited to what the admin port reads anyway.
+/// Every credential problem is the same answer; a head that is not even well formed is a 400.
+std::optional<std::string> refuse_unless_allowed(std::string_view head,
+                                                 const AdminSources& sources) {
+    HttpLimits limits;
+    limits.max_request_line = kMaxAdminHeadBytes;
+    limits.max_total_bytes = kMaxAdminHeadBytes;
+    HttpRequestParser parser{limits};
+    const HttpResult<ParseProgress> progress = parser.feed(as_bytes(head));
+    if (!progress || !progress->complete) {
+        return admin_bad_request();
+    }
+    const std::optional<std::string_view> credential = bearer_credential(parser.request());
+    if (credential &&
+        constant_time_equal(as_bytes(*credential), as_bytes(std::string_view{sources.token}))) {
+        return std::nullopt;
+    }
+    if (sources.unauthorized) {
+        sources.unauthorized();
+    }
+    return text("401 Unauthorized", "credential required\n", "WWW-Authenticate: Bearer\r\n");
+}
+
+/// `GET /metrics`: the credential first when a token is set (ADR-0041), and only then the page.
+std::string metrics_response(std::string_view head, const AdminSources& sources) {
+    if (!sources.token.empty()) {
+        if (std::optional<std::string> refusal = refuse_unless_allowed(head, sources)) {
+            return std::move(*refusal);
+        }
+    }
+    const std::string body = sources.metrics_text ? sources.metrics_text() : std::string{};
+    if (body.size() > kMaxBodyBytes) {
+        return text("500 Internal Server Error", "metrics too large\n");
+    }
+    return respond("200 OK", "text/plain; version=0.0.4; charset=utf-8", {}, body);
+}
+
 }  // namespace
 
 std::string admin_bad_request() {
@@ -78,11 +124,7 @@ std::string admin_response(std::string_view head, const AdminSources& sources) {
         return text("405 Method Not Allowed", "method not allowed\n", "Allow: GET\r\n");
     }
     if (parts[1] == "/metrics") {
-        const std::string body = sources.metrics_text ? sources.metrics_text() : std::string{};
-        if (body.size() > kMaxBodyBytes) {
-            return text("500 Internal Server Error", "metrics too large\n");
-        }
-        return respond("200 OK", "text/plain; version=0.0.4; charset=utf-8", {}, body);
+        return metrics_response(head, sources);
     }
     if (parts[1] == "/healthz") {
         return text("200 OK", "ok\n");
