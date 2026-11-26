@@ -1,7 +1,7 @@
 # Lesson 55 — A quickstart you can verify, and claims you can check
 
 ## Goal
-After this lesson you can explain why a project's first five minutes are an engineering artifact (not marketing copy), how to test a quickstart as if you were a stranger, why every claim on an "evidence" page needs a command next to it, and why an "is this for you?" table that sends readers to competitors builds trust instead of losing it.
+After this lesson you can explain why a project's first five minutes are an engineering artifact (not marketing copy), how to test a quickstart as if you were a stranger, why every claim on an "evidence" page needs a command next to it, and why a page that states its own limits is believed.
 
 ## The problem
 wsrv at 1.0 was correct and well tested, but a newcomer had to read about ten documents to learn that. Three things were missing:
@@ -30,9 +30,6 @@ How: bring the stack up in a scratch project name, drive the page in a real brow
 - A command is only listed if the target, preset or script exists in the repository. They were checked against `CMakePresets.json`, `cmake/WsrvChecks.cmake` and `.github/workflows/ci.yml`.
 - What is not evidenced has its own section: no external audit, young project, Laravel glue tried by hand, macOS and Windows end to end not tested on real machines, no multi-node backplane.
 
-## 4. Telling people when to go elsewhere
-The README's "Is wsrv right for you?" table recommends Laravel Reverb for an app that wants `broadcast()` and Echo through environment variables, and Workerman or Swoole for a one-process PHP app, because the benchmarks show wsrv behind them per core on echo. It recommends wsrv for the cases where its design pays: connection handling in a separate hardened daemon, a PHP worker that only reacts to events, and throughput that grows with cores. A reader who finds the weakness stated plainly believes the strengths.
-
 ## Pitfalls
 - **Copying a number into three documents.** Each copy drifts. Link to the source and summarize once.
 - **A quickstart that depends on something you pull.** Everything the stack needs is either built from the repository or the one published image. The static page is served by the PHP image already built, so there is nothing extra to download.
@@ -41,6 +38,6 @@ The README's "Is wsrv right for you?" table recommends Laravel Reverb for an app
 
 ## Exercises
 1. Change `WSRV_WEB_PORT` to 18000 and start the stack. What breaks if you open the page as `http://127.0.0.1:18000` and the daemon lists only `localhost`, and which log line tells you?
-2. Add a fifth row to the "Is wsrv right for you?" table for a case you know. What evidence would you want in `EVIDENCE.md` before writing it?
+2. Pick a claim on the README that has no row in `EVIDENCE.md`. What command would check it?
 3. Pick one row of `EVIDENCE.md`, run its check on your machine, and compare with "last result". If they differ, which document do you fix?
 4. The page prints `data.byteLength ?? data.size` for binary messages. Why does it not try to decode them?

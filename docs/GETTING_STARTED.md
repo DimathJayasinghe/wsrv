@@ -20,8 +20,6 @@ Pick the path that matches what you have. Every path ends with something you can
 | A web page that must survive deploys | [6. The browser client](#6-the-browser-client) | a client that reconnects and rejoins its rooms | 5 min |
 | Something other than PHP | [7. Another language](#7-another-language) | the protocol and the C ABI | - |
 
-Not sure wsrv is the right tool? Read [Is wsrv right for you?](../README.md#is-wsrv-right-for-you) first. It says plainly when to pick Laravel Reverb, Workerman or Swoole instead.
-
 ## 1. See it work (Docker, five minutes)
 
 You need Docker with Compose. No compiler, no PHP on your machine.
@@ -106,7 +104,7 @@ The full API (events, authentication hook, rooms, supervisor): [bindings/php/REA
 
 [docs/LARAVEL.md](LARAVEL.md) is a complete guide: install, config, a **one-time ticket** so only logged-in users can connect, an Artisan worker that decides who may join which room, publishing from controllers and queued jobs, and the browser side.
 
-**Honest scope.** wsrv is not a Laravel Broadcasting driver. `broadcast(new Event)`, Laravel Echo and the Pusher protocol are not implemented; you call `Wsrv\Publisher` yourself. The wsrv calls in the guide are covered by the package's tests, including a run against a real daemon; the Laravel glue was tried by hand against Laravel 13 and is not in CI. If you want `broadcast()` and Echo to work by changing environment variables, use Laravel Reverb.
+**Honest scope.** wsrv is not a Laravel Broadcasting driver. `broadcast(new Event)`, Laravel Echo and the Pusher protocol are not implemented; you call `Wsrv\Publisher` yourself. The wsrv calls in the guide are covered by the package's tests, including a run against a real daemon; the Laravel glue was tried by hand against Laravel 13 and is not in CI.
 
 ## 4. Publish from anywhere
 

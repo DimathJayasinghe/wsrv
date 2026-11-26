@@ -5,8 +5,7 @@ language that can call a C ABI). A from-scratch **RFC 6455** implementation in m
 no Asio, no third-party WebSocket library. Open source under the [Apache License 2.0](LICENSE).
 
 **New here?** [Get started in five minutes](docs/GETTING_STARTED.md) (a browser page, a PHP worker and a
-reconnect you can watch), see [what has been checked and how to check it yourself](docs/EVIDENCE.md), or read
-on to decide whether wsrv is the right tool.
+reconnect you can watch), see [what has been checked and how to check it yourself](docs/EVIDENCE.md).
 
 > Status: **1.0.0**, stable. The 1.0 line freezes the IPC protocol, the C ABI and the PHP API (see
 > [Stability](#stability)); what was checked before release, and what is known and accepted, is in
@@ -36,22 +35,6 @@ controller / queue job ──HTTP POST /publish (token)
 
 PHP never runs on the daemon's I/O threads: a slow handler does not block the sockets (pings, handshakes and
 limits keep working), and a worker that stalls for good is cut off after a timeout and its clients are closed with 1001.
-
-## Is wsrv right for you?
-
-wsrv is not the only way to push messages to browsers from PHP, and for many apps it is not the best one.
-
-| Your situation | Probably the best fit |
-|---|---|
-| A Laravel app where `broadcast(new Event)` and Laravel Echo should work by changing environment variables | Laravel Reverb. wsrv is not a Broadcasting driver (you call `Wsrv\Publisher` yourself; [guide](docs/LARAVEL.md)). |
-| A PHP app, a modest number of connections, and you want everything in one PHP process | Workerman or Swoole: one process, one language, and faster per core on echo ([numbers](docs/BENCHMARKS.md)). |
-| A PHP app (Laravel, Symfony, plain) that wants connections, TLS, limits and metrics in a separate hardened daemon, a PHP worker that only reacts to events, and more throughput as cores are added | **wsrv** |
-| A language other than PHP | **wsrv**, through the [IPC protocol](docs/IPC_PROTOCOL.md) or the [C ABI](docs/BINDINGS.md). Only PHP has a ready-made worker client today. |
-
-What wsrv does not have yet, so you do not find out later: the server runs on Linux only (a native macOS
-server is planned), there is no built-in message backplane between several daemons (you publish to each),
-it has had no external security audit, and it is young. The evidence it does have is on one page:
-[docs/EVIDENCE.md](docs/EVIDENCE.md).
 
 ## Run it in 60 seconds (PHP, Docker; no C++ and no compiler)
 
