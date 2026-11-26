@@ -71,14 +71,14 @@ Repository and launch (M14, listed here so nothing is forgotten)
 - [ ] Owner: review of the git history (author e-mail addresses) and a full-history secret scan before the repository goes public
 - [ ] Owner: branch protection on `main`; secret scanning, push protection, private vulnerability reporting enabled
   - Recommendation (2026-11-22): block force pushes and branch deletion on `main`; do **not** require status checks while `ci.yml` uses `paths-ignore`, because a docs-only PR gets no status and would stay blocked forever. Required checks are an M14 decision. Not applied: a repository setting, and a private repository may need a paid plan for it.
-- [ ] Signed release artifacts and an SBOM: **built** (ADR-0033: vulnerability scan, cosign signature, SBOM, build attestation); the workflow has run for real only up to `0.1.0-rc.2` and runs with these steps for the first time on the next tag. Tick after `1.0.0-rc.1` is verified.
+- [x] Signed release artifacts and an SBOM (ADR-0033), verified on `1.0.0-rc.1` (2026-11-26): `SHA256SUMS` matches all five files; `gh attestation verify` passes for the four binaries, the SBOM and the image (and fails on a file with one byte added); `cosign verify` (cosign 3) passes for the image with the identity `release.yml@refs/tags/v1.0.0-rc.1`; the SBOM is SPDX 2.3 with 93 packages; the multi-arch image (30 MB, non-root, `latest` not set) starts, answers a handshake (101 for the allowed origin, 403 for another) and becomes healthy on x86-64. The arm64 image could not be run here (no emulation); it is built and scanned on a native arm runner, and the release job now also starts it there (ADR-0033 A1).
 - [x] Versioning policy stated: README "Stability" (IPC protocol 0.3 frozen for 1.x, C ABI 1.0 with ADR-0016 A4, PHP package follows semantic versioning; the C++ headers under `src/` are not promised)
 
 ## 5. Go / no-go
 
 **Release candidate for evaluation: yes.** The server core, TLS, deflate, limits, broker, metrics, C ABI and sidecar are built, tested under every sanitizer, fuzzed and reviewed three times; the claims in section 2 can be checked by running the named commands.
 
-**Public 1.0: not yet.** What is left: the engineering boxes (coverage figures re-measured, the row-by-row audit of REQUIREMENTS section 4), verifying the signed artifacts and the SBOM on `1.0.0-rc.1`, and the owner's decisions (the history review, branch protection, and the go for `v1.0.0` and the `latest` tag). The three open review items of the second security review are closed (section 3). This document does not change repository visibility or publish a final release; that is the owner's call.
+**Public 1.0: not yet.** What is left: the engineering boxes (coverage figures re-measured, the row-by-row audit of REQUIREMENTS section 4), the Docker Hub copy of the image (needs the owner's login and secrets), and the owner's decisions (the history review, branch protection, and the go for `v1.0.0` and the `latest` tag). The three open review items of the second security review are closed (section 3). This document does not change repository visibility or publish a final release; that is the owner's call.
 
 ## 6. Going public (checklist, 2026-11-22)
 

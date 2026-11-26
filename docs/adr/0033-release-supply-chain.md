@@ -23,3 +23,10 @@ All of it in `release.yml`, on a version tag, with every third-party action pinn
 − Every release run is longer (scan, sign, SBOM): a few minutes, and only on tags.
 − A scan finding in the Ubuntu base image blocks a release until the base or the package set is updated: that is the point, but it can delay a tag. A finding that is a false positive for this image would need an explicit, reviewed ignore file.
 − Trivy's vulnerability database and the sigstore services are external dependencies of the release job (not of the build or the image).
+
+## Amendment A1 (2026-11-26): found while verifying `1.0.0-rc.1`
+
+The first tag to run these steps for real passed every check, with two lessons.
+
+1. **Verify with cosign 3 or newer.** The release job installs cosign v3 (`cosign-installer` v4), which writes signatures in the Sigstore bundle format. cosign 2.x answers `no signatures found` for the same image. The user-facing text (`docker/HUB.md`) now says so. Verified with cosign v3.0.6: the identity is `release.yml@refs/tags/v1.0.0-rc.1`, the certificate chain and the transparency-log entry check out.
+2. **The image is run before it is pushed.** The release job built and scanned each architecture's image but never started it, and `container.yml` starts it on x86-64 only, so nothing ever ran the arm64 image. The job now runs the image on its own (native) runner and waits for the container healthcheck, before the scan and the push.
