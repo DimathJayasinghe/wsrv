@@ -42,6 +42,23 @@ final class LibraryInstaller
         };
     }
 
+    /**
+     * The prebuilt files are Linux (glibc) ELF files, and the server is built on epoll. On another system
+     * the architecture check alone would pass (Apple Silicon says "arm64", which maps to aarch64) and the
+     * installer would write a library that can never load, so stop first and say what works instead.
+     *
+     * @param string $family PHP_OS_FAMILY
+     */
+    public static function checkOperatingSystem(string $family): void
+    {
+        if ($family !== 'Linux') {
+            throw new InstallException(
+                "no prebuilt library for $family: wsrvd and libwsrv are Linux only. On $family run the wsrvd Docker image "
+                . "(see docs/DEPLOYMENT.md) and your worker in a container too; the PHP client works on $family"
+            );
+        }
+    }
+
     /** The release's architecture name for what php_uname('m') says; anything else has no prebuilt library. */
     public static function architecture(string $uname): string
     {
