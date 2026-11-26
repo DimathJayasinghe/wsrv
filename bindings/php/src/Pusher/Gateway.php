@@ -39,7 +39,7 @@ final class Gateway
 
     /** @var array<int, ConnState> */
     private array $conns = [];
-    /** @var array<int, array{conn: int, channel: string, userId: ?string, info: ?array}> */
+    /** @var array<int, array{conn: int, channel: string, userId: ?string, info: ?array, cancelled: bool}> */
     private array $pending = [];
     private readonly PresenceTable $presence;
     private readonly \Closure $clock;
@@ -124,6 +124,7 @@ final class Gateway
                 'pusher:pong' => null,
                 'pusher:subscribe' => $this->subscribe($conn, $state, $frame),
                 'pusher:unsubscribe' => $this->unsubscribe($conn, $state, $frame),
+                'pusher:signin' => $this->error($conn, self::ERR_BAD_FRAME, 'User authentication is not supported.'),
                 default => $this->invalid($conn, $state),
             };
         } elseif (str_starts_with($frame->event, 'client-')) {
@@ -172,6 +173,13 @@ final class Gateway
             return;
         }
         unset($state->pending[$request]);
+        if ($join['cancelled']) {
+            // The browser left before the daemon answered: if the daemon did put it in the room, take it out.
+            if ($status === StatusCode::OK) {
+                $this->link->unsubscribe($join['conn'], $join['channel']);
+            }
+            return;
+        }
         if ($status === StatusCode::OK) {
             $this->joined($join['conn'], $state, $join['channel'], $join['userId'], $join['info']);
         } elseif ($status === StatusCode::LIMIT) {
@@ -218,18 +226,25 @@ final class Gateway
             $this->sendSucceeded($conn, $channel);   // already in: say so again, change nothing
             return;
         }
+        $revived = null;   // a join that was cancelled by an unsubscribe and has not been answered yet
         foreach (array_keys($state->pending) as $request) {
             if ($this->pending[$request]['channel'] === $channel) {
-                return;                              // a join for it is already on its way
+                if (!$this->pending[$request]['cancelled']) {
+                    return;                          // a join for it is already on its way
+                }
+                $revived = $request;
+                break;
             }
         }
-        if (count($state->channels) + count($state->pending) >= $this->config->maxChannelsPerConnection) {
-            $this->subscriptionError($conn, $channel, 'LimitReached', 'Connection is over channel quota');
-            return;
-        }
-        if (count($state->pending) >= $this->config->maxPendingPerConnection) {
-            $this->subscriptionError($conn, $channel, 'LimitReached', 'Too many subscriptions in progress');
-            return;
+        if ($revived === null) {
+            if (count($state->channels) + count($state->pending) >= $this->config->maxChannelsPerConnection) {
+                $this->subscriptionError($conn, $channel, 'LimitReached', 'Connection is over channel quota');
+                return;
+            }
+            if (count($state->pending) >= $this->config->maxPendingPerConnection) {
+                $this->subscriptionError($conn, $channel, 'LimitReached', 'Too many subscriptions in progress');
+                return;
+            }
         }
 
         $kind = ChannelName::kind($channel);
@@ -256,8 +271,14 @@ final class Gateway
             }
         }
 
+        if ($revived !== null) {
+            // Left and joined again before the daemon answered: the one request in flight serves the
+            // new join, with the member this signature is for.
+            $this->pending[$revived] = ['conn' => $conn, 'channel' => $channel, 'userId' => $userId, 'info' => $info, 'cancelled' => false];
+            return;
+        }
         $request = $this->link->subscribe($conn, $channel);
-        $this->pending[$request] = ['conn' => $conn, 'channel' => $channel, 'userId' => $userId, 'info' => $info];
+        $this->pending[$request] = ['conn' => $conn, 'channel' => $channel, 'userId' => $userId, 'info' => $info, 'cancelled' => false];
         $state->pending[$request] = true;
     }
 
@@ -351,7 +372,14 @@ final class Gateway
             return;
         }
         if (!array_key_exists($channel, $state->channels)) {
-            return;   // nothing to leave; Pusher sends no answer either way
+            // A join still waiting for the daemon (an SPA joins and leaves on a route change): mark it,
+            // and status() takes the connection out of the room again when the answer comes.
+            foreach (array_keys($state->pending) as $request) {
+                if ($this->pending[$request]['channel'] === $channel) {
+                    $this->pending[$request]['cancelled'] = true;
+                }
+            }
+            return;   // nothing else to leave; Pusher sends no answer either way
         }
         $userId = $state->channels[$channel];
         unset($state->channels[$channel]);
@@ -382,6 +410,11 @@ final class Gateway
         $data = $frame->relayData();
         if ($channel === null || $data === null || strlen($frame->event) <= strlen('client-')) {
             $this->invalid($conn, $state);
+            return;
+        }
+        if (EncryptedChannels::isEncrypted($channel)) {
+            // pusher-js refuses client events on an encrypted channel too: its receivers expect {nonce, ciphertext}.
+            $this->error($conn, self::ERR_CLIENT_EVENTS, 'Client events are not supported on encrypted channels.');
             return;
         }
         if (!array_key_exists($channel, $state->channels) || ChannelName::kind($channel) === ChannelKind::Public) {

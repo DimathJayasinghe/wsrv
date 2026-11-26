@@ -711,3 +711,100 @@ test('pusher gateway: presence user_info that cannot be encoded again is refused
     assertSame(4200, $link->lastFrame(1)['data']['code']);
     assertSame([], $link->subscribed);
 });
+
+// ---- leaving while a join is still on its way (an SPA does join() then leave() on a route change) --------
+
+test('pusher gateway: unsubscribing before the daemon answers cancels the join and leaves the room again', function () {
+    [$gw, $link] = gateway();
+    $s1 = open_conn($gw, $link, 1);
+    $gw->received(1, subscribe_frame('orders', $s1));
+    $request = $link->lastRequest();
+    $gw->received(1, frame_text('pusher:unsubscribe', ['channel' => 'orders']));
+    $before = count($link->frames(1));
+    $gw->status($request, StatusCode::OK);
+    assertSame([[1, 'orders']], $link->unsubscribed, 'the daemon room is left');
+    assertSame($before, count($link->frames(1)), 'no subscription_succeeded for a channel that was left');
+    assertSame(0, $gw->channelsOf(1));
+    assertSame(0, $gw->pendingCount());
+});
+
+test('pusher gateway: a presence join that was left before the answer never announces the member', function () {
+    [$gw, $link] = gateway();
+    $s1 = open_conn($gw, $link, 1);
+    $s2 = open_conn($gw, $link, 2);
+    join_channel($gw, $link, 2, $s2, 'presence-room', user_data('2'));
+    $link->published = [];
+    $gw->received(1, subscribe_frame('presence-room', $s1, user_data('1')));
+    $request = $link->lastRequest();
+    $gw->received(1, frame_text('pusher:unsubscribe', ['channel' => 'presence-room']));
+    $gw->status($request, StatusCode::OK);
+    assertSame([], $link->published, 'nobody is told about a member who already left');
+    assertSame(1, $link->lastFrame(2)['data']['presence']['count'] ?? 1);
+    $gw->closed(1);
+    assertSame([], $link->published, 'and nobody is told that it left');
+    assertSame(1, $gw->presenceChannels());
+});
+
+test('pusher gateway: leaving and joining again before the answer ends in one join', function () {
+    [$gw, $link] = gateway();
+    $s1 = open_conn($gw, $link, 1);
+    $gw->received(1, subscribe_frame('orders', $s1));
+    $request = $link->lastRequest();
+    $gw->received(1, frame_text('pusher:unsubscribe', ['channel' => 'orders']));
+    $gw->received(1, subscribe_frame('orders', $s1));
+    assertSame(1, count($link->subscribed), 'the daemon is not asked twice');
+    $gw->status($request, StatusCode::OK);
+    assertSame([], $link->unsubscribed);
+    assertSame('pusher_internal:subscription_succeeded', $link->lastFrame(1)['event']);
+    assertSame(1, $gw->channelsOf(1));
+});
+
+test('pusher gateway: a cancelled join that the daemon refuses says nothing', function () {
+    [$gw, $link] = gateway();
+    $s1 = open_conn($gw, $link, 1);
+    $gw->received(1, subscribe_frame('orders', $s1));
+    $request = $link->lastRequest();
+    $gw->received(1, frame_text('pusher:unsubscribe', ['channel' => 'orders']));
+    $before = count($link->frames(1));
+    $gw->status($request, StatusCode::LIMIT);
+    assertSame($before, count($link->frames(1)));
+    assertSame([], $link->unsubscribed, 'the connection was never in the room');
+});
+
+test('pusher gateway: re-joining a presence channel after a cancelled join uses the new signed member', function () {
+    [$gw, $link] = gateway();
+    $s1 = open_conn($gw, $link, 1);
+    $gw->received(1, subscribe_frame('presence-room', $s1, user_data('1')));
+    $request = $link->lastRequest();
+    $gw->received(1, frame_text('pusher:unsubscribe', ['channel' => 'presence-room']));
+    $gw->received(1, subscribe_frame('presence-room', $s1, user_data('5')));
+    $gw->status($request, StatusCode::OK);
+    assertSame(['5'], $link->lastFrame(1)['data']['presence']['ids']);
+});
+
+// ---- encrypted channels carry no client events -----------------------------------------------------------
+
+test('pusher gateway: client events are refused on an encrypted channel, as Pusher refuses them', function () {
+    [$gw, $link] = gateway();
+    $s1 = open_conn($gw, $link, 1);
+    join_channel($gw, $link, 1, $s1, 'private-encrypted-chat.1');
+    $link->published = [];
+    $gw->received(1, whisper('private-encrypted-chat.1', 'client-x', ['a' => 1]));
+    $f = $link->lastFrame(1);
+    assertSame('pusher:error', $f['event']);
+    assertSame(4301, $f['data']['code']);
+    assertSame([], $link->published);
+});
+
+test('pusher gateway: user authentication (pusher:signin) is answered once and costs no strike', function () {
+    [$gw, $link] = gateway(['maxStrikes' => 2]);
+    open_conn($gw, $link, 1);
+    for ($i = 0; $i < 5; $i++) {
+        $gw->received(1, frame_text('pusher:signin', ['auth' => 'x', 'user_data' => '{}']));
+    }
+    $f = $link->lastFrame(1);
+    assertSame('pusher:error', $f['event']);
+    assertSame(4200, $f['data']['code']);
+    assertSame('User authentication is not supported.', $f['data']['message']);
+    assertSame([], $link->closed, 'a legitimate client is not closed for asking');
+});

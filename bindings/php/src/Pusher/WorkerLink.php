@@ -30,7 +30,7 @@ final class WorkerLink implements Link
 
     public function send(int $conn, string $text): void
     {
-        $this->connections[$conn]?->send($text);
+        ($this->connections[$conn] ?? null)?->send($text);
     }
 
     public function subscribe(int $conn, string $topic): int
@@ -50,6 +50,6 @@ final class WorkerLink implements Link
 
     public function close(int $conn, int $code, string $reason): void
     {
-        $this->connections[$conn]?->close($code, $reason);
+        ($this->connections[$conn] ?? null)?->close($code, $reason);
     }
 }

@@ -29,32 +29,49 @@ exec(escapeshellarg($daemonPath) . ' --generate-token=' . escapeshellarg($tokenF
 $code === 0 || fail('--generate-token failed');
 $token = trim((string) file_get_contents($tokenFile));
 
-$process = proc_open(
-    [$daemonPath, "--ipc-socket=$socket", '--listen-port=0', '--allow-origin=https://app.example.com',
-        '--shutdown-grace-ms=1500', '--broker=true', '--publish-port=0', "--publish-token-file=$tokenFile",
-        '--max-message-size=16384'],
-    [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['pipe', 'w']],
-    $pipes
-) ?: fail('cannot start wsrvd');
-$port = 0;
-$publishPort = 0;
-$log = '';
-$deadline = microtime(true) + 10;
-while (($port === 0 || $publishPort === 0) && microtime(true) < $deadline) {
-    $r = [$pipes[2]];
-    $w = $e = null;
-    if (stream_select($r, $w, $e, 0, 200000) > 0) {
-        $line = fgets($pipes[2]);
-        $log .= (string) $line;
-        if ($line !== false && preg_match('/event=listening .*listening on port (\d+)/', $line, $m)) {
-            $port = (int) $m[1];
-        }
-        if ($line !== false && preg_match('/event=publish_listening .*:(\d+)"/', $line, $m)) {
-            $publishPort = (int) $m[1];
+/**
+ * Start a wsrvd with the broker and a publish endpoint; returns its process, ports and sockets.
+ *
+ * @param list<string> $extra more daemon arguments
+ * @return array{process: resource, port: int, publishPort: int, socket: string}
+ */
+function start_wsrvd(string $daemonPath, string $dir, string $name, string $tokenFile, array $extra = []): array
+{
+    $socket = "$dir/$name.sock";
+    $process = proc_open(
+        array_merge([$daemonPath, "--ipc-socket=$socket", '--listen-port=0', '--allow-origin=https://app.example.com',
+            '--shutdown-grace-ms=1500', '--broker=true', '--publish-port=0', "--publish-token-file=$tokenFile",
+            '--max-message-size=16384'], $extra),
+        [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['pipe', 'w']],
+        $pipes
+    ) ?: fail('cannot start wsrvd');
+    $port = 0;
+    $publishPort = 0;
+    $log = '';
+    $deadline = microtime(true) + 10;
+    while (($port === 0 || $publishPort === 0) && microtime(true) < $deadline) {
+        $r = [$pipes[2]];
+        $w = $e = null;
+        if (stream_select($r, $w, $e, 0, 200000) > 0) {
+            $line = fgets($pipes[2]);
+            $log .= (string) $line;
+            if ($line !== false && preg_match('/event=listening .*listening on port (\d+)/', $line, $m)) {
+                $port = (int) $m[1];
+            }
+            if ($line !== false && preg_match('/event=publish_listening .*:(\d+)"/', $line, $m)) {
+                $publishPort = (int) $m[1];
+            }
         }
     }
+    ($port > 0 && $publishPort > 0) || fail("wsrvd did not start:\n$log");
+    return ['process' => $process, 'port' => $port, 'publishPort' => $publishPort, 'socket' => $socket];
 }
-($port > 0 && $publishPort > 0) || fail("wsrvd did not start:\n$log");
+
+$daemon = start_wsrvd($daemonPath, $dir, 'ipc', $tokenFile);
+$process = $daemon['process'];
+$port = $daemon['port'];
+$publishPort = $daemon['publishPort'];
+$socket = $daemon['socket'];
 
 $worker = new Worker(Client::connect($socket, '', 5.0));
 $gateway = Gateway::forWorker(new GatewayConfig(KEY, SECRET, maxPresenceMembers: 3, maxChannelsPerConnection: 4), $worker);
@@ -274,6 +291,35 @@ $check('channel quota: the fifth channel is refused with LimitReached', function
     assertSame('pusher:subscription_error', $f['event']);
     assertSame('LimitReached', $f['data']['type']);
 });
+
+// ---- the app key in the URL, checked at the handshake (check_app_key, needs handshake_hook) ---------------
+
+$strict = start_wsrvd($daemonPath, $dir, 'strict', $tokenFile, ['--handshake-hook=true']);
+$strictWorker = new Worker(Client::connect($strict['socket'], '', 5.0));
+Gateway::forWorker(new GatewayConfig(KEY, SECRET), $strictWorker, true);
+$strictSettle = function (float $seconds = 0.25) use ($strictWorker): void {
+    $end = microtime(true) + $seconds;
+    while (microtime(true) < $end) {
+        $strictWorker->step(0.05);
+    }
+};
+
+$check('check_app_key: the right key (with the query pusher-js adds) is let in, a wrong or missing one is a 404', function () use ($strict, $strictSettle) {
+    $good = ws_request_async($strict['port'], '', '/app/' . KEY . '?protocol=7&client=js&version=8.4.0&flash=false');
+    $strictSettle();
+    [$stream, $head] = ws_finish($good);
+    assertTrue(str_starts_with($head, 'HTTP/1.1 101'), 'right key: ' . strtok($head, "\r\n"));
+    fclose($stream);
+    foreach (['/app/another-key?protocol=7', '/', '/chat', '/app/' . KEY . 'x'] as $path) {
+        $bad = ws_request_async($strict['port'], '', $path);
+        $strictSettle();
+        [$stream, $head] = ws_finish($bad);
+        assertTrue(str_starts_with($head, 'HTTP/1.1 404'), "$path: " . strtok($head, "\r\n"));
+        fclose($stream);
+    }
+});
+
+proc_terminate($strict['process'], SIGTERM);
 
 fclose($a);
 fclose($b);

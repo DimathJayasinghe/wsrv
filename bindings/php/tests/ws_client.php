@@ -46,11 +46,11 @@ function ws_connect(int $port, string $extraHeaders = '', string $path = '/chat'
  *
  * @return array{0: resource, 1: string} [stream, key]
  */
-function ws_request_async(int $port, string $extraHeaders = ''): array
+function ws_request_async(int $port, string $extraHeaders = '', string $path = '/chat'): array
 {
     $s = stream_socket_client("tcp://127.0.0.1:$port", $errno, $error, 5) ?: fail("connect: $error");
     $key = base64_encode(random_bytes(16));
-    fwrite($s, "GET /chat HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+    fwrite($s, "GET $path HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
         . "Sec-WebSocket-Key: $key\r\nSec-WebSocket-Version: 13\r\nOrigin: https://app.example.com\r\n"
         . $extraHeaders . "\r\n");
     stream_set_timeout($s, 5);

@@ -111,10 +111,10 @@ The browser's `Origin` must be in `--allow-origin`. Channel names are limited to
 | Private channels and `Broadcast::channel()` callbacks | yes: the signature is bound to the browser's socket id and the channel |
 | Presence channels: `here`, `joining`, `leaving` | yes, per daemon; a user with two tabs is one member until the last tab leaves |
 | `toOthers()` | yes, through the sender's socket id |
-| Whispers (`.whisper()`, `listenForWhisper()`) | yes, only between members of a private or presence channel, rate limited |
+| Whispers (`.whisper()`, `listenForWhisper()`) | yes, only between members of a private or presence channel, rate limited; not on encrypted channels |
 | Encrypted channels (`private-encrypted-*`) | yes, with `ext-sodium` and a master key; without a key, broadcasting to one is an error and never sends plaintext |
 | Pusher's HTTP API (`pusher/pusher-php-server` pointed at wsrv, `/apps/.../events`) | no |
-| User authentication and watchlist (`pusher:signin`, `Echo.user()`) | no |
+| User authentication and watchlist (`pusher:signin`, `Echo.user()`) | no: answered with a 4200 error, once, without a strike |
 | More than one daemon with the Pusher protocol | no: presence and `toOthers()` are per daemon |
 | Delivery to a browser that is offline | no: delivery is at most once; fetch what was missed from your database |
 
