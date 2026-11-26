@@ -62,7 +62,8 @@ constexpr std::string_view kHealthcheckFlag = "--healthcheck";
         return true;
     }
     if (rest.starts_with(kServicePortPrefix)) {
-        return only_port_name_characters(rest.substr(kServicePortPrefix.size()));
+        rest.remove_prefix(kServicePortPrefix.size());
+        return only_port_name_characters(rest);
     }
     if (rest == "PORT") {
         return value.starts_with("tcp://") || value.starts_with("udp://") ||
@@ -74,16 +75,18 @@ constexpr std::string_view kHealthcheckFlag = "--healthcheck";
     }
     rest.remove_prefix(kPortPrefix.size());
     const std::size_t underscore = rest.find('_');
-    if (underscore == std::string_view::npos || !only_digits(rest.substr(0, underscore))) {
+    if (underscore == std::string_view::npos ||
+        !only_digits(std::string_view{rest.data(), underscore})) {
         return false;
     }
     rest.remove_prefix(underscore + 1);
-    for (const std::string_view protocol : {"TCP", "UDP", "SCTP"}) {
+    for (const std::string_view protocol : {std::string_view{"TCP"}, std::string_view{"UDP"},
+                                            std::string_view{"SCTP"}}) {
         if (!rest.starts_with(protocol)) {
             continue;
         }
-        const std::string_view tail = rest.substr(protocol.size());
-        return tail.empty() || tail == "_PROTO" || tail == "_PORT" || tail == "_ADDR";
+        rest.remove_prefix(protocol.size());
+        return rest.empty() || rest == "_PROTO" || rest == "_PORT" || rest == "_ADDR";
     }
     return false;
 }
