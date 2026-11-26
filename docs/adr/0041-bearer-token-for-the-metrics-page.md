@@ -1,6 +1,6 @@
 # ADR-0041: An optional bearer token for the admin listener's `/metrics` page
 
-- Status: **Proposed** (2026-11-26; the owner chose the scope in chat: optional, not required; the owner accepts the ADR). Amends ADR-0023 section 5 ("authentication of the admin port ... loopback or network policy is the control"). Closes the "admin listener has no auth" point of the second independent review.
+- Status: **Accepted** (2026-11-26, by the project owner in chat; the owner chose the scope: optional, not required). Amends ADR-0023 section 5 ("authentication of the admin port ... loopback or network policy is the control"). Closes the "admin listener has no auth" point of the second independent review.
 - Date: 2026-11-26
 - Deciders: project owner, maintainer assistant
 
