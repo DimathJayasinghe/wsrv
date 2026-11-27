@@ -227,6 +227,33 @@ $check('a closed browser is removed from presence and told to nobody', function 
     assertSame(['user_id' => '9'], $removed['data']);
 });
 
+$check('a repeated presence subscribe is answered with the members who are in now, also while the list is kept', function () use ($a, $sockA, $browser, $settle) {
+    // The gateway keeps the member list it built for a repeat (ADR-0042 A2). It must never answer from a list
+    // the members have outgrown: the room holds user 1 (this connection) when the check starts and ends.
+    $dataA = json_encode(['user_id' => '1', 'user_info' => ['name' => 'Ada']]);
+    $again = function () use ($a, $sockA, $dataA, $settle): array {
+        pusher_send($a, 'pusher:subscribe', ['channel' => 'presence-room', 'auth' => sign($sockA, 'presence-room', $dataA), 'channel_data' => $dataA]);
+        $settle();
+        $f = pusher_read($a);
+        assertSame('pusher_internal:subscription_succeeded', $f['event']);
+        assertSame('presence-room', $f['channel']);
+        return $f['data']['presence']['ids'];
+    };
+    assertSame(['1'], $again());
+    assertSame(['1'], $again(), 'asked twice, answered twice');
+    [$e, $sockE] = $browser();
+    $dataE = json_encode(['user_id' => '7']);
+    pusher_send($e, 'pusher:subscribe', ['channel' => 'presence-room', 'auth' => sign($sockE, 'presence-room', $dataE), 'channel_data' => $dataE]);
+    $settle();
+    assertSame(['1', '7'], pusher_read($e)['data']['presence']['ids']);
+    assertSame('pusher_internal:member_added', pusher_read($a)['event']);
+    assertSame(['1', '7'], $again(), 'a member who came is in the answer');
+    fclose($e);
+    $settle(0.5);
+    assertSame('pusher_internal:member_removed', pusher_read($a)['event']);
+    assertSame(['1'], $again(), 'and out of it again when they left');
+});
+
 $check('hostile input: bad frames are answered, strikes close the connection, the daemon stays up', function () use ($port, $settle) {
     $x = ws_connect($port, '', '/app/' . KEY);
     $settle();

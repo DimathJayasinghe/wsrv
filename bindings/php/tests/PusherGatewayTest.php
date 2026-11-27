@@ -776,6 +776,108 @@ test('pusher gateway: random and hostile frames never throw and never break a bo
     assertSame(0, $gw->presenceChannels(), 'no member survives its connection');
 });
 
+// ---- asking to join a channel one is already in -------------------------------------------------------
+// Pusher answers a repeated subscribe with the list again (Reverb does too), and pusher-js never sends one,
+// but any other client may send them as fast as the message rate allows. The list costs the worker time in
+// proportion to the members, so a repeat is answered from the frame built the last time while the members
+// are the same ones, and from a new one as soon as they are not.
+
+/** @return list<string> the member ids in the latest answer to $conn, after it asked to join $channel again */
+function repeat_ids(Gateway $gw, FakeLink $link, int $conn, string $socketId, string $channel, string $channelData): array
+{
+    $link->clear();
+    $gw->received($conn, subscribe_frame($channel, $socketId, $channelData));
+    $f = $link->lastFrame($conn);
+    assertSame('pusher_internal:subscription_succeeded', $f['event']);
+    return $f['data']['presence']['ids'];
+}
+
+test('pusher gateway: a repeated presence subscribe always lists the members who are in now', function () {
+    [$gw, $link] = gateway();
+    $s = [];
+    for ($i = 1; $i <= 4; $i++) {
+        $s[$i] = open_conn($gw, $link, $i);
+    }
+    $room = 'presence-room';
+    join_channel($gw, $link, 1, $s[1], $room, user_data('1', ['name' => 'Ada']));
+    assertSame(['1'], repeat_ids($gw, $link, 1, $s[1], $room, user_data('1', ['name' => 'Ada'])));
+    assertSame(['1'], repeat_ids($gw, $link, 1, $s[1], $room, user_data('1', ['name' => 'Ada'])), 'asked twice, answered twice');
+    join_channel($gw, $link, 2, $s[2], $room, user_data('2', ['name' => 'Bob']));
+    assertSame(['1', '2'], repeat_ids($gw, $link, 1, $s[1], $room, user_data('1', ['name' => 'Ada'])), 'a new member is listed');
+    join_channel($gw, $link, 3, $s[3], $room, user_data('2', ['name' => 'Bob in another tab']));
+    assertSame(['1', '2'], repeat_ids($gw, $link, 1, $s[1], $room, user_data('1', ['name' => 'Ada'])), 'a second tab is no new member');
+    $gw->closed(2);
+    assertSame(['1', '2'], repeat_ids($gw, $link, 1, $s[1], $room, user_data('1', ['name' => 'Ada'])), 'Bob is still in through the other tab');
+    $gw->closed(3);
+    assertSame(['1'], repeat_ids($gw, $link, 1, $s[1], $room, user_data('1', ['name' => 'Ada'])), 'Bob left with his last tab');
+    join_channel($gw, $link, 4, $s[4], $room, user_data('3', ['name' => 'Cy']));
+    assertSame(['1', '3'], repeat_ids($gw, $link, 1, $s[1], $room, user_data('1', ['name' => 'Ada'])));
+    // the room emptied and made again is a different room, whatever was kept for the old one
+    $gw->closed(4);
+    $gw->closed(1);
+    $s[5] = open_conn($gw, $link, 5);
+    join_channel($gw, $link, 5, $s[5], $room, user_data('9', ['name' => 'Di']));
+    assertSame(['9'], repeat_ids($gw, $link, 5, $s[5], $room, user_data('9', ['name' => 'Di'])));
+});
+
+test('pusher gateway: a repeated presence subscribe reuses the list while the members are the same, and builds it again when they change', function () {
+    [$gw, $link] = gateway();
+    $s1 = open_conn($gw, $link, 1);
+    $s2 = open_conn($gw, $link, 2);
+    $room = 'presence-room';
+    join_channel($gw, $link, 1, $s1, $room, user_data('1', ['name' => 'Ada']));
+    $kept = new ReflectionProperty($gw, 'listFrames');
+    assertSame([], $kept->getValue($gw), 'the join itself keeps nothing: the next join would change it at once');
+
+    $link->clear();
+    $gw->received(1, subscribe_frame($room, $s1, user_data('1', ['name' => 'Ada'])));
+    $first = $link->sent[1][0];
+    $store = $kept->getValue($gw);
+    assertSame([$room], array_keys($store), 'the first repeat builds the list and keeps it');
+    assertSame($first, $store[$room][1]);
+
+    // Put a marker where the kept frame is: while nothing changed, a repeat must come back with the marker.
+    $store[$room][1] = 'KEPT FRAME';
+    $kept->setValue($gw, $store);
+    $link->clear();
+    $gw->received(1, subscribe_frame($room, $s1, user_data('1', ['name' => 'Ada'])));
+    assertSame(['KEPT FRAME'], $link->sent[1], 'the same members: the answer is the kept frame');
+
+    // A member comes: the kept frame is out of date, and the repeat must say who is in now.
+    join_channel($gw, $link, 2, $s2, $room, user_data('2', ['name' => 'Bob']));
+    $link->clear();
+    $gw->received(1, subscribe_frame($room, $s1, user_data('1', ['name' => 'Ada'])));
+    assertSame(['1', '2'], $link->lastFrame(1)['data']['presence']['ids']);
+    assertTrue($link->sent[1][0] !== 'KEPT FRAME');
+    // and that new list is what is kept now
+    $store = $kept->getValue($gw);
+    assertSame($link->sent[1][0], $store[$room][1]);
+});
+
+test('pusher gateway: the lists kept for repeated subscribes are bounded, oldest first out', function () {
+    [$gw, $link] = gateway(['maxChannelsPerConnection' => 40]);
+    $s = open_conn($gw, $link, 1);
+    for ($i = 0; $i < 20; $i++) {
+        $room = "presence-room-$i";
+        join_channel($gw, $link, 1, $s, $room, user_data('1', ['n' => $i]));
+        $gw->received(1, subscribe_frame($room, $s, user_data('1', ['n' => $i])));   // a repeat keeps the list
+    }
+    $keys = array_keys((new ReflectionProperty($gw, 'listFrames'))->getValue($gw));
+    assertSame(16, count($keys), 'no more than 16 lists are kept');
+    assertSame('presence-room-4', $keys[0], 'the oldest four went first');
+    assertSame('presence-room-19', $keys[15]);
+    // A list that is built again (its room changed) counts as the newest: the next one in pushes out the oldest, not it.
+    $s2 = open_conn($gw, $link, 2);
+    join_channel($gw, $link, 2, $s2, 'presence-room-4', user_data('2', ['n' => 'a new member']));
+    $gw->received(1, subscribe_frame('presence-room-4', $s, user_data('1', ['n' => 4])));
+    join_channel($gw, $link, 1, $s, 'presence-room-20', user_data('1', ['n' => 20]));
+    $gw->received(1, subscribe_frame('presence-room-20', $s, user_data('1', ['n' => 20])));
+    $keys = array_keys((new ReflectionProperty($gw, 'listFrames'))->getValue($gw));
+    assertSame(16, count($keys));
+    assertSame('presence-room-6', $keys[0], 'room 4 was refreshed, so room 5 was the oldest and went');
+    assertSame(['presence-room-4', 'presence-room-20'], array_slice($keys, -2));
+});
+
 test('pusher gateway: a presence member list that does not fit the daemon refuses that join and nothing else', function () {
     // The daemon's IPC frame is max_message_size + 64 KiB. A list of 100 members with 2 KiB each is 200 KiB:
     // with a small max_message_size the send throws, and that must fail one join, not reset the worker's link.

@@ -40,6 +40,8 @@ final class Gateway
     private const CLOSE_POLICY = 1008;
     /** One strike is forgiven for each full period of this many quiet seconds (ADR-0042 A2). A constant: the knob for a site is max_strikes. */
     private const STRIKE_FORGIVE_SECONDS = 60.0;
+    /** Member lists kept for connections that ask to join a presence channel they are already in (ADR-0042 A2). */
+    private const LIST_FRAMES_KEPT = 16;
 
     /** @var array<int, ConnState> */
     private array $conns = [];
@@ -52,6 +54,14 @@ final class Gateway
      */
     private array $pending = [];
     private readonly PresenceTable $presence;
+    /**
+     * The answer to a repeated join, by presence channel: [the channel's revision when it was built, the frame].
+     * Only repeats are kept (a first join changes the list at once, so keeping it would help nobody), at most
+     * LIST_FRAMES_KEPT of them, oldest out first, so what this holds is bounded by that many frames.
+     *
+     * @var array<string, array{int, string}>
+     */
+    private array $listFrames = [];
     private readonly \Closure $clock;
     // Counters since the start of the process, for stats(). Only ever incremented.
     private int $opened = 0;
@@ -281,7 +291,7 @@ final class Gateway
         if (array_key_exists($channel, $state->channels)) {
             // Already in: say so again, change nothing. Unless the member list has grown past one frame since
             // this connection joined: then it cannot be told who is here, so it leaves, as if it had asked to.
-            if (!$this->sendSucceeded($conn, $channel)) {
+            if (!$this->sendSucceeded($conn, $channel, true)) {
                 $this->leave($conn, $state, $channel);
                 $this->subscriptionError($conn, $channel, 'ServerError', self::LIST_TOO_LARGE);
             }
@@ -418,24 +428,49 @@ final class Gateway
     /**
      * Tell the browser it is in the channel. False only for a presence channel whose member list does not
      * fit one frame to the daemon: nothing was sent, and the caller must undo the join.
+     *
+     * @param bool $again the connection was in the channel already and asked once more
      */
-    private function sendSucceeded(int $conn, string $channel): bool
+    private function sendSucceeded(int $conn, string $channel, bool $again = false): bool
     {
-        $data = new \stdClass();
-        if (ChannelName::kind($channel) === ChannelKind::Presence) {
-            $summary = $this->presence->summary($channel);
-            $hash = [];
-            foreach ($summary['hash'] as $id => $info) {
-                $hash[(string) $id] = $info === [] ? new \stdClass() : $info;
-            }
-            $data = ['presence' => ['count' => $summary['count'], 'ids' => $summary['ids'], 'hash' => (object) $hash]];
-        }
         try {
-            $this->link->send($conn, Frame::encode('pusher_internal:subscription_succeeded', $data, $channel));
+            $this->link->send($conn, $this->succeededFrame($channel, $again));
         } catch (MessageTooLarge) {
             return false;
         }
         return true;
+    }
+
+    /**
+     * The answer to a join. For a presence channel it carries the member list, which costs the worker time
+     * in proportion to the members, and a client may ask again as fast as its message rate allows (Pusher
+     * answers each time; pusher-js never asks twice). A repeat is therefore answered from the frame built the
+     * last time for as long as the members are the same ones, which the table's revision says.
+     */
+    private function succeededFrame(string $channel, bool $again): string
+    {
+        if (ChannelName::kind($channel) !== ChannelKind::Presence) {
+            return Frame::encode('pusher_internal:subscription_succeeded', new \stdClass(), $channel);
+        }
+        $revision = $this->presence->revision($channel);
+        if ($again && ($this->listFrames[$channel][0] ?? null) === $revision) {
+            return $this->listFrames[$channel][1];
+        }
+        $summary = $this->presence->summary($channel);
+        $hash = [];
+        foreach ($summary['hash'] as $id => $info) {
+            $hash[(string) $id] = $info === [] ? new \stdClass() : $info;
+        }
+        $data = ['presence' => ['count' => $summary['count'], 'ids' => $summary['ids'], 'hash' => (object) $hash]];
+        $frame = Frame::encode('pusher_internal:subscription_succeeded', $data, $channel);
+        if ($again) {
+            unset($this->listFrames[$channel]);   // so that the newest is last, whether or not it was kept before
+            $this->listFrames[$channel] = [$revision, $frame];
+            if (count($this->listFrames) > self::LIST_FRAMES_KEPT) {
+                unset($this->listFrames[array_key_first($this->listFrames)]);
+            }
+        }
+        return $frame;
     }
 
     // ---- pusher:unsubscribe, and leaving ------------------------------------------------------
