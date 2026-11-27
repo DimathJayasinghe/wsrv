@@ -1,7 +1,7 @@
 # Lesson 57 — Running a gateway you cannot babysit
 
 ## Goal
-After this lesson you can explain why a strike counter has to forgive, and why it must forgive in whole units; why a statistics line is made of numbers only and why "every gauge is back to zero" is the cheapest leak test there is; how one oversize message can take a whole site down when an error is treated as a lost connection, and the pattern that prevents it; and why a cache needs three bounds and a guard that makes a stale answer impossible, not just unlikely.
+After this lesson you can explain why a strike counter has to forgive, and why it must forgive in whole units; why a statistics line is made of numbers only and why "every gauge is back to zero" is the cheapest leak test there is; how one oversize message can take a whole site down when an error is treated as a lost connection, and the pattern that prevents it; and why a cache needs three bounds and a guard that makes a stale answer impossible, not just unlikely; and why a limit that strangers and customers share is something an attacker can spend.
 
 ## The problem
 The gateway of lesson 56 passed its tests and still had four ways to fail in production, none of which a test with small inputs and short lives can show: a browser tab that stays open for a week, a room with a hundred members, a client that repeats a question as fast as it is allowed to, and a site with three thousand browsers. ADR-0042 amendment A2 is the answer to the question "what happens after a week, at a hundred times the size, and when the client is rude?", and each part of it was decided by a measurement, not by a guess.
@@ -37,7 +37,7 @@ The unit tests came first and were watched to fail. The check against a real dae
 **A second size limit that nobody had written down.** After the fix the guide still recommended `--max-message-size=16384`, and a review reproduced a join that got *no answer at all* with it: the daemon keeps at most `2 x max_message_size` bytes queued for one browser, so a message over `2 x 16384 - 16 = 32752` bytes could never be queued, and it was dropped *after* the daemon had told the worker "OK" (the status means "accepted for sending", and the size check happened later, on another thread). The same hole existed for a broadcast over the HTTP publish endpoint. The general lesson: *a limit has to be checked where the caller can still be told*. The cure was to check the size where the command comes in (the send and the publish are refused with an error), and to cap the frame limit the daemon announces to the largest message it can send, so that the worker's own client refuses first and the join fails with a clear error, the same way as above (ADR-0043). The fix for the default was the odd one: with no `--max-message-size` the queue was exactly as big as the biggest message, but with the flag set to the very same value it was twice as big. Two ways to say the same thing behaved differently, and a test that sets the flag could never have found it.
 
 ## 4. Defaults are for the biggest honest user
-The daemon's default broker bounds (`broker_max_topics` 1 024 and the others) are fine for a chat room. The load run, 3 000 browsers with four channels each, had 3 918 of 12 000 joins refused: a topic exists only while it has subscribers, so a channel per user (`private-user.7`) is one topic per user. Nobody would have found that by reading; the load harness did, and the guide now has a sizing table. The `daemon_refused` counter turns "joins are failing" into "the daemon is too small for this site", which is a different page for the person on call than "a client is misbehaving".
+The daemon's default broker bounds (`broker_max_topics` 1 024 and the others) are fine for a chat room. The load run, 3 000 browsers with four channels each, had 3 918 of 12 000 joins refused: a topic exists only while it has subscribers, so a channel per user (`private-user.7`) is one topic per user. Nobody would have found that by reading; the load harness did, and the guide now has a sizing table. The `daemon_refused` counter turns "joins are failing" into "the daemon's own limits were reached", which is a different page for the person on call than "a client is misbehaving". (Section 6 shows why that sentence needed a second look: it was true for signed channels and false for public ones.)
 
 ## 5. A cache is three bounds and a guard
 **The problem.** Pusher, and Reverb, answer a repeated `pusher:subscribe` for a presence channel the browser is already in with the whole member list again. `pusher-js` never asks twice, but any other client can, as fast as its message rate allows, and the answer costs time in proportion to the members. Measured with 100 members of 1.8 KB: 0.252 ms for each repeat.
@@ -52,12 +52,22 @@ The daemon's default broker bounds (`broker_max_topics` 1 024 and the others) ar
 
 **A bug found on the way.** Writing the revision test showed that `PresenceTable::remove()` for a connection that was *not* in a channel created an empty entry through a reference and then removed the whole channel. No caller could do that yet, since the gateway only removes what it added. It was fixed anyway, with a test, because "yet" is how a future bug starts.
 
+## 6. A bound that the attacker can use up is not a defence
+**The claim I made first:** a public channel needs no signature, but each distinct name is a room in the daemon, and the daemon's table is bounded (1 024), so "the bound is the defence". I wrote that down in ADR-0042 A2 and moved on. **The measurement that undid it:** 16 scripted connections from one address, each joining 64 invented names, filled the table in 0.07 seconds, and the next *signed* user was refused their private and presence channels. The bound did hold, which was exactly the problem: a limit shared between strangers and customers lets the strangers spend the customers' share.
+
+**The pattern is to give anonymous traffic its own share.** `max_public_channels` (512) counts the distinct public names held, so what an anonymous browser can use is capped *below* the daemon's table and the rest stays for signed channels. A join of a name somebody already holds costs the daemon no room, so it is never refused. The second tool is a list of names the site really has (`public_channels`): a name that is not listed never costs budget at all.
+
+**Accounting without drift.** The budget is a map `name => number of holders`, where a holder is a connection in the channel *or* a join waiting for the daemon. It is changed in exactly the places where a connection's own `channels` or `pending` entry is added or removed, and the churn test recomputes it from those per-connection entries after every random step and compares. A counter you cannot recompute from the state it summarises will drift, and a drifting budget is a slow outage (names that nobody holds count forever) or a hole (names held that are not counted).
+
+**What it does not do, said in the ADR:** a visitor can still use up the *public* budget, so new public names stay closed to everybody until they leave. Only an exact list removes that. Defaults that are closed would have broken every site on first run, so unset stays open and the guide says so first.
+
 ## Pitfalls
 - Forgiving in fractions, or timing a limit with the wall clock.
 - Putting a string a browser sent into a statistics or log line.
 - Catching a broad error type at the top and treating all of it as "the link is lost".
 - Keying a cache by name only, without the version of the data it describes.
 - Bounding a cache by the number of entries but not by what one entry can weigh, or by how long it may hold what it describes.
+- Calling a shared limit a defence without asking who can spend it.
 - Testing only with the sizes you expect: the defaults of lesson 56 were right for a small page, and the sizes of this lesson came from running a large one.
 
 ## Exercises
@@ -68,3 +78,5 @@ The daemon's default broker bounds (`broker_max_topics` 1 024 and the others) ar
 5. Remove the line `unset($this->listFrames[$channel]);` from `succeededFrame()`. Which test fails now, and why did none fail before the guard test existed?
 6. A site sets `max_channel_data_bytes` 65536 and `max_presence_members` 1000. Roughly how large can a list get (use `members x (2.33 x max_channel_data_bytes + 1 KB)`), and which two daemon limits must you raise for it? What does the gateway do with a repeated subscribe for it, given the 1 MiB cache bound?
 7. `connections` reads 40 on the gateway and the daemon's `wsrv_connections_current` reads 12, and stays that way for a minute. What does it mean, and what is the first thing you look at? What if the gateway reads 0 and the daemon 40, five seconds after you restarted the worker?
+8. Fill the public budget with 512 invented names, then ask: which joins still work for a signed user, which for a visitor, and which for a name that is already held? What changes if you set `public_channels` to `['news', 'orders.*']`, and what can a visitor still do?
+9. Why does the budget count a join that the daemon has not answered yet? Which of the five places that change it would let the number drift if you left one out, and which test shows it?

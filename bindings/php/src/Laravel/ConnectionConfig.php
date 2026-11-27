@@ -46,6 +46,8 @@ final class ConnectionConfig
         'messages_per_second' => ['messagesPerSecond', 'int'],
         'message_burst' => ['messageBurst', 'int'],
         'max_strikes' => ['maxStrikes', 'int'],
+        'max_public_channels' => ['maxPublicChannels', 'int'],
+        'public_channels' => ['publicChannels', 'list'],
     ];
 
     /** The seconds between statistics lines when `wsrv:echo` is not told otherwise. */
@@ -105,6 +107,9 @@ final class ConnectionConfig
         }
         foreach ($options as $name => $value) {
             [, $type] = self::OPTIONS[$name] ?? throw new \InvalidArgumentException("unknown option '$name' in the wsrv broadcasting connection");
+            if ($type === 'list' && $value !== null && !(is_array($value) && array_is_list($value))) {
+                throw new \InvalidArgumentException("option '$name' must be a list of channel names, or null");
+            }
             if (($type === 'int' && !is_int($value)) || ($type === 'bool' && !is_bool($value))) {
                 throw new \InvalidArgumentException("option '$name' must be of type $type");
             }

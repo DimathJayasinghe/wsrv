@@ -20,9 +20,15 @@ final class GatewayConfig
     private const BURST_HEADROOM_MIN = 16;
     private const BURST_HEADROOM_DEFAULT = 64;
     private const MAX_BURST = 1_000_000;
+    /** At most this many entries in publicChannels: each join is matched against them. */
+    private const MAX_PUBLIC_CHANNEL_ENTRIES = 1000;
 
     /** How many frames one connection may send at once; see the constructor. */
     public readonly int $messageBurst;
+    /** @var array<string, true> the exact names of publicChannels */
+    private readonly array $publicExact;
+    /** @var list<string> the prefixes of publicChannels (the entries that ended in a star, without it) */
+    private readonly array $publicPrefixes;
 
     /**
      * @param int $activityTimeout     seconds of silence after which pusher-js pings; sent to every browser
@@ -39,6 +45,13 @@ final class GatewayConfig
      *                                 the daemon has answered any, so this cannot be below maxChannelsPerConnection + 16;
      *                                 null means maxChannelsPerConnection + 64
      * @param int $maxStrikes          protocol violations (a frame over the rate counts as one) before the connection is closed
+     * @param int $maxPublicChannels   how many distinct public channel names the gateway holds at once (joined or waiting for the
+     *                                 daemon). A public channel needs no signature and each name is a room in the daemon's broker, whose
+     *                                 table is `broker_max_topics` (1024 by default): keep this below it, leaving room for the private
+     *                                 and presence channels of your users (ADR-0042 A3). A join of a name somebody holds is never refused
+     * @param list<string>|null $publicChannels the public channels the site has: exact names, or a prefix ending in one star
+     *                                 (`orders.*`). null (the default) means any name, [] means none. Private and presence channels
+     *                                 are not listed: a signature decides those
      */
     public function __construct(
         public readonly string $appKey,
@@ -53,6 +66,8 @@ final class GatewayConfig
         public readonly int $messagesPerSecond = 30,
         ?int $messageBurst = null,
         public readonly int $maxStrikes = 8,
+        public readonly int $maxPublicChannels = 512,
+        public readonly ?array $publicChannels = null,
     ) {
         if (preg_match('/\A[A-Za-z0-9._-]{1,64}\z/', $appKey) !== 1) {
             throw new \InvalidArgumentException('appKey must be 1 to 64 letters, digits, dots, dashes or underscores');
@@ -69,6 +84,7 @@ final class GatewayConfig
             'clientEventsPerSecond' => [$clientEventsPerSecond, 1, 100_000],
             'messagesPerSecond' => [$messagesPerSecond, 1, 1_000_000],
             'maxStrikes' => [$maxStrikes, 1, 1_000_000],
+            'maxPublicChannels' => [$maxPublicChannels, 1, 1_000_000],
         ] as $name => [$value, $min, $max]) {
             if ($value < $min || $value > $max) {
                 throw new \InvalidArgumentException("$name must be between $min and $max");
@@ -85,6 +101,66 @@ final class GatewayConfig
             );
         }
         $this->messageBurst = $burst;
+        [$this->publicExact, $this->publicPrefixes] = self::parsePublicChannels($publicChannels);
+    }
+
+    /** Whether the site lists this public channel: any name when publicChannels is null, an exact name or a listed prefix otherwise. */
+    public function allowsPublicChannel(string $name): bool
+    {
+        if ($this->publicChannels === null || isset($this->publicExact[$name])) {
+            return true;
+        }
+        foreach ($this->publicPrefixes as $prefix) {
+            if (str_starts_with($name, $prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * @param list<mixed>|null $list
+     * @return array{0: array<string, true>, 1: list<string>} the exact names and the prefixes
+     */
+    private static function parsePublicChannels(?array $list): array
+    {
+        if ($list === null) {
+            return [[], []];
+        }
+        if (!array_is_list($list)) {
+            throw new \InvalidArgumentException('publicChannels must be a list of channel names, or null');
+        }
+        if (count($list) > self::MAX_PUBLIC_CHANNEL_ENTRIES) {
+            throw new \InvalidArgumentException('publicChannels may have at most ' . self::MAX_PUBLIC_CHANNEL_ENTRIES . ' entries');
+        }
+        $exact = [];
+        $prefixes = [];
+        foreach ($list as $i => $entry) {
+            if (!is_string($entry)) {
+                throw new \InvalidArgumentException("publicChannels[$i] must be a string");
+            }
+            $isPrefix = str_ends_with($entry, '*');
+            $name = $isPrefix ? substr($entry, 0, -1) : $entry;
+            if ($isPrefix && $name === '') {
+                throw new \InvalidArgumentException("publicChannels[$i]: '*' alone would allow every channel; use null for that");
+            }
+            // Usable as a channel name, one character longer for a prefix (a prefix is the start of names). A star anywhere
+            // else is not a channel name character, so this refuses it.
+            $probe = $isPrefix ? $name . 'x' : $name;
+            $problem = ChannelName::problem($probe);
+            if ($problem !== null) {
+                throw new \InvalidArgumentException("publicChannels[$i]: $problem");
+            }
+            if (ChannelName::kind($probe) !== ChannelKind::Public) {
+                throw new \InvalidArgumentException("publicChannels[$i] is a private or presence channel: those are protected by a signature, not listed");
+            }
+            if ($isPrefix) {
+                $prefixes[] = $name;
+            } else {
+                $exact[$name] = true;
+            }
+        }
+        return [$exact, $prefixes];
     }
 
     /** `<key>:<signature>` for a private or presence subscription; what Laravel's auth endpoint returns. */
