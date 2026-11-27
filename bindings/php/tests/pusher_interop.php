@@ -337,6 +337,90 @@ $check('the defaults carry a page that subscribes to 64 channels at once, and th
     fclose($ws);
 });
 
+// ---- a member list that does not fit the daemon's IPC frame: that join fails, nothing else --------------
+
+// A presence join is answered with the whole member list, so one member with a big user_info in a nearly
+// full room could ask the worker to send more than the daemon accepts in one frame. That used to drop the
+// link to the daemon, which closes every browser. A daemon with a 4 KiB frame makes it small enough to see.
+$small = start_wsrvd($daemonPath, $dir, 'small', $tokenFile, ['--max-message-size=2048', '--ipc-max-frame=4096']);
+$smallWorker = new Worker(Client::connect($small['socket'], '', 5.0));
+$smallGateway = Gateway::forWorker(
+    new GatewayConfig(KEY, SECRET, maxFrameBytes: 2048, maxPresenceMembers: 10, maxChannelDataBytes: 1200),
+    $smallWorker
+);
+
+$check('a member list too large for the daemon frame fails that join alone: the link, the room and the other members are untouched', function () use ($small, $smallWorker, $smallGateway) {
+    $step = function (float $seconds = 0.25) use ($smallWorker): void {
+        $end = microtime(true) + $seconds;
+        while (microtime(true) < $end) {
+            $smallWorker->step(0.05);
+        }
+    };
+    $path = '/app/' . KEY . '?protocol=7&client=js&version=8.4.0&flash=false';
+    $info = str_repeat('x', 800);   // about 860 bytes of the list per member: four fit in 4096, the fifth does not
+    $joins = [];
+    for ($i = 1; $i <= 6; $i++) {
+        $ws = ws_connect($small['port'], '', $path);
+        $step();
+        $socketId = pusher_read($ws)['data']['socket_id'];
+        $data = json_encode(['user_id' => "u$i", 'user_info' => ['bio' => $info]], JSON_THROW_ON_ERROR);
+        pusher_send($ws, 'pusher:subscribe', [
+            'channel' => 'presence-big', 'auth' => sign($socketId, 'presence-big', $data), 'channel_data' => $data,
+        ]);
+        $joins[$i] = [$ws, pusher_read_when_ready($ws, $smallWorker)];
+    }
+    $in = [];
+    $refused = [];
+    foreach ($joins as $i => [, $answer]) {
+        if ($answer['event'] === 'pusher_internal:subscription_succeeded') {
+            $in[] = $i;
+        } else {
+            assertSame('pusher:subscription_error', $answer['event'], "member $i: " . json_encode($answer));
+            assertSame('ServerError', $answer['data']['type'], "member $i");
+            assertSame('presence-big', $answer['channel'], "member $i");
+            assertSame('The member list is too large to send', $answer['data']['error'], "member $i");
+            $refused[] = $i;
+        }
+    }
+    assertTrue(count($in) >= 2 && count($refused) >= 1, 'some members fit and some do not: in ' . json_encode($in) . ', refused ' . json_encode($refused));
+    assertSame($in, range(1, count($in)), 'the first members were let in, in order');
+    assertTrue(in_array(6, $refused, true), 'the last one is refused');
+
+    // Everyone is still connected and served, refused or not.
+    foreach ($joins as $i => [$ws]) {
+        ws_send($ws, 1, '{"event":"pusher:ping"}');
+        $seen = [];
+        do {
+            $f = pusher_read_when_ready($ws, $smallWorker);
+            if ($f['event'] === 'pusher_internal:member_added') {
+                $seen[] = $f['data']['user_id'];
+            }
+        } while ($f['event'] !== 'pusher:pong');
+        if (in_array($i, $in, true)) {
+            // told of the members who joined after it, never of one who was refused
+            $expected = array_map(static fn (int $m): string => "u$m", array_values(array_filter($in, static fn (int $m): bool => $m > $i)));
+            assertSame($expected, $seen, "member $i saw these members join");
+        } else {
+            assertSame([], $seen, "refused member $i saw nobody join");
+        }
+    }
+    // The worker's link survived: a new browser is still answered, and the room has exactly the members who fit.
+    $late = ws_connect($small['port'], '', $path);
+    $step();
+    assertSame('pusher:connection_established', pusher_read($late)['event']);
+    $stats = $smallGateway->stats();
+    assertSame(count($in), $stats->joins, 'only the joins that were answered are counted');
+    assertSame(count($refused), $stats->subscriptionErrors);
+    assertSame(0, $stats->daemonRefused, 'the daemon refused nothing: the worker did not send what could not fit');
+    assertSame(1, $stats->presenceChannels);
+    assertSame(count($in), $stats->presenceMembers);
+    fclose($late);
+    foreach ($joins as [$ws]) {
+        fclose($ws);
+    }
+});
+
+proc_terminate($small['process'], SIGTERM);
 proc_terminate($strict['process'], SIGTERM);
 
 fclose($a);
