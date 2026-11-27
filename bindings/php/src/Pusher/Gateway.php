@@ -40,6 +40,9 @@ final class Gateway
     private const CLOSE_POLICY = 1008;
     /** RFC 6455 7.4.1: the server could not do what it had to. pusher-js reconnects after any close but 4000-4099. */
     private const CLOSE_ERROR = 1011;
+    /** How often a close the daemon refused is asked again, and how many at a time (see retryCloses()). */
+    private const CLOSE_RETRY_SECONDS = 1.0;
+    private const CLOSE_RETRIES_PER_CALL = 64;
     /** One strike is forgiven for each full period of this many quiet seconds (ADR-0042 A2). A constant: the knob for a site is max_strikes. */
     private const STRIKE_FORGIVE_SECONDS = 60.0;
     /** Member lists kept for connections that ask to join a presence channel they are already in (ADR-0042 A2). */
@@ -59,6 +62,10 @@ final class Gateway
     private array $pending = [];
     /** @var array<int, int> request id => connection, for the sends that answered a join and have no STATUS yet */
     private array $sendOwner = [];
+    /** @var array<int, int> request id => connection, for the closes that have no STATUS yet */
+    private array $closeOwner = [];
+    /** @var array<int, true> connections whose close the daemon refused and that retryCloses() asks again */
+    private array $closeRetry = [];
     private readonly PresenceTable $presence;
     /**
      * The answer to a repeated join, by presence channel: [the channel's revision when it was built, the frame].
@@ -115,6 +122,10 @@ final class Gateway
         });
         $worker->on('status', static function (int $request, int $status) use ($gateway): void {
             $gateway->status($request, $status);
+        });
+        // A close the daemon could not take (its task queue was full) is asked again; see retryCloses().
+        $worker->every(self::CLOSE_RETRY_SECONDS, static function () use ($gateway): void {
+            $gateway->retryCloses();
         });
         if ($checkAppKey) {
             $worker->on('authenticate', static fn (Upgrade $u): bool|int => $gateway->acceptsPath($u->request->path) ? true : 404);
@@ -198,6 +209,7 @@ final class Gateway
         foreach (array_keys($state->sends) as $request) {
             unset($this->sendOwner[$request]);
         }
+        unset($this->closeOwner[$state->closeRequest], $this->closeRetry[$conn]);
         // The daemon dropped this connection's rooms when it closed; only the member list is ours.
         foreach ($state->channels as $channel => $userId) {
             if ($userId !== null) {
@@ -212,6 +224,11 @@ final class Gateway
         $owner = $this->sendOwner[$request] ?? null;
         if ($owner !== null) {
             $this->sendAnswered($request, $owner, $status);
+            return;
+        }
+        $closing = $this->closeOwner[$request] ?? null;
+        if ($closing !== null) {
+            $this->closeAnswered($request, $closing, $status);
             return;
         }
         $join = $this->pending[$request] ?? null;
@@ -257,9 +274,73 @@ final class Gateway
         }
         unset($state->sends[$request]);
         if ($status !== StatusCode::OK && $status !== StatusCode::NO_SUCH_CONN && !$state->closing) {
-            $state->closing = true;
             $this->daemonRefused++;
-            $this->link->close($conn, self::CLOSE_ERROR, 'could not answer a join');
+            $this->closeConnection($conn, $state, self::CLOSE_ERROR, 'could not answer a join');
+        }
+    }
+
+    /**
+     * Close a connection the gateway has given up on, and see to it that the daemon really does. A close is a
+     * command like the others: it can be refused (the daemon's task queue is full: BACKPRESSURE), and a browser
+     * that was marked closing and never closed would sit there, ignored, until it left on its own. A refused
+     * close is asked again by retryCloses().
+     */
+    private function closeConnection(int $conn, ConnState $state, int $code, string $reason): void
+    {
+        $state->closing = true;
+        $state->closeAs = [$code, $reason];
+        $this->askClose($conn, $state);
+    }
+
+    private function askClose(int $conn, ConnState $state): void
+    {
+        if ($state->closeAs === null) {
+            return;
+        }
+        $request = $this->link->close($conn, $state->closeAs[0], $state->closeAs[1]);
+        if ($request === 0) {
+            return;   // the link does not know the connection: it has gone, and its close event settles the rest
+        }
+        $state->closeRequest = $request;
+        $this->closeOwner[$request] = $conn;
+    }
+
+    private function closeAnswered(int $request, int $conn, int $status): void
+    {
+        unset($this->closeOwner[$request]);
+        $state = $this->conns[$conn] ?? null;
+        if ($state === null) {
+            return;
+        }
+        if ($status === StatusCode::OK || $status === StatusCode::NO_SUCH_CONN) {
+            return;   // asked and taken (its close event comes), or already gone
+        }
+        $this->daemonRefused++;
+        if ($status === StatusCode::INVALID_ARGUMENT || $status === StatusCode::INVALID_UTF8) {
+            return;   // the same bytes would be refused again: asking again cannot help
+        }
+        $this->closeRetry[$conn] = true;
+    }
+
+    /**
+     * Ask again for the closes the daemon refused, at most CLOSE_RETRIES_PER_CALL of them per call (the refusal was
+     * a full queue, and asking for all at once would fill it again). Called every CLOSE_RETRY_SECONDS by the
+     * timer forWorker() sets up, and by hand in tests. Nothing to do costs nothing.
+     */
+    public function retryCloses(): void
+    {
+        $asked = 0;
+        foreach (array_keys($this->closeRetry) as $conn) {
+            if ($asked >= self::CLOSE_RETRIES_PER_CALL) {
+                return;
+            }
+            unset($this->closeRetry[$conn]);
+            $state = $this->conns[$conn] ?? null;
+            if ($state === null) {
+                continue;
+            }
+            $asked++;
+            $this->askClose($conn, $state);
         }
     }
 
@@ -648,9 +729,8 @@ final class Gateway
         $state->strikes++;
         $state->strikeStamp = $now;
         if ($state->strikes >= $this->config->maxStrikes && !$state->closing) {
-            $state->closing = true;
             $this->strikeCloses++;
-            $this->link->close($conn, self::CLOSE_POLICY, 'protocol violations');
+            $this->closeConnection($conn, $state, self::CLOSE_POLICY, 'protocol violations');
         }
     }
 

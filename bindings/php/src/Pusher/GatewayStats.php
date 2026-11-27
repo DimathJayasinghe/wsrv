@@ -46,7 +46,8 @@ final class GatewayStats
         /**
          * Commands the daemon refused: a join over a broker bound (`broker_max_topics` 1024,
          * `broker_max_subscriptions` 100 000, `broker_max_subscribers_per_topic` 10 000 by default) or with another
-         * error status, and a join's answer it could not queue (that browser is closed with 1011). Rising means
+         * error status, a join's answer it could not queue (that browser is closed with 1011), and a close it could not queue (asked again
+         * each second). Rising means
          * the daemon is too small for the site, not that a browser misbehaved.
          */
         public readonly int $daemonRefused,

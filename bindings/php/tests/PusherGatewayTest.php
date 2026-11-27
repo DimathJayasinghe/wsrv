@@ -9,6 +9,7 @@ use Wsrv\Pusher\Link;
 use Wsrv\MessageTooLarge;
 use Wsrv\Pusher\Signature;
 use Wsrv\StatusCode;
+use Wsrv\Worker;
 
 /** A Link that remembers every command and answers none; the tests play the daemon. */
 final class FakeLink implements Link
@@ -29,6 +30,10 @@ final class FakeLink implements Link
     public int $maxMessage = PHP_INT_MAX;
     /** The request id of the latest send(), so a test can answer it. */
     public int $lastSend = 0;
+    /** The request id of the latest close(), so a test can answer it. */
+    public int $lastClose = 0;
+    /** True: close() answers 0, the connection is not known to the link. */
+    public bool $closeUnknown = false;
     private int $sends = 0;
     private int $next = 1;
 
@@ -62,9 +67,14 @@ final class FakeLink implements Link
         $this->published[] = [$topic, $payload, $except];
     }
 
-    public function close(int $conn, int $code, string $reason): void
+    public function close(int $conn, int $code, string $reason): int
     {
         $this->closed[] = [$conn, $code, $reason];
+        if ($this->closeUnknown) {
+            return 0;   // as WorkerLink answers for a connection it does not know
+        }
+        $this->lastClose = 2_000_000 + count($this->closed);
+        return $this->lastClose;
     }
 
     /** The request id of the latest subscribe. */
@@ -307,6 +317,133 @@ test('pusher gateway: a connection that closes before the daemon answers its joi
     assertSame([], (new ReflectionProperty($gw, 'sendOwner'))->getValue($gw), 'forgotten when the connection closed, not when a status happens to come');
     $gw->status($answer, StatusCode::BACKPRESSURE);   // late: the connection is gone
     assertSame([], $link->closed);
+});
+
+test('pusher gateway: a close the daemon refuses is asked again until it is taken (a strike close and a refused join answer)', function () {
+    // A close goes through the daemon's task queue like every command, and a full queue answers BACKPRESSURE. A browser
+    // marked closing that is never closed would sit there, ignored, until it left by itself.
+    [$gw, $link] = gateway(['maxStrikes' => 2]);
+    open_conn($gw, $link, 1);
+    $gw->received(1, 'x');
+    $gw->received(1, 'x');
+    assertSame([[1, 1008, 'protocol violations']], $link->closed, 'the second strike asks for the close');
+    $gw->status($link->lastClose, StatusCode::BACKPRESSURE);
+    assertSame(1, count($link->closed), 'nothing is asked again before the timer');
+    $gw->retryCloses();
+    assertSame([[1, 1008, 'protocol violations'], [1, 1008, 'protocol violations']], $link->closed, 'asked again, with the same code and reason');
+    $gw->status($link->lastClose, StatusCode::BACKPRESSURE);   // still full
+    $gw->retryCloses();
+    assertSame(3, count($link->closed));
+    $gw->status($link->lastClose, StatusCode::OK);              // taken
+    $gw->retryCloses();
+    assertSame(3, count($link->closed), 'once taken it is not asked for again');
+    assertSame(2, $gw->stats()->daemonRefused, 'each refusal is counted');
+    assertSame(1, $gw->stats()->strikeCloses, 'but it is one strike close');
+
+    [$gw, $link] = gateway();
+    $a = open_conn($gw, $link, 1);
+    $gw->received(1, subscribe_frame('orders', $a));
+    $gw->status(1, StatusCode::OK);
+    $gw->status($link->lastSend, StatusCode::BACKPRESSURE);
+    assertSame([[1, 1011, 'could not answer a join']], $link->closed);
+    $gw->status($link->lastClose, StatusCode::BACKPRESSURE);
+    $gw->retryCloses();
+    assertSame([[1, 1011, 'could not answer a join'], [1, 1011, 'could not answer a join']], $link->closed);
+});
+
+test('pusher gateway: a close that cannot be repeated, or is not needed, is not asked again', function () {
+    [$gw, $link] = gateway(['maxStrikes' => 1]);
+    open_conn($gw, $link, 1);
+    open_conn($gw, $link, 2);
+    open_conn($gw, $link, 3);
+    $gw->received(1, 'x');
+    $gw->status($link->lastClose, StatusCode::NO_SUCH_CONN);          // it has gone: its close event settles the rest
+    $gw->received(2, 'x');
+    $gw->status($link->lastClose, StatusCode::INVALID_ARGUMENT);      // the same bytes would be refused again
+    $gw->received(3, 'x');
+    assertSame(3, count($link->closed));
+    $gw->retryCloses();
+    assertSame(3, count($link->closed), 'neither is asked again');
+    assertSame(1, $gw->stats()->daemonRefused, 'only the refusal is counted: a browser that left is not a refusal');
+});
+
+test('pusher gateway: retried closes are paced, and a connection that closes by itself is not asked for', function () {
+    [$gw, $link] = gateway(['maxStrikes' => 1]);
+    for ($i = 1; $i <= 70; $i++) {
+        open_conn($gw, $link, $i);
+        $gw->received($i, 'x');
+        $gw->status($link->lastClose, StatusCode::BACKPRESSURE);
+    }
+    assertSame(70, count($link->closed));
+    $gw->closed(70);   // the browser went by itself while its close was waiting
+    $gw->retryCloses();
+    assertSame(70 + 64, count($link->closed), 'at most 64 per call: a queue that was full is not filled again at once');
+    $gw->retryCloses();
+    assertSame(70 + 64 + 5, count($link->closed), 'the rest on the next call: 69 left, 5 after 64; the browser that left is not among them');
+    $asked = array_map(static fn (array $c): int => $c[0], array_slice($link->closed, 70));
+    assertSame(false, in_array(70, $asked, true), 'connection 70 was not asked for');
+    $gw->retryCloses();
+    assertSame(70 + 64 + 5, count($link->closed), 'and then there is nothing left to ask');
+});
+
+/** The request ids of the CLOSE commands in what the fake daemon received (frame: 4-byte length, type, flags, then the body). */
+function close_requests(string $bytes): array
+{
+    $ids = [];
+    for ($i = 0; $i + 6 <= strlen($bytes); $i += 4 + unpack('N', substr($bytes, $i, 4))[1]) {
+        if (ord($bytes[$i + 4]) === 5) {
+            $ids[] = unpack('N', substr($bytes, $i + 6, 4))[1];
+        }
+    }
+    return $ids;
+}
+
+test('pusher gateway: forWorker sets up the timer that asks the daemon again for a close it refused', function () {
+    [$client, $daemon] = ready_client();
+    $worker = new Worker($client);
+    Gateway::forWorker(new GatewayConfig(GW_KEY, GW_SECRET, maxStrikes: 1), $worker);
+    fwrite($daemon, event_bytes(1, 1, 'a') . event_bytes(2, 1, 'x'));   // a browser opens and sends what is not Pusher
+    $worker->step(0.1);
+    $worker->step(0.1);
+    $first = close_requests(received($daemon));
+    assertSame(1, count($first), 'the strike asked for the close');
+    fwrite($daemon, status_frame($first[0], StatusCode::BACKPRESSURE));
+    $worker->step(0.1);
+    $timers = (new ReflectionProperty($worker, 'timers'))->getValue($worker);
+    assertSame(1, count($timers), 'one timer');
+    assertSame(1.0, $timers[0]['every'], 'every second');
+    ($timers[0]['call'])();
+    $again = close_requests(received($daemon));
+    assertSame(1, count($again), 'the timer asked again');
+    assertSame(true, $again[0] !== $first[0], 'as a new command, with its own request id');
+});
+
+test('pusher gateway: a close for a connection the link does not know is not remembered under request 0', function () {
+    [$gw, $link] = gateway(['maxStrikes' => 1]);
+    open_conn($gw, $link, 1);
+    $link->closeUnknown = true;
+    $gw->received(1, 'x');
+    assertSame([], (new ReflectionProperty($gw, 'closeOwner'))->getValue($gw));
+    $gw->status(0, StatusCode::BACKPRESSURE);   // request 0 is the handshake's: it must not be taken for a close
+    $gw->retryCloses();
+    assertSame(1, count($link->closed), 'nothing to ask again');
+});
+
+test('pusher gateway: a connection that closes with its close in flight, or waiting to be asked again, leaves nothing behind', function () {
+    [$gw, $link] = gateway(['maxStrikes' => 1]);
+    open_conn($gw, $link, 1);
+    open_conn($gw, $link, 2);
+    $gw->received(1, 'x');                                             // asked, no answer yet
+    $gw->received(2, 'x');
+    $gw->status($link->lastClose, StatusCode::BACKPRESSURE);           // refused, waiting for the timer
+    assertSame(1, count((new ReflectionProperty($gw, 'closeOwner'))->getValue($gw)));
+    assertSame(1, count((new ReflectionProperty($gw, 'closeRetry'))->getValue($gw)));
+    $gw->closed(1);
+    $gw->closed(2);
+    assertSame([], (new ReflectionProperty($gw, 'closeOwner'))->getValue($gw), 'checked before any late status');
+    assertSame([], (new ReflectionProperty($gw, 'closeRetry'))->getValue($gw));
+    $gw->retryCloses();
+    assertSame(2, count($link->closed), 'and nothing is asked for a browser that has gone');
 });
 
 test('pusher gateway: a refused subscription is reported as one and the channel is not joined', function () {

@@ -48,8 +48,8 @@ final class WorkerLink implements Link
         $this->worker->publish($topic, $payload, false, $except);
     }
 
-    public function close(int $conn, int $code, string $reason): void
+    public function close(int $conn, int $code, string $reason): int
     {
-        ($this->connections[$conn] ?? null)?->close($code, $reason);
+        return ($this->connections[$conn] ?? null)?->close($code, $reason) ?? 0;
     }
 }

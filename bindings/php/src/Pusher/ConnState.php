@@ -20,6 +20,10 @@ final class ConnState
     public float $strikeStamp;
     /** The gateway asked the daemon to close it; further frames are ignored. */
     public bool $closing = false;
+    /** @var array{int, string}|null the close code and reason to ask for again if the daemon refuses the close */
+    public ?array $closeAs = null;
+    /** The request id of the latest close asked for (0 = none); closed() forgets it if the answer never came. */
+    public int $closeRequest = 0;
     /** The message limiter's bucket (Gateway::takeMessageToken): frames left in it, and when it was last refilled. */
     public float $messageTokens;
     public float $messageStamp;
