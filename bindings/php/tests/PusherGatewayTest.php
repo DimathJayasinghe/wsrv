@@ -878,6 +878,89 @@ test('pusher gateway: the lists kept for repeated subscribes are bounded, oldest
     assertSame(['presence-room-4', 'presence-room-20'], array_slice($keys, -2));
 });
 
+test('pusher gateway: a stale kept list cannot be sent even if a change to the members was missed', function () {
+    // The gateway drops a room's kept list whenever it changes the members, and the table's revision is the
+    // second guard: change the table behind the gateway's back (as a future code path that forgot to drop
+    // would) and a repeat must still say who is in, and the rebuilt list must count as the newest.
+    [$gw, $link] = gateway();
+    $s1 = open_conn($gw, $link, 1);
+    $ada = user_data('1', ['name' => 'Ada']);
+    foreach (['presence-a', 'presence-b'] as $room) {
+        join_channel($gw, $link, 1, $s1, $room, $ada);
+        $gw->received(1, subscribe_frame($room, $s1, $ada));
+    }
+    assertSame(['presence-a', 'presence-b'], array_keys(kept_lists($gw)));
+    (new ReflectionProperty($gw, 'presence'))->getValue($gw)->add('presence-a', 99, 'ghost', null);
+    $link->clear();
+    $gw->received(1, subscribe_frame('presence-a', $s1, $ada));
+    assertSame(['1', 'ghost'], $link->lastFrame(1)['data']['presence']['ids'], 'the kept list was out of date and was not used');
+    assertSame(['presence-b', 'presence-a'], array_keys(kept_lists($gw)), 'the rebuilt list is the newest');
+});
+
+/** @return array<string, array{int, string}> what the gateway keeps for repeated subscribes, by channel */
+function kept_lists(Gateway $gw): array
+{
+    return (new ReflectionProperty($gw, 'listFrames'))->getValue($gw);
+}
+
+test('pusher gateway: a kept list is dropped when the members change, so it never holds who has left', function () {
+    [$gw, $link] = gateway();
+    $s = [];
+    for ($i = 1; $i <= 3; $i++) {
+        $s[$i] = open_conn($gw, $link, $i);
+    }
+    $room = 'presence-room';
+    $ada = user_data('1', ['name' => 'Ada']);
+    join_channel($gw, $link, 1, $s[1], $room, $ada);
+    $gw->received(1, subscribe_frame($room, $s[1], $ada));
+    assertSame([$room], array_keys(kept_lists($gw)), 'a repeat keeps the list');
+    // a second tab of Ada is no change: what was kept is still right, and stays
+    join_channel($gw, $link, 3, $s[3], $room, user_data('1', ['name' => 'Ada, in another tab']));
+    assertSame([$room], array_keys(kept_lists($gw)));
+    $gw->closed(3);
+    assertSame([$room], array_keys(kept_lists($gw)), 'one of two tabs closing is no change either');
+    // a new member: the kept list is out of date, and goes at once instead of waiting to be found out
+    join_channel($gw, $link, 2, $s[2], $room, user_data('2', ['name' => 'Bob']));
+    assertSame([], kept_lists($gw), 'Bob came');
+    $gw->received(1, subscribe_frame($room, $s[1], $ada));
+    assertSame([$room], array_keys(kept_lists($gw)));
+    $gw->closed(2);
+    assertSame([], kept_lists($gw), 'Bob left: the list that names him does not stay in memory');
+    $gw->received(1, subscribe_frame($room, $s[1], $ada));
+    assertSame([$room], array_keys(kept_lists($gw)));
+    $gw->closed(1);
+    assertSame([], kept_lists($gw), 'the room is empty: nothing is kept for it');
+});
+
+test('pusher gateway: a list is kept up to a size, and a larger one is answered each time but not kept', function () {
+    // The lists of the default limits (100 members of 2 KiB) are about 400 KB at most. A site that raises
+    // max_channel_data_bytes and max_presence_members can make them far larger, and sixteen of those must
+    // not sit in the worker's memory for good: above 1 MiB a list is built for each repeat, as before.
+    [$gw, $link] = gateway(['maxChannelDataBytes' => 65536, 'maxFrameBytes' => 1 << 20]);
+    $room = 'presence-big';
+    $join = function (int $first, int $last, int $bytes) use ($gw, $link, $room): void {
+        for ($i = $first; $i <= $last; $i++) {
+            $s = open_conn($gw, $link, $i);
+            join_channel($gw, $link, $i, $s, $room, user_data((string) $i, ['bio' => str_repeat('x', $bytes)]));
+        }
+    };
+    $join(1, 20, 20000);                                  // about 400 KB: what the defaults can come to
+    $s1 = $link->frames(1)[0]['data']['socket_id'];
+    $again = fn (): array => (function () use ($gw, $link, $room, $s1): array {
+        $link->clear();
+        $gw->received(1, subscribe_frame($room, $s1, user_data('1', ['bio' => str_repeat('x', 20000)])));
+        return $link->lastFrame(1)['data']['presence']['ids'];
+    })();
+    assertSame(20, count($again()));
+    $kept = kept_lists($gw);
+    assertSame([$room], array_keys($kept), 'about 400 KB is kept');
+    assertTrue(strlen($kept[$room][1]) > 380000 && strlen($kept[$room][1]) < 1 << 20);
+    $join(21, 60, 20000);                                 // about 1.2 MB in all
+    assertSame(60, count($again()), 'the larger list is answered, whole');
+    assertSame([], kept_lists($gw), 'and not kept: it is over 1 MiB');
+    assertSame(60, count($again()), 'asked again, it is the same list, built again');
+});
+
 test('pusher gateway: a presence member list that does not fit the daemon refuses that join and nothing else', function () {
     // The daemon's IPC frame is max_message_size + 64 KiB. A list of 100 members with 2 KiB each is 200 KiB:
     // with a small max_message_size the send throws, and that must fail one join, not reset the worker's link.

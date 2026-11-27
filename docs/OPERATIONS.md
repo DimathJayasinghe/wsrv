@@ -161,7 +161,7 @@ Never logged at any level: tokens and credentials, cookies and other headers, me
 | `ipc_linger_full` | debug | over TCP, more than 32 refused connections were waiting to close at once; the extra ones were closed immediately (a flood of refused connections; the status was still sent) |
 | `app_waiting` | debug | over TCP, a connection was admitted to the waiting room (at most 8 wait for their HELLO at once, ADR-0038 section 5) |
 | `app_replaced` | warn | over TCP, the waiting room was full (8 connections that had not said HELLO) and the oldest was evicted and told `BACKPRESSURE`. Occasional: a probe or a port scan. Repeated: connections arrive faster than your worker's HELLO, so it can be refused; check what else reaches the IPC port and who may |
-| `app_connected`, `app_disconnected` | info (warn if cut off for not reading) | the application's link came and went: connections it knew are closed with 1012 after `shutdown_grace_ms` unless a new one connects |
+| `app_connected`, `app_disconnected` | info (warn if cut off for not reading) | the application's link came and went: connections it knew are closed with 1012 after `shutdown_grace_ms`, also when a new application connects meanwhile (it never saw them, and the protocol has no way to hand them over) |
 | `app_rejected` | warn | an application was refused: another user, a second one, a wrong token or version, no HELLO in time. Many of these: a misconfigured worker (compare tokens and the socket path) |
 | `tls_reloaded` | info | SIGHUP picked up a new certificate |
 | `tls_reload_skipped` | info | SIGHUP, but TLS is off |

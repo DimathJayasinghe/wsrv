@@ -42,6 +42,8 @@ final class Gateway
     private const STRIKE_FORGIVE_SECONDS = 60.0;
     /** Member lists kept for connections that ask to join a presence channel they are already in (ADR-0042 A2). */
     private const LIST_FRAMES_KEPT = 16;
+    /** A list larger than this is answered each time but not kept: with the limits at their defaults a list is under 410 KB (ADR-0042 A2). */
+    private const LIST_FRAME_KEPT_MAX_BYTES = 1 << 20;
 
     /** @var array<int, ConnState> */
     private array $conns = [];
@@ -57,7 +59,9 @@ final class Gateway
     /**
      * The answer to a repeated join, by presence channel: [the channel's revision when it was built, the frame].
      * Only repeats are kept (a first join changes the list at once, so keeping it would help nobody), at most
-     * LIST_FRAMES_KEPT of them, oldest out first, so what this holds is bounded by that many frames.
+     * LIST_FRAMES_KEPT of them, oldest out first, and none larger than LIST_FRAME_KEPT_MAX_BYTES, so this holds
+     * at most 16 MiB. A room's entry goes the moment its members change (forgetKept), so it never holds who
+     * has left; the revision is what makes a stale frame impossible to send even if a change were missed.
      *
      * @var array<string, array{int, string}>
      */
@@ -406,6 +410,9 @@ final class Gateway
             return;
         }
         $state->channels[$channel] = $userId;
+        if ($result === PresenceTable::ADDED) {
+            $this->forgetKept($channel);
+        }
         if (!$this->sendSucceeded($conn, $channel)) {
             // The member list does not fit one frame to the daemon (ADR-0042 A2): this join fails and nothing
             // else does. Nobody has been told about the new member yet, so taking it out again is silent.
@@ -465,12 +472,20 @@ final class Gateway
         $frame = Frame::encode('pusher_internal:subscription_succeeded', $data, $channel);
         if ($again) {
             unset($this->listFrames[$channel]);   // so that the newest is last, whether or not it was kept before
-            $this->listFrames[$channel] = [$revision, $frame];
-            if (count($this->listFrames) > self::LIST_FRAMES_KEPT) {
-                unset($this->listFrames[array_key_first($this->listFrames)]);
+            if (strlen($frame) <= self::LIST_FRAME_KEPT_MAX_BYTES) {
+                $this->listFrames[$channel] = [$revision, $frame];
+                if (count($this->listFrames) > self::LIST_FRAMES_KEPT) {
+                    unset($this->listFrames[array_key_first($this->listFrames)]);
+                }
             }
         }
         return $frame;
+    }
+
+    /** The members of a presence channel changed: what was kept for its repeats is of no use, and names people who may have left. */
+    private function forgetKept(string $channel): void
+    {
+        unset($this->listFrames[$channel]);
     }
 
     // ---- pusher:unsubscribe, and leaving ------------------------------------------------------
@@ -512,6 +527,7 @@ final class Gateway
     {
         $result = $this->presence->remove($channel, $conn);
         if (is_string($result)) {
+            $this->forgetKept($channel);
             $this->link->publish($channel, Frame::encode('pusher_internal:member_removed', ['user_id' => $userId], $channel), $conn);
         }
     }
