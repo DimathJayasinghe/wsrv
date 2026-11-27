@@ -36,6 +36,8 @@ final class Gateway
     private const ERR_CLIENT_EVENTS = 4301;
     private const SUBSCRIPTION_ERROR = 4300;
     private const CLOSE_POLICY = 1008;
+    /** One strike is forgiven for each full period of this many quiet seconds (ADR-0042 A2). A constant: the knob for a site is max_strikes. */
+    private const STRIKE_FORGIVE_SECONDS = 60.0;
 
     /** @var array<int, ConnState> */
     private array $conns = [];
@@ -49,6 +51,15 @@ final class Gateway
     private array $pending = [];
     private readonly PresenceTable $presence;
     private readonly \Closure $clock;
+    // Counters since the start of the process, for stats(). Only ever incremented.
+    private int $opened = 0;
+    private int $frames = 0;
+    private int $joins = 0;
+    private int $badFrames = 0;
+    private int $unauthorized = 0;
+    private int $rateLimited = 0;
+    private int $subscriptionErrors = 0;
+    private int $strikeCloses = 0;
 
     /** @param callable(): float|null $clock seconds as a float; for tests */
     public function __construct(
@@ -102,6 +113,7 @@ final class Gateway
     {
         $state = new ConnState(SocketId::generate($conn), (float) $this->config->messageBurst, ($this->clock)());
         $this->conns[$conn] = $state;
+        $this->opened++;
         $this->link->send($conn, Frame::encode('pusher:connection_established', [
             'socket_id' => $state->socketId,
             'activity_timeout' => $this->config->activityTimeout,
@@ -114,7 +126,9 @@ final class Gateway
         if ($state === null || $state->closing) {
             return;
         }
+        $this->frames++;
         if (!$this->takeMessageToken($state)) {
+            $this->rateLimited++;
             $this->error($conn, self::ERR_CLIENT_EVENTS, 'Rate limit exceeded');
             $this->strike($conn, $state);
             return;
@@ -145,6 +159,7 @@ final class Gateway
     {
         $state = $this->conns[$conn] ?? null;
         if ($state !== null && !$state->closing) {
+            $this->frames++;
             $this->invalid($conn, $state);
         }
     }
@@ -197,6 +212,34 @@ final class Gateway
     }
 
     // ---- for tests and metrics ----------------------------------------------------------------
+
+    /**
+     * What the gateway holds and has done (ADR-0042 A2). It walks the connections, so call it once in a
+     * while (the `wsrv:echo` command does it every `--stats-interval` seconds), not per frame.
+     */
+    public function stats(): GatewayStats
+    {
+        $channels = 0;
+        foreach ($this->conns as $state) {
+            $channels += count($state->channels);
+        }
+        return new GatewayStats(
+            connections: count($this->conns),
+            channels: $channels,
+            joinsInProgress: count($this->pending),
+            presenceChannels: $this->presence->channels(),
+            presenceMembers: $this->presence->members(),
+            memoryBytes: memory_get_usage(),
+            opened: $this->opened,
+            frames: $this->frames,
+            joins: $this->joins,
+            badFrames: $this->badFrames,
+            unauthorized: $this->unauthorized,
+            rateLimited: $this->rateLimited,
+            subscriptionErrors: $this->subscriptionErrors,
+            strikeCloses: $this->strikeCloses,
+        );
+    }
 
     public function channelsOf(int $conn): int
     {
@@ -330,6 +373,7 @@ final class Gateway
     {
         if ($userId === null) {
             $state->channels[$channel] = null;
+            $this->joins++;
             $this->sendSucceeded($conn, $channel);
             return;
         }
@@ -341,6 +385,7 @@ final class Gateway
             return;
         }
         $state->channels[$channel] = $userId;
+        $this->joins++;
         if ($result === PresenceTable::ADDED && $this->presence->count($channel) > 1) {
             $member = ['user_id' => $userId];
             if ($info !== null) {
@@ -429,6 +474,7 @@ final class Gateway
             // Refused, not punished (Reverb answers a client over its rate with this error alone): a typing
             // indicator that an application does not throttle must not cost its user the connection. A real
             // flood is ended by the limiter on all frames, which does strike.
+            $this->rateLimited++;
             $this->error($conn, self::ERR_CLIENT_EVENTS, 'Rate limit exceeded');
             return;
         }
@@ -440,11 +486,15 @@ final class Gateway
 
     private function error(int $conn, int $code, string $message): void
     {
+        if ($code === self::ERR_UNAUTHORIZED) {
+            $this->unauthorized++;
+        }
         $this->link->send($conn, Frame::encode('pusher:error', ['code' => $code, 'message' => $message]));
     }
 
     private function subscriptionError(int $conn, string $channel, string $type, string $message): void
     {
+        $this->subscriptionErrors++;
         $this->link->send($conn, Frame::encode('pusher:subscription_error', [
             'type' => $type, 'error' => $message, 'status' => self::SUBSCRIPTION_ERROR,
         ], $channel));
@@ -452,14 +502,30 @@ final class Gateway
 
     private function invalid(int $conn, ConnState $state): void
     {
+        $this->badFrames++;
         $this->error($conn, self::ERR_BAD_FRAME, 'Invalid message format');
         $this->strike($conn, $state);
     }
 
+    /**
+     * Count one violation, and close the connection when it has too many *recent* ones (ADR-0042 A2). A
+     * strike is forgiven for each full STRIKE_FORGIVE_SECONDS of quiet before the next one, so a
+     * connection may break a rule once a minute for as long as it likes; faster than that the strikes
+     * pile up and at max_strikes it is closed. Closing is for sustained abuse, not for a tab that has
+     * been open for a week. Whole strikes and whole minutes: a burst is counted exactly.
+     */
     private function strike(int $conn, ConnState $state): void
     {
-        if (++$state->strikes >= $this->config->maxStrikes && !$state->closing) {
+        $now = ($this->clock)();
+        $quiet = $now - $state->strikeStamp;   // negative if a clock went back: no forgiveness then
+        if ($quiet >= self::STRIKE_FORGIVE_SECONDS) {
+            $state->strikes = max(0, $state->strikes - (int) floor($quiet / self::STRIKE_FORGIVE_SECONDS));
+        }
+        $state->strikes++;
+        $state->strikeStamp = $now;
+        if ($state->strikes >= $this->config->maxStrikes && !$state->closing) {
             $state->closing = true;
+            $this->strikeCloses++;
             $this->link->close($conn, self::CLOSE_POLICY, 'protocol violations');
         }
     }

@@ -90,6 +90,16 @@ final class PresenceTable
         return count($this->channels);
     }
 
+    /** Users in all channels together (a user in two channels counts twice). */
+    public function members(): int
+    {
+        $n = 0;
+        foreach ($this->channels as $channel) {
+            $n += count($channel['users']);
+        }
+        return $n;
+    }
+
     /**
      * The `presence` object of a subscription_succeeded frame.
      *

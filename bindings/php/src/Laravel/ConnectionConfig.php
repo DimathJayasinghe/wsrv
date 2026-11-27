@@ -48,9 +48,33 @@ final class ConnectionConfig
         'max_strikes' => ['maxStrikes', 'int'],
     ];
 
+    /** The seconds between statistics lines when `wsrv:echo` is not told otherwise. */
+    public const DEFAULT_STATS_INTERVAL = 60;
+    private const MAX_STATS_INTERVAL = 86400;
+
     /** @param array<string, mixed> $config */
     private function __construct(private readonly array $config)
     {
+    }
+
+    /**
+     * The value of the `--stats-interval` option of `wsrv:echo` (ADR-0042 A2): whole seconds, 0 for off.
+     * It comes from a command line, so a string; anything but plain digits is an error, not a default.
+     *
+     * @throws \InvalidArgumentException
+     */
+    public static function statsInterval(mixed $option): int
+    {
+        if ($option === null) {
+            return self::DEFAULT_STATS_INTERVAL;
+        }
+        if (is_string($option) && preg_match('/\A[0-9]{1,6}\z/', $option) === 1) {
+            $option = (int) $option;
+        }
+        if (!is_int($option) || $option < 0 || $option > self::MAX_STATS_INTERVAL) {
+            throw new \InvalidArgumentException('--stats-interval must be a whole number of seconds from 0 (off) to ' . self::MAX_STATS_INTERVAL);
+        }
+        return $option;
     }
 
     /**

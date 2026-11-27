@@ -82,3 +82,14 @@ test('laravel config: the publish endpoint must be plain http and the timeout po
     assertThrows(InvalidArgumentException::class, fn () => ConnectionConfig::fromArray(laravel_config(['publish_url' => 'https://x:9200'])));
     assertThrows(InvalidArgumentException::class, fn () => ConnectionConfig::fromArray(laravel_config(['publish_timeout' => 0])));
 });
+
+test('laravel config: the statistics interval of the wsrv:echo command is whole seconds, 60 by default, 0 for off', function () {
+    assertSame(60, ConnectionConfig::statsInterval(null));
+    assertSame(60, ConnectionConfig::statsInterval('60'));
+    assertSame(0, ConnectionConfig::statsInterval('0'));
+    assertSame(5, ConnectionConfig::statsInterval(5));
+    assertSame(86400, ConnectionConfig::statsInterval('86400'));
+    foreach (['-1', '1.5', '1e3', ' 5', '5 ', '', 'soon', '86401', '99999999999999999999', 1.5, true, []] as $bad) {
+        assertThrows(InvalidArgumentException::class, fn () => ConnectionConfig::statsInterval($bad), 'accepted ' . var_export($bad, true));
+    }
+});

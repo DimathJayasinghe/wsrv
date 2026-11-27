@@ -22,6 +22,8 @@ final class FakeLink implements Link
     public array $published = [];
     /** @var list<array{int, int, string}> */
     public array $closed = [];
+    /** @var list<array{string, int, string, int}> every subscribe and unsubscribe in the order the daemon would see them: kind, conn, topic, request */
+    public array $log = [];
     private int $next = 1;
 
     public function send(int $conn, string $text): void
@@ -32,12 +34,14 @@ final class FakeLink implements Link
     public function subscribe(int $conn, string $topic): int
     {
         $this->subscribed[] = [$conn, $topic, $this->next];
+        $this->log[] = ['sub', $conn, $topic, $this->next];
         return $this->next++;
     }
 
     public function unsubscribe(int $conn, string $topic): int
     {
         $this->unsubscribed[] = [$conn, $topic];
+        $this->log[] = ['unsub', $conn, $topic, $this->next];
         return $this->next++;
     }
 
@@ -79,7 +83,7 @@ final class FakeLink implements Link
 
     public function clear(): void
     {
-        $this->sent = $this->published = $this->subscribed = $this->unsubscribed = $this->closed = [];
+        $this->sent = $this->published = $this->subscribed = $this->unsubscribed = $this->closed = $this->log = [];
     }
 }
 
@@ -511,10 +515,103 @@ test('pusher gateway: a bad frame is answered with 4200 and a strike, and too ma
     assertSame([[1, 1008, 'protocol violations']], $link->closed);
 });
 
+test('pusher gateway: a rare mistake is never fatal: one bad frame an hour for ten hours does not close the connection', function () {
+    // Strikes leak (ADR-0042 A2). Before, the count only went up: a page open for a week that sent one
+    // malformed frame a day was closed on the eighth day, however well it behaved in between.
+    [$gw, $link, $clock] = gateway(['maxStrikes' => 8]);
+    open_conn($gw, $link, 1);
+    for ($hour = 0; $hour < 10; $hour++) {
+        $gw->received(1, 'not json');
+        $clock->now += 3600.0;
+    }
+    assertSame([], $link->closed, 'ten mistakes in ten hours are not abuse');
+    assertSame(10, $gw->stats()->badFrames, 'every one was still answered and counted');
+});
+
+test('pusher gateway: a strike is forgiven for each quiet minute before the next: a burst closes at max_strikes, a drip slower than a minute never', function () {
+    // a burst: eight at the same instant (the interop run does this against a real daemon, a few ms apart)
+    [$gw, $link, $clock] = gateway(['maxStrikes' => 8]);
+    open_conn($gw, $link, 1);
+    for ($i = 0; $i < 7; $i++) {
+        $gw->received(1, 'x');
+        $clock->now += 0.002;
+    }
+    assertSame([], $link->closed);
+    $gw->received(1, 'x');
+    assertSame([[1, 1008, 'protocol violations']], $link->closed, 'the eighth strike of a burst closes');
+
+    // one every 30 s: nothing is forgiven (less than a minute passes between two), so it ends like a burst, slowly
+    [$gw, $link, $clock] = gateway(['maxStrikes' => 8]);
+    open_conn($gw, $link, 1);
+    for ($i = 1; $i <= 7; $i++) {
+        $gw->received(1, 'x');
+        $clock->now += 30.0;
+    }
+    assertSame([], $link->closed, 'seven strikes 30 s apart');
+    $gw->received(1, 'x');
+    assertSame(1, count($link->closed), 'the eighth closes');
+
+    // the edge: 59 s apart is still too fast, 60 s apart forgives one each time
+    [$gw, $link, $clock] = gateway(['maxStrikes' => 8]);
+    open_conn($gw, $link, 1);
+    for ($i = 1; $i <= 8; $i++) {
+        $gw->received(1, 'x');
+        $clock->now += 59.0;
+    }
+    assertSame(1, count($link->closed), 'one a minute minus a second: closed at the eighth');
+    [$gw, $link, $clock] = gateway(['maxStrikes' => 8]);
+    open_conn($gw, $link, 1);
+    for ($i = 0; $i < 500; $i++) {
+        $gw->received(1, 'x');
+        $clock->now += 60.0;
+    }
+    assertSame([], $link->closed, 'one a minute is forgiven as fast as it comes, however long it goes on');
+
+    // quiet time forgives as many strikes as it has full minutes, and no credit is kept beyond zero
+    [$gw, $link, $clock] = gateway(['maxStrikes' => 8]);
+    open_conn($gw, $link, 1);
+    for ($i = 0; $i < 5; $i++) {
+        $gw->received(1, 'x');                      // 5 strikes
+    }
+    $clock->now += 185.0;                           // three full minutes: three forgiven
+    $gw->received(1, 'x');                          // 5 - 3 + 1 = 3
+    for ($i = 0; $i < 4; $i++) {
+        $gw->received(1, 'x');                      // 7
+    }
+    assertSame([], $link->closed, 'seven');
+    $gw->received(1, 'x');
+    assertSame(1, count($link->closed), 'the eighth closes: three of the first five were forgiven, no more');
+    [$gw, $link, $clock] = gateway(['maxStrikes' => 8]);
+    open_conn($gw, $link, 1);
+    $clock->now += 86400.0;                         // a day of good behaviour is not a credit of strikes
+    for ($i = 0; $i < 8; $i++) {
+        $gw->received(1, 'x');
+    }
+    assertSame(1, count($link->closed), 'a day of silence buys nothing for the eight that follow');
+});
+
+test('pusher gateway: a clock that steps back adds no strikes, and time moving on from there forgives them', function () {
+    // The real clock is monotonic; this guards the arithmetic against one that is not (and a test double).
+    [$gw, $link, $clock] = gateway(['maxStrikes' => 8]);
+    open_conn($gw, $link, 1);
+    $gw->received(1, 'x');
+    $clock->now -= 6000.0;
+    $gw->received(1, 'x');
+    assertSame([], $link->closed, 'two strikes, not a hundred: going back in time is not a debt');
+    for ($i = 0; $i < 5; $i++) {
+        $gw->received(1, 'x');
+    }
+    assertSame([], $link->closed, 'seven in all');
+    $gw->received(1, 'x');
+    assertSame(1, count($link->closed), 'the eighth closes');
+});
+
 test('pusher gateway: a binary message counts as a bad frame', function () {
     [$gw, $link] = gateway();
     open_conn($gw, $link, 1);
     $gw->malformed(1);
+    assertSame(1, $gw->stats()->frames, 'a binary message is a frame received');
+    assertSame(1, $gw->stats()->badFrames);
     assertSame(4200, $link->lastFrame(1)['data']['code']);
     $gw->malformed(404);   // unknown connection: ignored
 });
@@ -648,6 +745,173 @@ test('pusher gateway: random and hostile frames never throw and never break a bo
     $gw->closed(1);
     assertSame(0, $gw->pendingCount(), 'no join survives its connection');
     assertSame(0, $gw->presenceChannels(), 'no member survives its connection');
+});
+
+// ---- statistics and churn (ADR-0042 A2) -----------------------------------------------------------------
+
+test('pusher gateway: stats show what the gateway holds and count what happened', function () {
+    [$gw, $link] = gateway(['maxStrikes' => 3, 'maxChannelsPerConnection' => 4]);
+    $zero = $gw->stats();
+    foreach (['connections', 'channels', 'joins_in_progress', 'presence_channels', 'presence_members', 'opened', 'frames',
+        'joins', 'bad_frames', 'unauthorized', 'rate_limited', 'subscription_errors', 'strike_closes'] as $key) {
+        assertSame(0, $zero->toArray()[$key], "$key starts at zero");
+    }
+    assertTrue($zero->memoryBytes > 0, 'the memory in use is read from the process');
+
+    $a = open_conn($gw, $link, 1);
+    $b = open_conn($gw, $link, 2);
+    join_channel($gw, $link, 1, $a, 'news');
+    join_channel($gw, $link, 1, $a, 'private-x');
+    join_channel($gw, $link, 1, $a, 'presence-r', user_data('7'));
+    join_channel($gw, $link, 2, $b, 'presence-r', user_data('8'));
+    $gw->received(2, subscribe_frame('private-y', $b));           // the daemon has not answered this one
+    $s = $gw->stats();
+    assertSame([2, 4, 1, 1, 2], [$s->connections, $s->channels, $s->joinsInProgress, $s->presenceChannels, $s->presenceMembers]);
+    assertSame([2, 5, 4], [$s->opened, $s->frames, $s->joins]);
+
+    $gw->received(1, 'not json');                                                       // 4200
+    $gw->received(1, subscribe_frame('private-z', $a, null, 'another-secret-another-secret'));   // 4009
+    $gw->received(1, subscribe_frame('a=b', $a));                                       // 4300 InvalidChannelName
+    $gw->received(1, whisper('news', 'client-x', ['a' => 1]));                          // 4009: not a member of a private channel
+    $s = $gw->stats();
+    assertSame([1, 2, 1, 9], [$s->badFrames, $s->unauthorized, $s->subscriptionErrors, $s->frames]);
+    assertSame(0, $s->strikeCloses);
+    $gw->received(1, 'x');
+    $gw->received(1, 'x');
+    assertSame(1, $gw->stats()->strikeCloses, 'three strikes: the connection was closed, once');
+    $gw->received(1, 'x');
+    assertSame(1, $gw->stats()->strikeCloses, 'a connection that is closing is not closed again');
+
+    $gw->closed(1);
+    $s = $gw->stats();
+    assertSame([1, 1, 1, 1, 1], [$s->connections, $s->channels, $s->joinsInProgress, $s->presenceChannels, $s->presenceMembers]);
+    $gw->closed(2);
+    $s = $gw->stats();
+    assertSame([0, 0, 0, 0, 0], [$s->connections, $s->channels, $s->joinsInProgress, $s->presenceChannels, $s->presenceMembers], 'every gauge is back to zero');
+    assertSame(2, $s->opened, 'counters never go down');
+});
+
+test('pusher gateway: stats count the frames the limiters refused', function () {
+    [$gw, $link, $clock] = gateway(['messagesPerSecond' => 3, 'messageBurst' => 17, 'maxChannelsPerConnection' => 1, 'maxStrikes' => 1000, 'clientEventsPerSecond' => 2]);
+    $sock = open_conn($gw, $link, 1);
+    join_channel($gw, $link, 1, $sock, 'private-w');
+    for ($i = 0; $i < 18; $i++) {                  // one subscribe and 16 pings use the burst of 17; the next two are refused
+        $gw->received(1, '{"event":"pusher:ping"}');
+    }
+    assertSame(2, $gw->stats()->rateLimited, 'two frames over the bucket');
+    $clock->now += 10.0;
+    for ($i = 0; $i < 3; $i++) {                   // 2 per second are allowed, the third is over
+        $gw->received(1, whisper('private-w', 'client-t', ['n' => $i]));
+    }
+    assertSame(3, $gw->stats()->rateLimited, 'a whisper over its rate is counted too');
+    assertSame(0, $gw->stats()->strikeCloses);
+});
+
+test('pusher gateway: stats line is one line of key=value numbers in a fixed order, and carries nothing a peer sent', function () {
+    [$gw, $link] = gateway();
+    open_conn($gw, $link, 1);
+    $gw->received(1, '{"event":"pusher:subscribe","data":{"channel":"evil\nchannel=x connections=999"}}');
+    $line = $gw->stats()->line();
+    assertTrue(preg_match('/\A[a-z_]+=\d+( [a-z_]+=\d+)*\z/', $line) === 1, 'not a plain line: ' . $line);
+    assertSame(
+        ['connections', 'channels', 'joins_in_progress', 'presence_channels', 'presence_members', 'memory_bytes',
+            'opened', 'frames', 'joins', 'bad_frames', 'unauthorized', 'rate_limited', 'subscription_errors', 'strike_closes'],
+        array_keys($gw->stats()->toArray()),
+    );
+    assertSame(1, $gw->stats()->connections, 'and the number in the line is the real one');
+    assertTrue(str_starts_with($line, 'connections=1 '), $line);
+});
+
+test('pusher gateway: churn: in any order of joins, answers, leaves and closes nothing is left behind and every bound holds', function () {
+    $quota = 5;
+    $members = 3;
+    foreach ([1, 2, 3, 4, 5, 6, 7, 8] as $seed) {
+        mt_srand($seed);
+        [$gw, $link, $clock] = gateway([
+            'maxChannelsPerConnection' => $quota, 'maxPresenceMembers' => $members, 'maxStrikes' => 1_000_000,
+            'messagesPerSecond' => 1_000_000, 'messageBurst' => 1_000_000, 'clientEventsPerSecond' => 100_000,
+        ]);
+        $open = [];        // conn => socket id
+        $rooms = [];       // the daemon's view: conn => [topic => true]
+        $outstanding = []; // subscribe requests not answered yet: request => [conn, topic]
+        $seen = 0;         // how much of $link->log has been applied to $rooms
+        $next = 1;
+        $topics = ['news', 'private-a', 'private-b', 'presence-r1', 'presence-r2', 'presence-r3'];
+        $sync = function () use ($link, &$seen, &$rooms, &$outstanding, &$open): void {
+            for (; $seen < count($link->log); $seen++) {
+                [$kind, $conn, $topic, $request] = $link->log[$seen];
+                if ($kind === 'sub') {
+                    $outstanding[$request] = [$conn, $topic];
+                    if (isset($open[$conn])) {
+                        $rooms[$conn][$topic] = true;     // the daemon puts the connection in the room when it gets the command
+                    }
+                } elseif (isset($rooms[$conn])) {
+                    unset($rooms[$conn][$topic]);
+                }
+            }
+        };
+        $answer = function (int $request, int $status) use ($gw, &$rooms, &$outstanding): void {
+            [$conn, $topic] = $outstanding[$request];
+            unset($outstanding[$request]);
+            if ($status !== StatusCode::OK) {
+                unset($rooms[$conn][$topic]);             // a refused subscribe leaves no room behind
+            }
+            $gw->status($request, $status);
+        };
+        for ($i = 0; $i < 3000; $i++) {
+            $op = mt_rand(0, 99);
+            $conn = $open === [] ? 0 : array_keys($open)[mt_rand(0, count($open) - 1)];
+            if ($op < 8 && count($open) < 12) {
+                $open[$next] = open_conn($gw, $link, $next);
+                $next++;
+            } elseif ($op < 13 && $conn !== 0) {
+                $gw->closed($conn);
+                unset($open[$conn], $rooms[$conn]);
+            } elseif ($op < 45 && $conn !== 0) {
+                $topic = $topics[mt_rand(0, count($topics) - 1)];
+                $data = str_starts_with($topic, 'presence-') ? user_data((string) mt_rand(1, 5)) : null;
+                $secret = mt_rand(0, 9) === 0 ? 'another-secret-another-secret' : GW_SECRET;
+                $gw->received($conn, subscribe_frame($topic, $open[$conn], $data, $secret));
+            } elseif ($op < 58 && $conn !== 0) {
+                $gw->received($conn, frame_text('pusher:unsubscribe', ['channel' => $topics[mt_rand(0, count($topics) - 1)]]));
+            } elseif ($op < 86 && $outstanding !== []) {
+                $sync();
+                $request = array_keys($outstanding)[mt_rand(0, count($outstanding) - 1)];
+                $answer($request, [StatusCode::OK, StatusCode::OK, StatusCode::OK, StatusCode::LIMIT, StatusCode::NO_SUCH_CONN, StatusCode::INTERNAL][mt_rand(0, 5)]);
+            } elseif ($op < 93 && $conn !== 0) {
+                $gw->received($conn, whisper($topics[mt_rand(0, count($topics) - 1)], 'client-x', ['i' => $i]));
+            } elseif ($conn !== 0) {
+                $gw->received($conn, mt_rand(0, 1) === 0 ? 'garbage' : '{"event":"pusher:ping"}');
+            }
+            $clock->now += mt_rand(0, 3) === 0 ? 1.0 : 0.0;
+            $sync();
+            $s = $gw->stats();
+            assertSame(count($open), $s->connections, "seed $seed step $i");
+            assertTrue($s->channels <= count($open) * $quota, "seed $seed step $i: more memberships than the quota allows");
+            assertTrue($s->joinsInProgress <= count($open) * $quota, "seed $seed step $i: more joins in progress than the quota allows");
+            assertTrue($s->presenceMembers <= $s->presenceChannels * $members, "seed $seed step $i: a presence channel over its member cap");
+            assertTrue($s->presenceChannels <= count($open) * $quota, "seed $seed step $i: a presence channel nobody is in");
+        }
+        // The daemon answers whatever is left. Then the gateway and the daemon must agree on who is in which room.
+        $sync();
+        foreach (array_keys($outstanding) as $request) {
+            $answer($request, StatusCode::OK);
+            $sync();
+        }
+        $s = $gw->stats();
+        assertSame(0, $s->joinsInProgress, "seed $seed: every join was answered");
+        $held = 0;
+        foreach ($open as $conn => $_) {
+            assertSame(count($rooms[$conn] ?? []), $gw->channelsOf($conn), "seed $seed: connection $conn is in as many rooms as the daemon thinks");
+            $held += count($rooms[$conn] ?? []);
+        }
+        assertSame($held, $s->channels, "seed $seed: the gateway and the daemon hold the same memberships");
+        foreach (array_keys($open) as $conn) {
+            $gw->closed($conn);
+        }
+        $s = $gw->stats();
+        assertSame([0, 0, 0, 0, 0], [$s->connections, $s->channels, $s->joinsInProgress, $s->presenceChannels, $s->presenceMembers], "seed $seed: nothing survives its connections");
+    }
 });
 
 // ---- client events (whispers) ---------------------------------------------------------------------
