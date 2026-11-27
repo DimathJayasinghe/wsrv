@@ -2,6 +2,7 @@
     "name": "wsrv/client",
     "description": "PHP client for the wsrvd WebSocket sidecar (IPC protocol v0) and an embedded server over FFI. Works on every PHP stack; the sidecar client is pure PHP.",
     "type": "library",
+    "keywords": ["websocket", "websockets", "rfc6455", "pubsub", "realtime", "laravel", "laravel-echo", "pusher-protocol", "broadcasting", "sidecar", "wsrvd"],
     "license": "Apache-2.0",
     "require": {
         "php": ">=8.2"

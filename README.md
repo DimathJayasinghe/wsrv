@@ -20,6 +20,8 @@ reconnect you can watch), see [what has been checked and how to check it yoursel
   send to browsers without holding a connection.
 - **A PHP package** (`composer require wsrv/client`, PHP 8.2 or newer, no extension for the sidecar): a
   worker that reconnects after a daemon restart, a `Publisher`, and a [Laravel guide](docs/LARAVEL.md).
+- **Laravel Echo support** (1.1): `broadcast()`, `Broadcast::channel()` and the stock `pusher-js`/`laravel-echo` against wsrv,
+  with private and presence channels and whispers ([guide](docs/LARAVEL_ECHO.md)).
 - **A JavaScript client** that reconnects with backoff and rejoins its rooms
   ([clients/js](clients/js/README.md)).
 - **Operations built in:** Prometheus metrics, `/healthz` and `/readyz`, graceful shutdown, and a
@@ -155,7 +157,7 @@ The documents below are the contract the code satisfies; read them before changi
 | [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md) | Test pyramid, fuzzing, Autobahn, sanitizers, perf | Writing tests |
 | [docs/BUILD_AND_TOOLING.md](docs/BUILD_AND_TOOLING.md) | CMake, presets, CI, linters, dependency policy | Setting up / changing build |
 | [docs/LARAVEL.md](docs/LARAVEL.md) | Rooms and publishing from a Laravel app | Using wsrv from Laravel |
-| [docs/LARAVEL_ECHO.md](docs/LARAVEL_ECHO.md) | Laravel Echo and `broadcast()` on wsrv (planned for 1.2) | Laravel Echo on wsrv |
+| [docs/LARAVEL_ECHO.md](docs/LARAVEL_ECHO.md) | Laravel Echo and `broadcast()` on wsrv (wsrv 1.1) | Laravel Echo on wsrv |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Config, logging, metrics, shutdown, deployment hardening | Shipping / running |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Measured scaling, fan-out and soak numbers and their limits | Sizing or touching a hot path |
 | [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | wsrv against Workerman, Swoole and Reverb: numbers, noise, limits, how to rerun | Choosing a server, or quoting a number |
