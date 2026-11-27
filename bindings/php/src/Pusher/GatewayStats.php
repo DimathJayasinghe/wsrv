@@ -43,6 +43,12 @@ final class GatewayStats
         public readonly int $rateLimited,
         /** `pusher:subscription_error` frames (4300): channel name, quota, presence cap, daemon refusal. */
         public readonly int $subscriptionErrors,
+        /**
+         * Joins the daemon refused: a broker bound (`broker_max_topics` 1024, `broker_max_subscriptions` 100 000,
+         * `broker_max_subscribers_per_topic` 10 000 by default) or another error status. Rising means the
+         * daemon is too small for the site, not that a browser misbehaved.
+         */
+        public readonly int $daemonRefused,
         /** Connections the gateway closed with 1008 for collecting `max_strikes`. */
         public readonly int $strikeCloses,
     ) {
@@ -69,6 +75,7 @@ final class GatewayStats
             'unauthorized' => $this->unauthorized,
             'rate_limited' => $this->rateLimited,
             'subscription_errors' => $this->subscriptionErrors,
+            'daemon_refused' => $this->daemonRefused,
             'strike_closes' => $this->strikeCloses,
         ];
     }

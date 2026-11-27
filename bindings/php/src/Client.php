@@ -280,7 +280,7 @@ final class Client
         $this->nextRequest = $request === 0xFFFFFFFF ? 1 : $request + 1;
         $frame = $encode($request);
         if (strlen($frame) - 4 > $this->maxFrame) {
-            throw new ProtocolError('message is larger than the daemon accepts (' . $this->maxFrame . ' bytes per frame)');
+            throw new MessageTooLarge('message is larger than the daemon accepts (' . $this->maxFrame . ' bytes per frame)');
         }
         $this->writeAll($frame, $this->writeTimeout);
         return $request;

@@ -7,6 +7,7 @@ use Wsrv\Client;
 use Wsrv\Connection;
 use Wsrv\ConnectionClosed;
 use Wsrv\HandshakeRefused;
+use Wsrv\MessageTooLarge;
 use Wsrv\StatusCode;
 use Wsrv\Supervisor;
 use Wsrv\Worker;
@@ -166,6 +167,48 @@ test('supervisor: a handler that throws is reported and the worker keeps serving
     assertSame(['bug in a handler'], $errors);
     assertSame(['fine'], $seen);
     assertSame([], $sleeps, 'the link was never lost: no reconnect');
+});
+
+test('supervisor: a message too large for the daemon is reported like a handler error, and the link is kept', function () {
+    [$client, $daemon] = ready_client(4096);
+    fwrite($daemon, event_bytes(2, 3, 'big') . event_bytes(2, 3, 'small'));
+    $sleeps = [];
+    $errors = [];
+    $seen = [];
+    $supervisor = scripted([$client], $sleeps, null, function (Throwable $e) use (&$errors): void {
+        $errors[] = get_class($e);
+    });
+    $supervisor->run(function (Worker $worker) use (&$seen, &$supervisor): void {
+        $worker->on('message', function (Connection $c, string $data) use (&$seen, &$supervisor): void {
+            if ($data === 'big') {
+                $c->send(str_repeat('x', 5000));     // more than the daemon's 4096-byte frame
+            }
+            $seen[] = $data;
+            if ($data === 'small') {
+                $supervisor->stop();
+            }
+        });
+    });
+    assertSame([MessageTooLarge::class], $errors);
+    assertSame(['small'], $seen, 'the next event was handled on the same link');
+    assertSame([], $sleeps, 'the link was never lost: no reconnect, no backoff');
+});
+
+test('supervisor: a protocol error from the daemon still drops the link and reconnects', function () {
+    [$client, $daemon] = ready_client();
+    fwrite($daemon, pack('N', 2) . "\x7f\x00");    // a frame type the daemon never sends
+    [$second, $daemon2] = ready_client();
+    $sleeps = [];
+    $supervisor = null;
+    $supervisor = scripted([$client, $second], $sleeps);
+    $connected = 0;
+    $supervisor->run(function (Worker $worker) use (&$connected, &$supervisor): void {
+        if (++$connected === 2) {
+            $supervisor->stop();
+        }
+    });
+    assertSame(2, $connected);
+    assertSame(1, count($sleeps), 'one backoff between the two links');
 });
 
 test('supervisor: the backoff starts over after a session that lasted, but not after a flapping one', function () {

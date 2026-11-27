@@ -6,6 +6,7 @@ declare(strict_types=1);
 use Wsrv\Pusher\Gateway;
 use Wsrv\Pusher\GatewayConfig;
 use Wsrv\Pusher\Link;
+use Wsrv\MessageTooLarge;
 use Wsrv\Pusher\Signature;
 use Wsrv\StatusCode;
 
@@ -24,10 +25,15 @@ final class FakeLink implements Link
     public array $closed = [];
     /** @var list<array{string, int, string, int}> every subscribe and unsubscribe in the order the daemon would see them: kind, conn, topic, request */
     public array $log = [];
+    /** The largest message the "daemon" takes; a bigger one is refused as Wsrv\Client refuses it. */
+    public int $maxMessage = PHP_INT_MAX;
     private int $next = 1;
 
     public function send(int $conn, string $text): void
     {
+        if (strlen($text) > $this->maxMessage) {
+            throw new MessageTooLarge('message is larger than the daemon accepts');
+        }
         $this->sent[$conn][] = $text;
     }
 
@@ -229,6 +235,29 @@ test('pusher gateway: a refused subscription is reported as one and the channel 
     // and it is not a member: an unsubscribe for it does nothing
     $gw->received(1, frame_text('pusher:unsubscribe', ['channel' => 'orders']));
     assertSame([], $link->unsubscribed);
+});
+
+test('pusher gateway: stats count the joins the daemon refused (its broker limits), and not a browser that left first', function () {
+    // This is how an operator sees that broker_max_topics (default 1024) or a sibling bound is too small for the
+    // site: every refused join is a subscription_error to the browser, and daemon_refused says whose limit it was.
+    [$gw, $link] = gateway();
+    $a = open_conn($gw, $link, 1);
+    foreach (['one', 'two', 'three', 'four'] as $name) {
+        $gw->received(1, subscribe_frame($name, $a));
+    }
+    $requests = array_column($link->subscribed, 2);
+    $gw->status($requests[0], StatusCode::LIMIT);              // a broker bound: refused
+    $gw->status($requests[1], StatusCode::INTERNAL);           // any other error: refused too
+    $gw->status($requests[2], StatusCode::NO_SUCH_CONN);       // the browser left first: not a refusal
+    $gw->status($requests[3], StatusCode::OK);
+    $stats = $gw->stats();
+    assertSame(2, $stats->daemonRefused);
+    assertSame(2, $stats->subscriptionErrors, 'each refusal was reported to its browser');
+    assertSame(1, $stats->joins);
+    // quota and name errors are the gateway's own, not the daemon's
+    $gw->received(1, subscribe_frame('bad name', $a));
+    assertSame(2, $gw->stats()->daemonRefused);
+    assertSame(3, $gw->stats()->subscriptionErrors);
 });
 
 test('pusher gateway: joining the same channel twice asks the daemon once', function () {
@@ -747,13 +776,87 @@ test('pusher gateway: random and hostile frames never throw and never break a bo
     assertSame(0, $gw->presenceChannels(), 'no member survives its connection');
 });
 
+test('pusher gateway: a presence member list that does not fit the daemon refuses that join and nothing else', function () {
+    // The daemon's IPC frame is max_message_size + 64 KiB. A list of 100 members with 2 KiB each is 200 KiB:
+    // with a small max_message_size the send throws, and that must fail one join, not reset the worker's link.
+    [$gw, $link] = gateway();
+    $info = ['bio' => str_repeat('b', 300)];
+    $sockets = [];
+    for ($i = 1; $i <= 7; $i++) {
+        $sockets[$i] = open_conn($gw, $link, $i);
+    }
+    for ($i = 1; $i <= 5; $i++) {
+        join_channel($gw, $link, $i, $sockets[$i], 'presence-big', user_data((string) $i, $info));
+    }
+    $link->clear();
+    $before = $gw->stats();
+    $link->maxMessage = 1000;                              // the sixth member's list is about 1.9 KB
+    $gw->received(6, subscribe_frame('presence-big', $sockets[6], user_data('6', $info)));
+    $gw->status($link->lastRequest(), StatusCode::OK);     // no exception: the join fails, the worker goes on
+    $f = $link->lastFrame(6);
+    assertSame('pusher:subscription_error', $f['event']);
+    assertSame('ServerError', $f['data']['type']);
+    assertSame([[6, 'presence-big']], $link->unsubscribed, 'the daemon room was left again');
+    assertSame([], $link->published, 'nobody heard of a member who never joined');
+    assertSame(0, $gw->channelsOf(6));
+    assertSame(5, $gw->stats()->presenceMembers, 'the member table has no ghost');
+    assertSame($before->joins, $gw->stats()->joins, 'a join that failed is not counted as a join');
+    assertSame($before->subscriptionErrors + 1, $gw->stats()->subscriptionErrors);
+    // the limit goes away (or the info shrinks): the same user can join, and the others are told then
+    $link->maxMessage = PHP_INT_MAX;
+    $link->clear();
+    $gw->received(6, subscribe_frame('presence-big', $sockets[6], user_data('6', $info)));
+    $gw->status($link->lastRequest(), StatusCode::OK);
+    assertSame('pusher_internal:subscription_succeeded', $link->lastFrame(6)['event']);
+    assertSame(6, $gw->stats()->presenceMembers);
+    assertSame(1, count($link->published), 'the others are told once');
+    // a second tab of a member that is already in needs the list too, and fails the same clean way
+    $link->maxMessage = 1000;
+    $link->clear();
+    $gw->received(7, subscribe_frame('presence-big', $sockets[7], user_data('6', $info)));
+    $gw->status($link->lastRequest(), StatusCode::OK);
+    assertSame('pusher:subscription_error', $link->lastFrame(7)['event']);
+    assertSame(6, $gw->stats()->presenceMembers, 'the user stays a member through the tab that is in');
+    $gw->closed(7);
+    $gw->closed(6);
+    assertSame(5, $gw->stats()->presenceMembers);
+});
+
+test('pusher gateway: a repeated subscribe that no longer fits one frame takes the connection out of the channel', function () {
+    // Joined while the list fitted; members came; the same connection subscribes again and the answer would
+    // not fit. It cannot be told who is here, so it leaves like a connection that asked to, and the others
+    // hear that its user is gone. (A repeated subscribe on a list that fits is answered again and changes nothing.)
+    [$gw, $link] = gateway();
+    $info = ['bio' => str_repeat('b', 300)];
+    $sockets = [];
+    for ($i = 1; $i <= 6; $i++) {
+        $sockets[$i] = open_conn($gw, $link, $i);
+        join_channel($gw, $link, $i, $sockets[$i], 'presence-big', user_data((string) $i, $info));
+    }
+    $link->clear();
+    $gw->received(2, subscribe_frame('presence-big', $sockets[2], user_data('2', $info)));
+    assertSame('pusher_internal:subscription_succeeded', $link->lastFrame(2)['event'], 'it still fits: answered again');
+    assertSame(6, $gw->stats()->presenceMembers);
+    $link->maxMessage = 1000;
+    $link->clear();
+    $gw->received(2, subscribe_frame('presence-big', $sockets[2], user_data('2', $info)));
+    assertSame('pusher:subscription_error', $link->lastFrame(2)['event']);
+    assertSame([[2, 'presence-big']], $link->unsubscribed, 'out of the daemon room');
+    assertSame(0, $gw->channelsOf(2));
+    assertSame(5, $gw->stats()->presenceMembers);
+    assertSame(1, count($link->published), 'the others are told that user 2 is gone');
+    assertSame('pusher_internal:member_removed', json_decode($link->published[0][1], true)['event']);
+    $gw->closed(2);                                            // closing later finds nothing left to undo
+    assertSame(5, $gw->stats()->presenceMembers);
+});
+
 // ---- statistics and churn (ADR-0042 A2) -----------------------------------------------------------------
 
 test('pusher gateway: stats show what the gateway holds and count what happened', function () {
     [$gw, $link] = gateway(['maxStrikes' => 3, 'maxChannelsPerConnection' => 4]);
     $zero = $gw->stats();
     foreach (['connections', 'channels', 'joins_in_progress', 'presence_channels', 'presence_members', 'opened', 'frames',
-        'joins', 'bad_frames', 'unauthorized', 'rate_limited', 'subscription_errors', 'strike_closes'] as $key) {
+        'joins', 'bad_frames', 'unauthorized', 'rate_limited', 'subscription_errors', 'daemon_refused', 'strike_closes'] as $key) {
         assertSame(0, $zero->toArray()[$key], "$key starts at zero");
     }
     assertTrue($zero->memoryBytes > 0, 'the memory in use is read from the process');
@@ -815,7 +918,8 @@ test('pusher gateway: stats line is one line of key=value numbers in a fixed ord
     assertTrue(preg_match('/\A[a-z_]+=\d+( [a-z_]+=\d+)*\z/', $line) === 1, 'not a plain line: ' . $line);
     assertSame(
         ['connections', 'channels', 'joins_in_progress', 'presence_channels', 'presence_members', 'memory_bytes',
-            'opened', 'frames', 'joins', 'bad_frames', 'unauthorized', 'rate_limited', 'subscription_errors', 'strike_closes'],
+            'opened', 'frames', 'joins', 'bad_frames', 'unauthorized', 'rate_limited', 'subscription_errors', 'daemon_refused',
+            'strike_closes'],
         array_keys($gw->stats()->toArray()),
     );
     assertSame(1, $gw->stats()->connections, 'and the number in the line is the real one');

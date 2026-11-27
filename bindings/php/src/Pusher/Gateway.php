@@ -6,6 +6,7 @@ declare(strict_types=1);
 namespace Wsrv\Pusher;
 
 use Wsrv\Connection;
+use Wsrv\MessageTooLarge;
 use Wsrv\StatusCode;
 use Wsrv\Upgrade;
 use Wsrv\Worker;
@@ -35,6 +36,7 @@ final class Gateway
     private const ERR_UNAUTHORIZED = 4009;
     private const ERR_CLIENT_EVENTS = 4301;
     private const SUBSCRIPTION_ERROR = 4300;
+    private const LIST_TOO_LARGE = 'The member list is too large to send';
     private const CLOSE_POLICY = 1008;
     /** One strike is forgiven for each full period of this many quiet seconds (ADR-0042 A2). A constant: the knob for a site is max_strikes. */
     private const STRIKE_FORGIVE_SECONDS = 60.0;
@@ -59,6 +61,7 @@ final class Gateway
     private int $unauthorized = 0;
     private int $rateLimited = 0;
     private int $subscriptionErrors = 0;
+    private int $daemonRefused = 0;
     private int $strikeCloses = 0;
 
     /** @param callable(): float|null $clock seconds as a float; for tests */
@@ -205,8 +208,10 @@ final class Gateway
         if ($status === StatusCode::OK) {
             $this->joined($join['conn'], $state, $join['channel'], $join['userId'], $join['info']);
         } elseif ($status === StatusCode::LIMIT) {
+            $this->daemonRefused++;
             $this->subscriptionError($join['conn'], $join['channel'], 'LimitReached', 'The server is at its channel limit');
         } elseif ($status !== StatusCode::NO_SUCH_CONN) {
+            $this->daemonRefused++;
             $this->subscriptionError($join['conn'], $join['channel'], 'ServerError', 'Subscription could not be completed');
         }
     }
@@ -237,6 +242,7 @@ final class Gateway
             unauthorized: $this->unauthorized,
             rateLimited: $this->rateLimited,
             subscriptionErrors: $this->subscriptionErrors,
+            daemonRefused: $this->daemonRefused,
             strikeCloses: $this->strikeCloses,
         );
     }
@@ -273,7 +279,12 @@ final class Gateway
             return;
         }
         if (array_key_exists($channel, $state->channels)) {
-            $this->sendSucceeded($conn, $channel);   // already in: say so again, change nothing
+            // Already in: say so again, change nothing. Unless the member list has grown past one frame since
+            // this connection joined: then it cannot be told who is here, so it leaves, as if it had asked to.
+            if (!$this->sendSucceeded($conn, $channel)) {
+                $this->leave($conn, $state, $channel);
+                $this->subscriptionError($conn, $channel, 'ServerError', self::LIST_TOO_LARGE);
+            }
             return;
         }
         $revived = null;   // a join that was cancelled by an unsubscribe and has not been answered yet
@@ -374,7 +385,7 @@ final class Gateway
         if ($userId === null) {
             $state->channels[$channel] = null;
             $this->joins++;
-            $this->sendSucceeded($conn, $channel);
+            $this->sendSucceeded($conn, $channel);   // a few bytes: it cannot be too large
             return;
         }
         $result = $this->presence->add($channel, $conn, $userId, $info);
@@ -385,6 +396,15 @@ final class Gateway
             return;
         }
         $state->channels[$channel] = $userId;
+        if (!$this->sendSucceeded($conn, $channel)) {
+            // The member list does not fit one frame to the daemon (ADR-0042 A2): this join fails and nothing
+            // else does. Nobody has been told about the new member yet, so taking it out again is silent.
+            unset($state->channels[$channel]);
+            $this->presence->remove($channel, $conn);
+            $this->link->unsubscribe($conn, $channel);
+            $this->subscriptionError($conn, $channel, 'ServerError', self::LIST_TOO_LARGE);
+            return;
+        }
         $this->joins++;
         if ($result === PresenceTable::ADDED && $this->presence->count($channel) > 1) {
             $member = ['user_id' => $userId];
@@ -393,10 +413,13 @@ final class Gateway
             }
             $this->link->publish($channel, Frame::encode('pusher_internal:member_added', $member, $channel), $conn);
         }
-        $this->sendSucceeded($conn, $channel);
     }
 
-    private function sendSucceeded(int $conn, string $channel): void
+    /**
+     * Tell the browser it is in the channel. False only for a presence channel whose member list does not
+     * fit one frame to the daemon: nothing was sent, and the caller must undo the join.
+     */
+    private function sendSucceeded(int $conn, string $channel): bool
     {
         $data = new \stdClass();
         if (ChannelName::kind($channel) === ChannelKind::Presence) {
@@ -407,7 +430,12 @@ final class Gateway
             }
             $data = ['presence' => ['count' => $summary['count'], 'ids' => $summary['ids'], 'hash' => (object) $hash]];
         }
-        $this->link->send($conn, Frame::encode('pusher_internal:subscription_succeeded', $data, $channel));
+        try {
+            $this->link->send($conn, Frame::encode('pusher_internal:subscription_succeeded', $data, $channel));
+        } catch (MessageTooLarge) {
+            return false;
+        }
+        return true;
     }
 
     // ---- pusher:unsubscribe, and leaving ------------------------------------------------------
@@ -430,6 +458,12 @@ final class Gateway
             }
             return;   // nothing else to leave; Pusher sends no answer either way
         }
+        $this->leave($conn, $state, $channel);
+    }
+
+    /** Take a joined channel away from the connection: out of the room, out of the member list. */
+    private function leave(int $conn, ConnState $state, string $channel): void
+    {
         $userId = $state->channels[$channel];
         unset($state->channels[$channel]);
         $this->link->unsubscribe($conn, $channel);
