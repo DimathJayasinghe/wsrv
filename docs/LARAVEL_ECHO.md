@@ -44,7 +44,7 @@ Make the publish token with `wsrvd --generate-token=/run/wsrv/publish.token`, as
 
 | Daemon setting | Default | What Echo needs |
 |---|---|---|
-| `max_message_size` | 1 MiB | **at least half the largest presence member list or broadcast you will send** (below): the daemon can send one browser a message of at most `2 x max_message_size - 16` bytes, and drops a larger one. 262144 covers every list the default limits allow. It is also the most the daemon accepts from a browser; the gateway's own `max_frame_bytes` (16384) is the tighter limit on what a browser may send |
+| `max_message_size` | 1 MiB | **at least half the largest presence member list or broadcast you will send** (below): the daemon can send one browser a message of at most `2 x max_message_size - 16` bytes, and refuses a larger one (the send fails with an error; nothing is dropped silently). 262144 covers every list the default limits allow. It is also the most the daemon accepts from a browser, so a browser can make the daemon receive and forward a message of that size to the worker before the gateway's `max_frame_bytes` (16384) refuses it. The cost is bounded: an oversize frame is a bad frame and a strike, so at `max_strikes` (8) one connection has pushed about 2 MiB (8 x 262144) and is closed, and `max_buffered_bytes` (ADR-0040) bounds what the daemon holds in all. Do not raise `max_message_size` above what your lists need |
 | `broker_max_topics` | 1 024 | the channels that have a browser in them at the same time: one per user for per-user private channels, plus rooms, plus public channels. A site with a private channel per user passes 1 024 at about a thousand users online. Range 1 to 1 000 000 |
 | `broker_max_subscriptions` | 100 000 | browsers times channels each, at the same time (20 000 browsers with 4 channels each is 80 000). Range 1 to 10 000 000 |
 | `broker_max_subscribers_per_topic` | 10 000 | the most browsers one channel can hold: a public channel everyone joins (a site-wide `news`) stops taking joins above it, with `LimitReached`. Range 1 to 10 000 000 |
@@ -236,7 +236,7 @@ The line is `key=value` pairs, numbers only (nothing a browser sent can end up i
 | `unauthorized` | counter | answers with `4009`: a signature that did not verify, or a whisper on a channel the connection has not joined |
 | `rate_limited` | counter | answers with `4301`: frames over the message rate (a strike) and whispers over `client_events_per_second` (no strike) |
 | `subscription_errors` | counter | joins answered with `pusher:subscription_error`: a name wsrv cannot hold, over the channel quota, a full presence channel, refused by the daemon, or a member list that did not fit |
-| `daemon_refused` | counter | commands the daemon refused: joins over its broker limits (section 2), and join answers it could not queue (that browser is closed with 1011) |
+| `daemon_refused` | counter | commands the daemon refused: joins over its broker limits (section 2), join answers it could not queue (that browser is closed with 1011), and closes it could not queue (asked again each second, at most 64 a time) |
 | `strike_closes` | counter | connections closed with 1008 for strikes |
 
 What to watch:
