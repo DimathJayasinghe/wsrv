@@ -104,6 +104,10 @@ final class Gateway
      * Wire a gateway into a Worker: it takes the open, message, close and status handlers. With
      * $checkAppKey the daemon must run with `handshake_hook = true` (and then needs this handler,
      * which refuses a URL that does not carry the app key with 404).
+     *
+     * It also registers a one-second timer on the Worker that asks again for closes the daemon refused
+     * (retryCloses()). Worker timers run in Worker::run(), which is what Supervisor and `wsrv:echo` use; an
+     * embedder that drives the Worker with step() must call $gateway->retryCloses() itself, about once a second.
      */
     public static function forWorker(GatewayConfig $config, Worker $worker, bool $checkAppKey = false): self
     {
