@@ -1,7 +1,7 @@
 # `php artisan wsrv:echo` under systemd, beside wsrvd.service (docs/LARAVEL_ECHO.md section 9). Install:
 #   install -m 0644 wsrv-echo.service /etc/systemd/system/ && systemctl daemon-reload
 #   systemctl enable --now wsrv-echo
-# Change User and WorkingDirectory to your application's. With the Unix socket the worker must run as the
+# Change User, WorkingDirectory and ReadWritePaths (below) to your application's; the user must own storage/. With the Unix socket the worker must run as the
 # user wsrvd runs as (the socket is mode 0600 and the daemon checks the peer uid, ADR-0017); with TCP
 # (ipc_endpoint tcp://host:port) any user that can read the token file will do.
 # The process reads its code and configuration once: after a deploy, a changed .env or a changed secret,

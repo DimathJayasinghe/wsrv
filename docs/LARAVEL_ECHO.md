@@ -28,7 +28,7 @@ The stock `pusher` and `reverb` drivers do **not** work against wsrv: they call 
 composer require wsrv/client
 ```
 
-Laravel 11 or newer. The package registers itself through package discovery. (Without discovery, add `Wsrv\Laravel\WsrvServiceProvider::class` to `bootstrap/providers.php`.) Encrypted channels also need `ext-sodium`, which ships with PHP.
+Laravel 11 or newer (tested with 13.43 only). The package registers itself through package discovery. (Without discovery, add `Wsrv\Laravel\WsrvServiceProvider::class` to `bootstrap/providers.php`.) Encrypted channels also need `ext-sodium`, which ships with PHP.
 
 Run the daemon. Compared with [LARAVEL.md](LARAVEL.md) there is no handshake hook, a Pusher frame is small, and the daemon's rooms and its frame to the worker must be sized for a channel per user:
 
@@ -36,7 +36,7 @@ Run the daemon. Compared with [LARAVEL.md](LARAVEL.md) there is no handshake hoo
 wsrvd --ipc-socket=/run/wsrv/ipc.sock --listen-port=8080 \
       --allow-origin=https://app.example.com \
       --broker=true --publish-port=9200 --publish-token-file=/run/wsrv/publish.token \
-      --max-message-size=16384 --ipc-max-frame=524288 \
+      --max-message-size=262144 --ipc-max-frame=524286 \
       --broker-max-topics=50000 --broker-max-subscriptions=500000
 ```
 
@@ -44,15 +44,16 @@ Make the publish token with `wsrvd --generate-token=/run/wsrv/publish.token`, as
 
 | Daemon setting | Default | What Echo needs |
 |---|---|---|
-| `max_message_size` | 1 MiB | about the gateway's `max_frame_bytes` (16384): a Pusher frame is small |
+| `max_message_size` | 1 MiB | **at least half the largest presence member list or broadcast you will send** (below): the daemon can send one browser a message of at most `2 x max_message_size - 16` bytes, and drops a larger one. 262144 covers every list the default limits allow. It is also the most the daemon accepts from a browser; the gateway's own `max_frame_bytes` (16384) is the tighter limit on what a browser may send |
 | `broker_max_topics` | 1 024 | the channels that have a browser in them at the same time: one per user for per-user private channels, plus rooms, plus public channels. A site with a private channel per user passes 1 024 at about a thousand users online. Range 1 to 1 000 000 |
 | `broker_max_subscriptions` | 100 000 | browsers times channels each, at the same time (20 000 browsers with 4 channels each is 80 000). Range 1 to 10 000 000 |
+| `broker_max_subscribers_per_topic` | 10 000 | the most browsers one channel can hold: a public channel everyone joins (a site-wide `news`) stops taking joins above it, with `LimitReached`. Range 1 to 10 000 000 |
 | `broker_max_topics_per_connection` | 64 | at least the gateway's `max_channels_per_connection` (64), or the daemon refuses joins the gateway let through. Range 1 to 1 024 |
-| `ipc_max_frame` | `max_message_size` + 64 KiB | the largest presence member list you will send (below). Range 4 096 to 67 108 864, and at least `max_message_size` + 18 |
+| `ipc_max_frame` | `max_message_size` + 64 KiB | the largest presence member list you will send, plus 14 bytes (below). The daemon never announces more than `2 x max_message_size - 2` (it logs `ipc_max_frame_lowered` if you asked for more): a larger message could not be sent to a browser. Range 4 096 to 67 108 864, and at least `max_message_size` + 18 |
 
 When a bound is too small the browser gets `pusher:subscription_error` (`LimitReached`) for that join, and the statistics line counts it in `daemon_refused` (section 10). With 3 000 browsers and the default 1 024 topics, 3 918 of 12 000 joins were refused that way in the load run (section 12), and nothing was left behind. Do not simply set the bounds to their ceilings: any browser may name any public channel, each distinct name is a room until its last member leaves, and these bounds are what stops a script from filling the daemon with junk ones. Size them to your real load with some headroom, and watch `daemon_refused`. The daemon also limits each client address to 100 live connections and 50 new ones a second ([OPERATIONS.md](OPERATIONS.md) section 1.2); behind a proxy, set `trusted_proxy` (section 9).
 
-**A presence member list must fit one frame.** A presence join is answered with the whole member list, which is about `members x (the JSON size of user_info + 40 bytes)`: 100 members with 300-byte `user_info` is 33 KiB, with 1 000-byte `user_info` 101 KiB, and 1 000 members with 300 bytes 329 KiB. Text made mostly of quotation marks or backslashes takes up to twice its signed size (the list is JSON inside JSON), so the worst case with the defaults (100 members, 2 048 bytes of signed data each) is a little over 400 KB, and `--ipc-max-frame=524288` makes every possible list fit. A list that does not fit the frame fails **that one join** with `pusher:subscription_error` ("The member list is too large to send") and nothing else: the room, the other members and the link to the daemon are untouched (checked against a real daemon, section 12). Raise `ipc_max_frame`, or lower `max_presence_members` or what your channel callback returns as `user_info`.
+**A presence member list must fit what the daemon can send.** A presence join is answered with the whole member list, which is about `members x (the JSON size of user_info + 40 bytes)`: 100 members with 300-byte `user_info` is 33 KiB, with 1 000-byte `user_info` 101 KiB, and 1 000 members with 300 bytes 329 KiB. Text made mostly of quotation marks or backslashes takes more than its signed size (the list is JSON inside JSON): the worst case is about `members x (2.33 x max_channel_data_bytes + 1 KB)`, which with the defaults (100 members, 2 048 bytes of signed data each) is about 513 KB. Two limits apply, and the daemon enforces the smaller one: `ipc_max_frame` and `2 x max_message_size - 16` (what one browser's outgoing queue can ever hold). The flags above (`--max-message-size=262144 --ipc-max-frame=524286`) cover the worst case with the defaults, with about 2 % to spare, so **scale both with `max_channel_data_bytes x max_presence_members`** if you raise either. A list over the limit fails **that one join** with `pusher:subscription_error` ("The member list is too large to send") and nothing else: the room, the other members and the link to the daemon are untouched (checked against a real daemon, section 12). Before 1.1 a list over the second limit was dropped by the daemon without a word and the browser waited for ever; the daemon now announces a frame limit that the second limit caps, so the worker refuses the message before sending it. If the daemon cannot queue a join's answer at that moment (its send queue or budget is full, `daemon_refused` counts it), that browser is closed with 1011 and `pusher-js` reconnects and joins again. Lower `max_presence_members` or what your channel callback returns as `user_info` if lists get near the limit.
 
 ## 3. Configure Laravel
 
@@ -153,11 +154,11 @@ Every bound has a default for a public site, and each is range-checked. They are
 
 **Why a burst.** `pusher-js` sends the subscribe for every channel of a page back to back, on load and again after every reconnect, before the daemon has answered a single one. The limit on all frames is therefore a *token bucket*: it holds `message_burst` frames and gets `messages_per_second` of them back every second, so a page with all of its 64 channels connects without an error, while a connection that keeps sending faster than the sustained rate is answered with `4301` and, after `max_strikes` of those, closed with 1008 (`pusher-js` reconnects by itself, after about a second). A whisper over `client_events_per_second` is refused with `4301` and no strike: a typing indicator that your application does not throttle must not cost a user the connection. But every frame, a whisper too, takes a token from the bucket, so *any* traffic above `messages_per_second` that goes on until the burst is used up ends in a close: at 50 frames a second with the defaults that is after about 7 seconds (128 tokens, 20 a second more than the refill, then 8 strikes in under half a second). A typing indicator never gets near that; an application that shares cursor positions should raise `messages_per_second` and `client_events_per_second` together. Reverb with rate limiting configured answers a client over its rate with the error alone and closes it only if `terminate_on_limit` is set; to make wsrv only refuse, raise `max_strikes` (up to 1 000 000). Strikes are not for life: each full 60 seconds without a new strike forgives one earlier strike (whole strikes, whole minutes), so a tab that stays open for a week and sends one malformed frame a day is never closed for it, while eight within moments are.
 
-A frame that is not valid JSON, has no event, carries a channel name wsrv cannot hold, or holds a number JSON cannot carry back out (such as `1e999`) is answered with Pusher's `4200` error and counts as a strike. A signature that does not verify is answered with `4009`.
+A frame that is not valid JSON, has no event, or holds a number JSON cannot carry back out (such as `1e999`) is answered with Pusher's `4200` error and counts as a strike, and so is `pusher:signin` (Pusher user authentication is not supported). A subscribe for a channel name wsrv cannot hold is answered with `pusher:subscription_error` (`InvalidChannelName`), counted in `subscription_errors`, and costs no strike. A signature that does not verify is answered with `4009`.
 
 ## 8. Security notes
 
-- **The app key is public**; it is in your JavaScript. The **secret** never leaves the server, is hidden from `print_r`, `var_dump` and `serialize`, and is used only to sign and to verify.
+- **The app key is public**; it is in your JavaScript. The **secret** never leaves the server, is hidden from `print_r`, `var_dump`, `json_encode` and `serialize` on the gateway's configuration, the connection configuration and the publisher (not from `var_export`, which ignores such protection: never export them), and is used only to sign and to verify.
 - A private channel signature covers the browser's socket id and the channel name. Replaying it from another connection fails, and the daemon, not the gateway, is the authority on which connection a socket id belongs to.
 - A presence member's user id and info are **inside the signed data**. A browser cannot join as someone else, and a whisper carries the signed user id, never one the browser sent.
 - Signatures are compared with `hash_equals`.
@@ -168,7 +169,7 @@ A frame that is not valid JSON, has no event, carries a channel name wsrv cannot
 
 **Start order does not matter, unless the daemon runs the handshake hook.** A browser that connects before `wsrv:echo` is running gets an open socket and no frame; when the worker attaches, the browser receives `pusher:connection_established` at once (checked against a real daemon). A worker that is down delays browsers, it does not refuse them. `check_app_key => true` needs the daemon's `--handshake-hook=true`, and with the hook there is nobody to ask while no worker is attached: the daemon refuses the upgrade with `503` at once and logs `handshake_undecided` (checked against a real daemon). In that setup start the worker first, and expect failed connections while it is down.
 
-**One daemon and one worker per application.** There is no backplane between daemons, so a second daemon would hold only the browsers connected to it and get only the broadcasts sent to it. A second `wsrv:echo` against the same daemon is refused: it prints `wsrvd still has the previous application connected, retrying` (about once a second) until the first one is gone, then connects within about a second (checked against a real daemon, Unix socket). High availability here is a restart policy (systemd, a container restart policy), not a second copy.
+**One daemon and one worker per application.** There is no backplane between daemons, so a second daemon would hold only the browsers connected to it and get only the broadcasts sent to it. A second `wsrv:echo` against the same daemon is refused: it prints `wsrvd still has the previous application connected, retrying` until the first one is gone. The pause between tries doubles from 0.2 s up to 5 s (each time shortened by a random 0 to 50 %), so a worker that has waited a while connects up to about 5 seconds after the first one is gone. High availability here is a restart policy (systemd, a container restart policy), not a second copy.
 
 **A worker that leaves closes its browsers.** When `wsrv:echo` stops (a deploy, a crash) the daemon closes the browser connections it knew with 1012 after `shutdown_grace_ms` (10 seconds by default), and Echo reconnects and joins its channels again. A new worker that attaches during those 10 seconds knows nothing of those browsers (it is told of no connection it did not see open, and what they send is ignored), so a restart takes up to `shutdown_grace_ms` before they are back. That key sets the time (it also bounds how long a graceful daemon stop waits for browsers to answer the close). Plan a worker deploy as a reconnect storm. The daemon and the gateway take it in stride (section 12: 5 000 browsers with four channels each were all answered within 2 seconds), but every private and presence join also calls your `/broadcasting/auth` route again, so your web workers see that burst too.
 
@@ -198,7 +199,7 @@ location /app/ {                       # or /ws/ with wsPath: '/ws'
 }
 ```
 
-With Caddy, `reverse_proxy /app/* 127.0.0.1:8080` does the same (the upgrade and `X-Forwarded-For` are automatic); other proxies: [DEPLOYMENT.md](DEPLOYMENT.md) section 5. **Set `WSRVD_TRUSTED_PROXY`** to the proxy's address (`127.0.0.1,::1` on the same host), or the daemon sees every browser as the proxy: it allows 100 live connections and 50 new ones a second per address and answers the rest with `429` ([OPERATIONS.md](OPERATIONS.md) section 1.2; `wsrv_connections_total{result="rejected_ip_connections"}` counts them). `allow_origin` is the page's origin, not the proxy's. *Not run:* nginx and Caddy are not installed on the machine this was tested on, so these snippets are DEPLOYMENT.md's with the path changed; what the daemon does with `X-Forwarded-For` is covered by its own tests (ADR-0029).
+With Caddy, `reverse_proxy /app/* 127.0.0.1:8080` does the same (the upgrade and `X-Forwarded-For` are automatic); other proxies: [DEPLOYMENT.md](DEPLOYMENT.md) section 5. **Set `WSRVD_TRUSTED_PROXY`** to the proxy's address (`127.0.0.1,::1` on the same host), or the daemon sees every browser as the proxy: it allows 100 live connections and 50 new ones a second per address and answers the rest with `429` ([OPERATIONS.md](OPERATIONS.md) section 1.2; `wsrv_connections_total{result="rejected_ip_connections"}` and `{result="rejected_ip_rate"}` count them). `allow_origin` is the page's origin, not the proxy's. *Not run:* nginx and Caddy are not installed on the machine this was tested on, so these snippets are DEPLOYMENT.md's with the path changed; what the daemon does with `X-Forwarded-For` is covered by its own tests (ADR-0029).
 
 ### Docker, Sail and Herd
 
@@ -231,11 +232,11 @@ The line is `key=value` pairs, numbers only (nothing a browser sent can end up i
 | `opened` | counter | browser connections opened |
 | `frames` | counter | frames received from browsers |
 | `joins` | counter | joins answered with success |
-| `bad_frames` | counter | frames that are not valid Pusher protocol (each costs a strike) |
-| `unauthorized` | counter | signatures that did not verify (`4009`) |
-| `rate_limited` | counter | frames over the message rate (`4301`, a strike) |
-| `subscription_errors` | counter | joins answered with `pusher:subscription_error`: over the channel quota, refused by the daemon, or a member list that did not fit |
-| `daemon_refused` | counter | joins the daemon's broker limits refused (section 2) |
+| `bad_frames` | counter | frames answered with `4200` (not valid Pusher protocol; each costs a strike) |
+| `unauthorized` | counter | answers with `4009`: a signature that did not verify, or a whisper on a channel the connection has not joined |
+| `rate_limited` | counter | answers with `4301`: frames over the message rate (a strike) and whispers over `client_events_per_second` (no strike) |
+| `subscription_errors` | counter | joins answered with `pusher:subscription_error`: a name wsrv cannot hold, over the channel quota, a full presence channel, refused by the daemon, or a member list that did not fit |
+| `daemon_refused` | counter | commands the daemon refused: joins over its broker limits (section 2), and join answers it could not queue (that browser is closed with 1011) |
 | `strike_closes` | counter | connections closed with 1008 for strikes |
 
 What to watch:
@@ -245,12 +246,12 @@ What to watch:
 | `connections` stays above the daemon's `wsrv_connections_current` | the gateway holds state for browsers that are gone: a leak, please report it. In every run of section 12, including the churn run with killed clients, all gauges returned to zero |
 | `joins_in_progress` above 0 for minutes | joins waiting for a daemon that does not answer |
 | `daemon_refused` rising | the daemon's broker limits are too small for the site (section 2), or something is naming junk channels |
-| `unauthorized` jumps after a deploy | the worker and the web application disagree on the key or the secret: restart the worker. Rising alone: someone is forging signatures |
+| `unauthorized` jumps after a deploy | the worker and the web application disagree on the key or the secret: restart the worker. Rising alone: someone is forging signatures or whispering to channels they have not joined |
 | `rate_limited` and `strike_closes` rising | a client sending more than `messages_per_second`: a script, an attack, or an application that whispers faster than the limit (section 7) |
 | `opened` starts again from 0 | the worker restarted or reconnected to the daemon |
 | `memory_bytes` rising while `connections` is flat | report it; PHP does not give freed memory back, so compare over hours, not minutes |
 
-What the daemon says about itself is on its admin port (`/metrics`: `wsrv_connections_current`, `wsrv_connections_total{result}`, `wsrv_close_total{class}` and more), see [OPERATIONS.md](OPERATIONS.md).
+What the daemon says about itself is on its admin port (start it with `--admin-port=9100`, and `--admin-token-file=...` to require a token, ADR-0041; `/metrics`: `wsrv_connections_current`, `wsrv_connections_total{result}`, `wsrv_close_total{class}` and more), see [OPERATIONS.md](OPERATIONS.md).
 
 ## 11. When something does not work
 
@@ -260,6 +261,8 @@ What the daemon says about itself is on its admin port (`/metrics`: `wsrv_connec
 | The socket opens (HTTP 101) but Echo never connects | no `wsrv:echo` is attached: the daemon holds the connection and sends nothing. The moment a worker attaches, the browser receives `pusher:connection_established`. (With `check_app_key` the daemon refuses with `503` instead, and logs `handshake_undecided`: the next row.) | start the worker; the daemon logs `app_connected` |
 | The browser's WebSocket fails with `503` while the worker is down | `check_app_key` is on, so the daemon runs the handshake hook and no worker can answer it; the daemon logs `handshake_undecided` | start the worker; it connects and the browsers get in. Leave `check_app_key` off if browsers should wait for a worker instead |
 | `wsrv:echo` prints `wsrvd still has the previous application connected, retrying` | another worker is attached to the daemon (a second unit, a forgotten terminal, a second container), or the previous one died and the daemon has not noticed yet | find and stop the other one; the worker keeps retrying by itself |
+| `wsrv:echo` exits at once with a refusal of its HELLO | the IPC token or the protocol version is wrong; this is not retried, because trying again cannot help | fix `ipc_token_file` (a TCP endpoint needs the daemon's token) |
+| `BroadcastException` says the publish token file cannot be read, from the web application | the token file is readable by the user `wsrv:echo` runs as but not by the web user | give the web user read access (a shared group), or set `publish_token` (instead of `publish_token_file`) in the connection from an environment variable the web user can read |
 | `wsrv:echo` prints `cannot reach wsrvd: ...` and retries | nothing is listening at `ipc_endpoint` (`Connection refused`), the path is wrong, or, with a Unix socket, the worker runs as another user than the daemon | check `ipc_endpoint`; run the worker as the daemon's user, or use TCP with a token (section 9) |
 | `wsrv:echo` stops at start with an error that names a setting | the connection is checked as a whole when it is read: a missing publish token (the worker needs it too), a secret under 16 bytes, a misspelled option. The error never shows a secret | fix the setting it names |
 | Every private and presence join fails with `4009` (`unauthorized` rises) | the signature does not verify: the worker has another key or secret than the web application (a rotated secret, a stale `config:cache`, a worker that was not restarted) | restart `wsrv:echo` with the web servers; compare `WSRV_APP_KEY` with Echo's `key` |
@@ -268,7 +271,7 @@ What the daemon says about itself is on its admin port (`/metrics`: `wsrv_connec
 | `broadcast(new Event)` returns and nothing arrives | an event that `implements ShouldBroadcast` is queued: nothing is published until a queue worker runs it | run `php artisan queue:work`, or make the event `ShouldBroadcastNow` |
 | `BroadcastException: wsrv publish failed: ...` | `cannot reach the publish endpoint`: the daemon is down or `publish_url` is wrong. `publish refused with 401`: the token is not the daemon's (it logs `publish_rejected`). `publish refused with 413: body too large`: the event is over `broker_max_payload_bytes` (64 KiB by default) | a queued event is retried by your queue's rules; a `ShouldBroadcastNow` event throws inside the request |
 | Joins fail with `LimitReached` for a user far below 64 channels, `daemon_refused` rises | the daemon's broker limits are reached (`broker_max_topics` is 1 024 by default) | size them (section 2) |
-| A presence join fails with "The member list is too large to send" | the member list does not fit one frame to the daemon | section 2: raise `ipc_max_frame`, lower `max_presence_members` or the size of `user_info` |
+| A presence join fails with "The member list is too large to send" | the member list is larger than `ipc_max_frame` or than `2 x max_message_size - 16`, the most the daemon can send one browser | section 2: raise `max_message_size` and `ipc_max_frame` together, lower `max_presence_members` or the size of `user_info` |
 | Browsers disconnect and reconnect together | the worker or the daemon restarted. When the worker leaves, the daemon closes its browsers with 1012; `opened` starts again from 0 | expected during a deploy; otherwise read `journalctl -u wsrv-echo` and `-u wsrvd` |
 | One browser is closed with 1008 and returns about a second later | it sent frames faster than the message rate for long enough to use up its strikes (`rate_limited`, `strike_closes`), or sent malformed frames (`bad_frames`) | section 7: raise `messages_per_second` and `client_events_per_second` together if your application really whispers that fast |
 | Only about a hundred browsers can connect, the rest get `429` | behind a proxy without `trusted_proxy`, every browser is the proxy's address, and the daemon allows 100 live connections and 50 new ones a second per address | set `WSRVD_TRUSTED_PROXY` (section 9) |
@@ -294,7 +297,7 @@ One machine: an Intel Core i7-13700H laptop (14 cores, 20 threads, 15 GB), Linux
 
 | Run | Result |
 |---|---|
-| 5 000 browsers connect at once and join 4 channels each (2 public, 1 private, 1 presence room of about 50): 20 000 joins | all answered, the last browser ready 1.8 s after it connected; 9 900 joins a second at the busiest 2-second sample; the worker 6% of a core on average (41% at the peak), 47 MB resident (33 MB at the start); the daemon 53 MB |
+| 5 000 browsers connect at once and join 4 channels each (2 public, 1 private, 1 presence room of about 50): 20 000 joins | all answered, the last browser ready 1.8 s after the storm began (none waited more than 0.8 s); 9 900 joins a second at the busiest 2-second sample; the worker 6% of a core on average (41% at the peak), 47 MB resident (33 MB at the start); the daemon 53 MB |
 | 20 000 browsers, 80 000 joins | all answered, ready within 7.3 s; 22 000 joins a second at the busiest sample; the worker 16% on average, 49% at the peak, 89 MB resident, 59 MB of PHP memory at the peak and 5.6 MB after; the daemon 192 MB |
 | Whispers: 2 000 connections in 400 private channels of 5, each member whispering 10 times a second for 20 s | 20 000 frames a second through the worker (39% of a core); 1 582 208 deliveries, none lost; latency p50 2 to 3 ms, p95 15 to 16 ms, p99 24 to 26 ms (the worst 68 ms), by load process |
 | The whisper ceiling: 2 000 connections in 1 000 private channels of 2, each member 40 a second, limits raised | 78 000 frames a second (the worker's core 84% busy at the peak); 1 542 006 deliveries, none lost; p50 1 ms, p95 2 ms, p99 5 to 9 ms |

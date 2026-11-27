@@ -10,6 +10,17 @@ foreach (['LintTest', 'CodecTest', 'FrameDecoderTest', 'ClientTest', 'WorkerTest
     require __DIR__ . '/' . $file . '.php';
 }
 
+// A test that never ends (a loop waiting for something a regression stopped producing) must fail with a
+// name, not hang the suite: each test gets TEST_SECONDS, then the alarm interrupts it with an exception.
+const TEST_SECONDS = 30;
+$watchdog = function_exists('pcntl_alarm') && function_exists('pcntl_async_signals') && defined('SIGALRM');
+if ($watchdog) {
+    pcntl_async_signals(true);
+    pcntl_signal(SIGALRM, static function (): never {
+        throw new RuntimeException('the test ran for more than ' . TEST_SECONDS . ' seconds: it hangs');
+    });
+}
+
 $filter = $argv[1] ?? '';
 $passed = 0;
 $failed = [];
@@ -19,11 +30,15 @@ foreach ($GLOBALS['wsrv_tests'] as $name => $body) {
         continue;
     }
     try {
+        $watchdog && pcntl_alarm(TEST_SECONDS);
         $body();
+        $watchdog && pcntl_alarm(0);
         $passed++;
     } catch (SkippedTest $e) {
+        $watchdog && pcntl_alarm(0);
         $skipped[$name] = $e->getMessage();
     } catch (Throwable $e) {
+        $watchdog && pcntl_alarm(0);
         $failed[$name] = $e;
     }
 }

@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import atexit
 import signal
 import socket
 import subprocess
@@ -124,6 +125,7 @@ class Run:
         self.stats = []  # (t, dict)
         self.stop = threading.Event()
         self.daemon = self.worker = None
+        self.loads = []
         self.worker_log = os.path.join(self.dir, "worker.log")
         self.daemon_log = os.path.join(self.dir, "daemon.log")
 
@@ -211,7 +213,9 @@ class Run:
         argv = ["node", os.path.join(HERE, "load.mjs")] + self.load_argv(index, procs, offset_base)
         if duration_override is not None:
             argv = [x if not x.startswith("--duration=") else f"--duration={duration_override}" for x in argv]
-        return subprocess.Popen(pinned(self.a.cores_clients, argv), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        proc = subprocess.Popen(pinned(self.a.cores_clients, argv), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.loads.append(proc)   # finish() ends whatever is still running, also after SIGTERM or an error
+        return proc
 
     def run_clients(self):
         a = self.a
@@ -260,6 +264,9 @@ class Run:
 
     def finish(self):
         self.stop.set()
+        for proc in self.loads:
+            if proc.poll() is None:
+                proc.kill()
         for proc in (self.worker, self.daemon):
             if proc and proc.poll() is None:
                 proc.send_signal(signal.SIGTERM)
@@ -335,6 +342,11 @@ def main():
     auto_cores(a)
     label = a.label or f"{time.strftime('%Y%m%d-%H%M%S')}-{a.scenario}"
     run = Run(a)
+    # The temp directory goes at exit however the harness ends, and SIGTERM/SIGHUP end it through the
+    # `finally` below (which stops the daemon, the worker and the load processes) instead of orphaning them.
+    atexit.register(shutil.rmtree, run.dir, ignore_errors=True)
+    for number in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(number, lambda *_, n=number: sys.exit(128 + n))
     failures = []
     try:
         run.start_daemon()
@@ -375,7 +387,6 @@ def main():
     shutil.copy(run.daemon_log, os.path.join(HERE, "results", f"{label}.daemon.log"))
     print(json.dumps({k: summary[k] for k in ("scenario", "elapsed_s", "settled_to_zero", "gateway", "failures")}, indent=2))
     print(f"results: {out}")
-    shutil.rmtree(run.dir, ignore_errors=True)
     return 1 if failures else 0
 
 

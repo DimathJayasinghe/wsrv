@@ -33,7 +33,7 @@ Each run prints one JSON summary and writes `results/<label>.json` plus the work
 (not committed). `--options '{"clientEventsPerSecond":100,"messagesPerSecond":200,"messageBurst":400}'` passes
 named `GatewayConfig` arguments to the worker, for a run that is about the gateway's ceiling and not about its
 limits. `--broker-topics` and `--broker-subscriptions` set the daemon's broker bounds; the runs raise them by
-default (see the Echo guide, "Deploying": the daemon's defaults are small for a site with a private channel per user).
+default (see the Echo guide, section 2, "Run the daemon": the daemon's defaults are small for a site with a private channel per user).
 
 ## What the run checks
 

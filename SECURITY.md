@@ -20,7 +20,7 @@ Latest minor release of the current major, plus the previous major for 6 months 
 ## Scope
 
 In scope: memory safety, protocol-handling flaws, DoS via unbounded resource use, TLS misconfiguration defaults, authentication/origin bypass in the handshake logic, C ABI misuse leading to memory corruption, IPC protocol flaws in `wsrvd`, and the PHP Pusher gateway (`Wsrv\Pusher\*`, ADR-0042, which speaks to Laravel Echo): a way to join a private or presence channel without a valid signature, to join as another presence user, to crash or stall the worker with a frame, or to make its memory grow without a configured bound.
-Out of scope: vulnerabilities requiring a malicious or compromised *trusted* handler/host application (which includes your Laravel `Broadcast::channel` callbacks and `/broadcasting/auth` route: they decide who may join), a publish endpoint or an admin port you chose to expose to the internet (both are documented as for your own servers only), volumetric network DDoS, issues only in unsupported configurations (e.g. explicitly enabling `allow_any_origin` and then being hit by CSWSH).
+Out of scope: vulnerabilities requiring a malicious or compromised *trusted* handler/host application (which includes your Laravel `Broadcast::channel` callbacks and `/broadcasting/auth` route: they decide who may join), a publish endpoint or an admin port that you chose to expose to the internet without its token, or with a token of your own making (both are documented as for your own servers only; a flaw in the token check or in the limits behind it is still in scope), volumetric network DDoS, issues only in unsupported configurations (e.g. explicitly enabling `allow_any_origin` and then being hit by CSWSH).
 
 ## Design reference
 
