@@ -27,14 +27,20 @@ final class FakeLink implements Link
     public array $log = [];
     /** The largest message the "daemon" takes; a bigger one is refused as Wsrv\Client refuses it. */
     public int $maxMessage = PHP_INT_MAX;
+    /** The request id of the latest send(), so a test can answer it. */
+    public int $lastSend = 0;
+    private int $sends = 0;
     private int $next = 1;
 
-    public function send(int $conn, string $text): void
+    public function send(int $conn, string $text): int
     {
         if (strlen($text) > $this->maxMessage) {
             throw new MessageTooLarge('message is larger than the daemon accepts');
         }
         $this->sent[$conn][] = $text;
+        // Their own range, so a test that counts subscribe ids from 1 is not disturbed by the sends between them.
+        $this->lastSend = 1_000_000 + ++$this->sends;
+        return $this->lastSend;
     }
 
     public function subscribe(int $conn, string $topic): int
@@ -187,6 +193,40 @@ test('pusher config: the secret does not appear when the object is printed, dump
     }
 });
 
+test('pusher stats: every field is reported under its own name, in the documented order', function () {
+    // Distinct values, so a field wired to the wrong key (or two swapped) cannot pass.
+    $named = [
+        'connections' => 1, 'channels' => 2, 'joinsInProgress' => 3, 'presenceChannels' => 4, 'presenceMembers' => 5,
+        'memoryBytes' => 6, 'opened' => 7, 'frames' => 8, 'joins' => 9, 'badFrames' => 10, 'unauthorized' => 11,
+        'rateLimited' => 12, 'subscriptionErrors' => 13, 'daemonRefused' => 14, 'strikeCloses' => 15,
+    ];
+    $stats = new \Wsrv\Pusher\GatewayStats(...$named);
+    assertSame([
+        'connections' => 1, 'channels' => 2, 'joins_in_progress' => 3, 'presence_channels' => 4, 'presence_members' => 5,
+        'memory_bytes' => 6, 'opened' => 7, 'frames' => 8, 'joins' => 9, 'bad_frames' => 10, 'unauthorized' => 11,
+        'rate_limited' => 12, 'subscription_errors' => 13, 'daemon_refused' => 14, 'strike_closes' => 15,
+    ], $stats->toArray());
+    assertSame('connections=1 channels=2 joins_in_progress=3 presence_channels=4 presence_members=5 memory_bytes=6 opened=7 frames=8 joins=9 bad_frames=10 unauthorized=11 rate_limited=12 subscription_errors=13 daemon_refused=14 strike_closes=15', $stats->line());
+});
+
+test('the app secret and the tokens do not appear when a ConnectionConfig or a Publisher is printed, dumped or serialized', function () {
+    $secret = 'laravel-secret-0123456789abcdef';
+    $token = 'wsrv1_' . str_repeat('ab', 32) . '_01234567';
+    $config = \Wsrv\Laravel\ConnectionConfig::fromArray(laravel_config(['secret' => $secret, 'publish_token' => $token, 'ipc_token' => $token]));
+    $publisher = new \Wsrv\Publisher('http://127.0.0.1:9200', $token);
+    foreach ([$config, $publisher] as $object) {
+        $name = $object::class;
+        foreach ([$secret, $token] as $value) {
+            assertTrue(!str_contains(print_r($object, true), $value), "$name print_r");
+            ob_start();
+            var_dump($object);
+            assertTrue(!str_contains((string) ob_get_clean(), $value), "$name var_dump");
+            assertTrue(!str_contains(json_encode($object) ?: '', $value), "$name json");
+        }
+        assertThrows(LogicException::class, fn () => serialize($object), "$name serialize");
+    }
+});
+
 // ---- connecting -----------------------------------------------------------------------------------
 
 test('pusher gateway: a new connection is told its socket id and the activity timeout', function () {
@@ -221,6 +261,52 @@ test('pusher gateway: a public channel is joined and only reported after the dae
     assertSame('pusher_internal:subscription_succeeded', $f['event']);
     assertSame('orders', $f['channel']);
     assertSame([], $f['data']);
+});
+
+test('pusher gateway: a join whose answer the daemon could not queue closes that browser, which reconnects and joins again', function () {
+    // The daemon answers every send with a STATUS. BACKPRESSURE for the message that tells a browser it joined
+    // means the page waits for ever while the room counts it as a member: closing it is the honest answer.
+    [$gw, $link] = gateway();
+    $a = open_conn($gw, $link, 1);
+    $b = open_conn($gw, $link, 2);
+    $gw->received(1, subscribe_frame('orders', $a));
+    $gw->received(2, subscribe_frame('orders', $b));
+    $gw->status(1, StatusCode::OK);
+    $answerA = $link->lastSend;
+    $gw->status(2, StatusCode::OK);
+    $answerB = $link->lastSend;
+    $gw->status($answerA, StatusCode::BACKPRESSURE);
+    $gw->status($answerB, StatusCode::OK);
+    assertSame([[1, 1011, 'could not answer a join']], $link->closed, 'only the browser that was not answered is closed');
+    $stats = $gw->stats();
+    assertSame(1, $stats->daemonRefused);
+    $gw->closed(1);
+    $gw->closed(2);
+    assertSame(0, $gw->stats()->connections);
+});
+
+test('pusher gateway: a join answer to a browser that has gone, or one the daemon took, closes nothing', function () {
+    [$gw, $link] = gateway();
+    $a = open_conn($gw, $link, 1);
+    $gw->received(1, subscribe_frame('orders', $a));
+    $gw->status(1, StatusCode::OK);
+    $answer = $link->lastSend;
+    $gw->status($answer, StatusCode::NO_SUCH_CONN);   // the browser left first
+    $gw->status($answer, StatusCode::BACKPRESSURE);   // an id is answered once: a second answer is nobody's
+    assertSame([], $link->closed);
+    assertSame(0, $gw->stats()->daemonRefused);
+});
+
+test('pusher gateway: a connection that closes before the daemon answers its join answer leaves nothing behind', function () {
+    [$gw, $link] = gateway();
+    $a = open_conn($gw, $link, 1);
+    $gw->received(1, subscribe_frame('orders', $a));
+    $gw->status(1, StatusCode::OK);
+    $answer = $link->lastSend;
+    $gw->closed(1);
+    assertSame([], (new ReflectionProperty($gw, 'sendOwner'))->getValue($gw), 'forgotten when the connection closed, not when a status happens to come');
+    $gw->status($answer, StatusCode::BACKPRESSURE);   // late: the connection is gone
+    assertSame([], $link->closed);
 });
 
 test('pusher gateway: a refused subscription is reported as one and the channel is not joined', function () {

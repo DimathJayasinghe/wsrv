@@ -66,6 +66,12 @@ int run_daemon(wsrv::EventLoop& loop,
     wsrv::ILogger& log = (*embedded)->logger();
     wsrv::wsrvd::EmbeddedBackend backend{**embedded};
     reloadable = embedded->get();  // SIGHUP may reload TLS from now on (see serve())
+    if (startup.config.max_frame_lowered()) {
+        log.log(wsrv::LogLevel::Warn,
+                "ipc_max_frame_lowered",
+                "wsrvd: ipc_max_frame is above 2 * max_message_size - 2 and was lowered to it: "
+                "the daemon cannot send a larger message to a browser (raise max_message_size)");
+    }
     if (startup.token.empty() && !startup.config.tcp()) {
         log.log(wsrv::LogLevel::Warn,
                 "ipc_no_token",

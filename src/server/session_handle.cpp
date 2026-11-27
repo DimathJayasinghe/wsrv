@@ -13,9 +13,11 @@ namespace wsrv {
 
 LoopLink::LoopLink(EventLoop& loop,
                    ISessionDirectory& directory,
-                   std::size_t max_pending_send_bytes)
+                   std::size_t max_pending_send_bytes,
+                   std::size_t max_message_bytes)
     : loop_{&loop}, directory_{&directory},
-      pending_{std::make_shared<PendingBytes>(max_pending_send_bytes)} {}
+      pending_{std::make_shared<PendingBytes>(max_pending_send_bytes)},
+      max_message_bytes_{max_message_bytes} {}
 
 Result<void> LoopLink::submit(ConnectionId id, SessionCommand command, std::size_t payload_bytes) {
     return submit_in(Lane::Control, id, std::move(command), payload_bytes);
@@ -28,6 +30,12 @@ Result<void> LoopLink::submit_bulk(ConnectionId id, SessionCommand command) {
 Result<std::shared_ptr<const SendLease>> LoopLink::reserve(std::size_t payload_bytes) {
     if (payload_bytes == 0) {
         return std::shared_ptr<const SendLease>{};
+    }
+    if (payload_bytes > max_message_bytes_) {
+        // ADR-0043: the connection's outbound queue refuses it whatever it holds, and the loop
+        // would drop it without anyone being told. Say so here, where the caller can still see it.
+        return fail(ErrorCode::InvalidArgument,
+                    "session handle: the message is larger than an outbound queue can ever hold");
     }
     if (payload_bytes > pending_->limit()) {
         return fail(ErrorCode::InvalidArgument,

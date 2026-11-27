@@ -28,9 +28,9 @@ final class WorkerLink implements Link
         unset($this->connections[$conn]);
     }
 
-    public function send(int $conn, string $text): void
+    public function send(int $conn, string $text): int
     {
-        ($this->connections[$conn] ?? null)?->send($text);
+        return ($this->connections[$conn] ?? null)?->send($text) ?? 0;
     }
 
     public function subscribe(int $conn, string $topic): int

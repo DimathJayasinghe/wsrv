@@ -447,6 +447,70 @@ $check('a member list too large for the daemon frame fails that join alone: the 
     }
 });
 
+// ---- a member list that fits the IPC frame but not what the daemon can send to one browser -----------
+// ADR-0043. The daemon's outbound queue per browser is 2 x max_message_size, and it used to drop a larger
+// message and still answer OK, so a join whose member list was over that size (32752 bytes at the guide's
+// --max-message-size=16384) got no answer at all, while the member was counted and announced. Now the
+// frame limit the daemon announces is that size plus the frame's own fields, so the worker's client
+// refuses the message before it is written, and the join fails the same clean way as above.
+$queue = start_wsrvd($daemonPath, $dir, 'queue', $tokenFile, ['--max-message-size=16384', '--ipc-max-frame=524288']);
+$queueClient = Client::connect($queue['socket'], '', 5.0);
+$queueWorker = new Worker($queueClient);
+$queueGateway = Gateway::forWorker(new GatewayConfig(KEY, SECRET, maxFrameBytes: 16384, maxChannelDataBytes: 2048), $queueWorker);
+
+$check('the daemon announces a frame limit no larger than what it can send to one browser', function () use ($queueClient) {
+    // 2 x 16384 - 16 (the queue's cost per message) + 14 (what a SEND frame carries besides the message)
+    assertSame(2 * 16384 - 16 + 14, $queueClient->maxFrame(), 'the guide asked for 524288; nothing above 32766 could be delivered');
+});
+
+$check('a member list over what the daemon can send to a browser fails that join, with an answer, and the rest are untouched', function () use ($queue, $queueWorker, $queueGateway) {
+    $step = function (float $seconds = 0.25) use ($queueWorker): void {
+        $end = microtime(true) + $seconds;
+        while (microtime(true) < $end) {
+            $queueWorker->step(0.05);
+        }
+    };
+    $path = '/app/' . KEY . '?protocol=7&client=js&version=8.4.0&flash=false';
+    $info = str_repeat('x', 900);   // about 1 KB of the list per member: about 31 fit in 32752 bytes
+    $answers = [];
+    $sockets = [];
+    for ($i = 1; $i <= 36; $i++) {
+        $ws = ws_connect($queue['port'], '', $path);
+        $step(0.1);
+        $socketId = pusher_read($ws)['data']['socket_id'];
+        $data = json_encode(['user_id' => "u$i", 'user_info' => ['bio' => $info]], JSON_THROW_ON_ERROR);
+        pusher_send($ws, 'pusher:subscribe', [
+            'channel' => 'presence-q', 'auth' => sign($socketId, 'presence-q', $data), 'channel_data' => $data,
+        ]);
+        $sockets[$i] = $ws;
+        // Every join must be answered, one way or the other: a silent drop would hang here until the stream's timeout.
+        $answers[$i] = pusher_read_when_ready($ws, $queueWorker);
+    }
+    $in = [];
+    $refused = [];
+    foreach ($answers as $i => $answer) {
+        if ($answer['event'] === 'pusher_internal:subscription_succeeded') {
+            $in[] = $i;
+            continue;
+        }
+        assertSame('pusher:subscription_error', $answer['event'], "member $i: " . json_encode($answer));
+        assertSame('The member list is too large to send', $answer['data']['error'], "member $i");
+        $refused[] = $i;
+    }
+    assertTrue(count($in) >= 20 && count($in) < 36, 'some fit and some do not: in ' . count($in));
+    assertSame($in, range(1, count($in)), 'the first members were let in, in order');
+    assertSame(range(count($in) + 1, 36), $refused, 'every join after the list outgrew the queue is refused');
+    $stats = $queueGateway->stats();
+    assertSame(count($in), $stats->joins, 'only the joins that were answered are counted');
+    assertSame(count($in), $stats->presenceMembers, 'a refused member is not left in the room');
+    assertSame(0, $stats->daemonRefused, 'the worker did not send what could not fit');
+    foreach ($sockets as $ws) {
+        fclose($ws);
+    }
+});
+
+proc_terminate($queue['process'], SIGTERM);
+
 proc_terminate($small['process'], SIGTERM);
 proc_terminate($strict['process'], SIGTERM);
 

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "capi/embedded_config.hpp"
 
+#include "server/server_builder.hpp"
+
 #include <gtest/gtest.h>
 
 #include <chrono>
@@ -504,6 +506,62 @@ TEST(EmbeddedConfig, TheBrokerKeysAreStored) {
     EXPECT_EQ(config.broker_config().max_topics_per_connection, 3U);
     EXPECT_EQ(config.broker_config().max_subscriptions, 400U);
     EXPECT_EQ(config.broker_config().max_payload_bytes, 2048U);
+}
+
+// ADR-0043: a message over 2 * max_message_size - 16 can never fit a connection's outbound queue,
+// so no door may promise to send one. The broker's payload bound (also the publish body bound) is
+// the door for broadcasts; it is capped to what the queue can take, whatever order the keys came
+// in.
+TEST(EmbeddedConfig, TheOutboundCapIsTwiceTheMessageSizeMinusTheQueueOverhead) {
+    EmbeddedConfig config;
+    ASSERT_TRUE(config.set("max_message_size", "16384").has_value());
+    EXPECT_EQ(config.max_outbound_message(), 2U * 16384U - 16U);
+}
+
+TEST(EmbeddedConfig, TheDefaultQueueTakesAMaximumSizeMessageBackAsTheSetterDoes) {
+    const EmbeddedConfig defaults;
+    EmbeddedConfig explicit_size;
+    ASSERT_TRUE(explicit_size.set("max_message_size", "1048576").has_value());
+    EXPECT_EQ(defaults.server().session.outbound.max_queued_bytes,
+              explicit_size.server().session.outbound.max_queued_bytes)
+        << "no flag and the flag at its default value must behave alike";
+    EXPECT_GE(defaults.max_outbound_message(), defaults.server().session.assembler.max_message_size)
+        << "an echo of the largest message fits";
+}
+
+TEST(EmbeddedConfig, TheBrokerPayloadBoundNeverExceedsTheOutboundCap) {
+    for (const bool size_first : {true, false}) {
+        EmbeddedConfig config;
+        ASSERT_TRUE(config.set("broker", "true").has_value());
+        if (size_first) {
+            ASSERT_TRUE(config.set("max_message_size", "16384").has_value());
+        }
+        ASSERT_TRUE(config.set("broker_max_payload_bytes", "65536").has_value());
+        if (!size_first) {
+            ASSERT_TRUE(config.set("max_message_size", "16384").has_value());
+        }
+        EXPECT_EQ(config.broker_config().max_payload_bytes, 2U * 16384U - 16U)
+            << (size_first ? "size first" : "payload first");
+    }
+}
+
+TEST(EmbeddedConfig, ABrokerPayloadBoundUnderTheCapAndTheDefaultsAreLeftAlone) {
+    EmbeddedConfig small;
+    ASSERT_TRUE(small.set("max_message_size", "16384").has_value());
+    ASSERT_TRUE(small.set("broker_max_payload_bytes", "1000").has_value());
+    EXPECT_EQ(small.broker_config().max_payload_bytes, 1000U);
+
+    const EmbeddedConfig defaults;
+    EXPECT_EQ(defaults.broker_config().max_payload_bytes, BrokerConfig{}.max_payload_bytes)
+        << "a 1 MiB message size leaves the 64 KiB default alone";
+}
+
+TEST(EmbeddedConfig, ThePublishBodyBoundFollowsTheCappedBrokerBound) {
+    EmbeddedConfig config;
+    ASSERT_TRUE(config.set("max_message_size", "16384").has_value());
+    ServerBuilder builder;
+    config.apply_to(builder);
+    EXPECT_EQ(builder.config().publish_max_body_bytes, 2U * 16384U - 16U);
 }
 
 TEST(EmbeddedConfig, TheBrokerBoundsRefuseZeroAndAnythingAboveTheirCeiling) {

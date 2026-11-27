@@ -12,6 +12,8 @@ final class ConnState
     public array $channels = [];
     /** @var array<int, true> subscribe requests sent to the daemon and not yet answered */
     public array $pending = [];
+    /** @var array<int, true> sends of a join's answer to the daemon, whose STATUS has not come back yet */
+    public array $sends = [];
     /** Recent violations: one is forgiven for each quiet Gateway::STRIKE_FORGIVE_SECONDS before the next (see Gateway::strike()). */
     public int $strikes = 0;
     /** When the previous strike happened (or the connection opened). */

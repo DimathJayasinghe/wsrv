@@ -5,6 +5,7 @@
 #include "http/request_parser.hpp"
 #include "net/endpoint.hpp"
 #include "protocol/handshake.hpp"
+#include "protocol/outbound_scheduler.hpp"
 #include "protocol/session.hpp"
 #include "server/client_ip.hpp"
 #include "server/pending_bytes.hpp"
@@ -130,5 +131,11 @@ inline constexpr std::size_t kMaxForwardedHeaderNames = 64;
 /// The number of upgrades that may wait for the application at once: `max_pending_handshakes`,
 /// but never more than `max_connections` (ADR-0018 section 4).
 [[nodiscard]] std::size_t effective_max_pending_handshakes(const ServerConfig& config) noexcept;
+
+/// The largest message the server can ever send to one connection (ADR-0043): what its outbound
+/// queue holds on an empty queue. A send or a publish over it is refused where it is issued.
+[[nodiscard]] constexpr std::size_t largest_outbound_message(const ServerConfig& config) noexcept {
+    return largest_message(config.session.outbound);
+}
 
 }  // namespace wsrv

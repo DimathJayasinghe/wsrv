@@ -256,8 +256,9 @@ Result<void> DaemonConfig::finish() {
             return fail(ErrorCode::InvalidConfig,
                         "config: ipc_max_frame must be at least max_message_size + 18 bytes");
         }
-        max_frame_ =
-            static_cast<std::uint32_t>(explicit_max_frame_);  // checked against the ceiling
+        const std::size_t lowered = clamp_to_outbound(explicit_max_frame_);
+        max_frame_lowered_ = lowered != explicit_max_frame_;
+        max_frame_ = static_cast<std::uint32_t>(lowered);  // checked against the ceiling
         return {};
     }
     // Default: the biggest message plus headroom for the frame's own fields, so any message the
@@ -266,8 +267,19 @@ Result<void> DaemonConfig::finish() {
         return fail(ErrorCode::InvalidConfig,
                     "config: max_message_size is too large to forward in one IPC frame");
     }
-    max_frame_ = static_cast<std::uint32_t>(message + kDefaultFrameHeadroom);
+    max_frame_ = static_cast<std::uint32_t>(clamp_to_outbound(message + kDefaultFrameHeadroom));
     return {};
+}
+
+// ADR-0043. A SEND_TEXT or SEND_BINARY frame can carry at most what one connection's outbound queue
+// can ever hold; a frame limit above that lets a worker send what the daemon would then drop (and
+// answer OK to). The limit is lowered to that size plus the frame's own fields, but never below
+// what the biggest inbound message needs (the check above).
+std::size_t DaemonConfig::clamp_to_outbound(std::size_t frame) const noexcept {
+    const std::size_t fits = embedded_.max_outbound_message() + kSendOverhead;
+    const std::size_t inbound = embedded_.server().session.assembler.max_message_size;
+    const std::size_t floor = inbound + kEventOverhead;
+    return std::max(std::min(frame, fits), floor);
 }
 
 }  // namespace wsrv::wsrvd

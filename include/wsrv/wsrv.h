@@ -293,7 +293,9 @@ WSRV_API wsrv_status wsrv_handshake_reject(wsrv_server *server, wsrv_conn_id con
 
 /* "Accepted" means handed to the connection's loop, not delivered: a connection can still end
  * before it is written. WSRV_ERR_NO_SUCH_CONN: unknown or already ended. Text must be valid UTF-8
- * (WSRV_ERR_INVALID_UTF8 otherwise, nothing sent). */
+ * (WSRV_ERR_INVALID_UTF8 otherwise, nothing sent). A message larger than a connection's outbound
+ * queue can ever hold (2 * max_message_size - 16 bytes) gets WSRV_ERR_INVALID_ARGUMENT and nothing
+ * is sent: waiting does not help (ADR-0043). */
 WSRV_API wsrv_status
 wsrv_send_text(wsrv_server *server, wsrv_conn_id conn, const char *text, size_t len);
 WSRV_API wsrv_status

@@ -5,9 +5,9 @@
 - Deciders: project owner, maintainer assistant
 
 ## Context
-Every connection is bounded on its own: a partial message waits in the assembler for at most `max_message_size` (1 MiB by default), and the outbound queue holds at most `max_queued_bytes` (1 MiB; when it is full the slow-consumer policy closes the connection). `max_connections` bounds how many connections exist (10 000 by default), and per-address limits bound how many one address may hold (ADR-0021).
+Every connection is bounded on its own: a partial message waits in the assembler for at most `max_message_size` (1 MiB by default), and the outbound queue holds at most `max_queued_bytes` (1 MiB when this ADR was written, 2 MiB since ADR-0043; when it is full the slow-consumer policy closes the connection). `max_connections` bounds how many connections exist (10 000 by default), and per-address limits bound how many one address may hold (ADR-0021).
 
-Nothing bounds the **sum**. At the defaults a worst case is 10 000 x (1 MiB + 1 MiB) = about 20 GiB, far more than most hosts have. Two ways to get near it with little effort:
+Nothing bounds the **sum**. At the defaults a worst case is 10 000 x (1 MiB + 1 MiB) = about 20 GiB (30 GiB with the 2 MiB queue of ADR-0043), far more than most hosts have. Two ways to get near it with little effort:
 - Many connections that each send the first fragments of a 1 MiB message and then stop (the assembler keeps the bytes until the message ends or the idle timer fires). The attacker pays the bytes it sends, and per-address limits do not help when the clients share an address (a NAT, a trusted proxy, ADR-0029) or when there are many addresses.
 - Many slow readers while the application broadcasts: every queue fills towards its own 1 MiB limit before the policy closes the connection.
 

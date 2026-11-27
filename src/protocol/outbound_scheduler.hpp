@@ -30,6 +30,14 @@ struct OutboundConfig {
 /// Cost charged to the queue bound for every queued message on top of its payload.
 inline constexpr std::size_t kMessageOverhead = 16;
 
+/// The largest message payload this queue can ever hold (ADR-0043): one over it fails with
+/// BufferFull however empty the queue is, so a caller that learns this early can say no, instead
+/// of the loop dropping the message later.
+[[nodiscard]] constexpr std::size_t largest_message(const OutboundConfig& config) noexcept {
+    return config.max_queued_bytes > kMessageOverhead ? config.max_queued_bytes - kMessageOverhead
+                                                      : 0;
+}
+
 /// Most Pongs waiting to be sent at once: 16 x (125 + 2) bytes at worst, per connection, and only
 /// while a peer is pinging faster than the socket drains.
 inline constexpr std::size_t kMaxQueuedPongs = 16;

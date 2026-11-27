@@ -38,11 +38,13 @@ final class Gateway
     private const SUBSCRIPTION_ERROR = 4300;
     private const LIST_TOO_LARGE = 'The member list is too large to send';
     private const CLOSE_POLICY = 1008;
+    /** RFC 6455 7.4.1: the server could not do what it had to. pusher-js reconnects after any close but 4000-4099. */
+    private const CLOSE_ERROR = 1011;
     /** One strike is forgiven for each full period of this many quiet seconds (ADR-0042 A2). A constant: the knob for a site is max_strikes. */
     private const STRIKE_FORGIVE_SECONDS = 60.0;
     /** Member lists kept for connections that ask to join a presence channel they are already in (ADR-0042 A2). */
     private const LIST_FRAMES_KEPT = 16;
-    /** A list larger than this is answered each time but not kept: with the limits at their defaults a list is under 410 KB (ADR-0042 A2). */
+    /** A list larger than this is answered each time but not kept: with the limits at their defaults a list is at most about 513 KB (100 members, each 2 048 bytes of signed data made of quotes, ADR-0042 A2). */
     private const LIST_FRAME_KEPT_MAX_BYTES = 1 << 20;
 
     /** @var array<int, ConnState> */
@@ -55,6 +57,8 @@ final class Gateway
      * @var array<int, array{conn: int, channel: string, userId: ?string, info: ?array, cancelled: bool}>
      */
     private array $pending = [];
+    /** @var array<int, int> request id => connection, for the sends that answered a join and have no STATUS yet */
+    private array $sendOwner = [];
     private readonly PresenceTable $presence;
     /**
      * The answer to a repeated join, by presence channel: [the channel's revision when it was built, the frame].
@@ -191,6 +195,9 @@ final class Gateway
         foreach (array_keys($state->pending) as $request) {
             unset($this->pending[$request]);
         }
+        foreach (array_keys($state->sends) as $request) {
+            unset($this->sendOwner[$request]);
+        }
         // The daemon dropped this connection's rooms when it closed; only the member list is ours.
         foreach ($state->channels as $channel => $userId) {
             if ($userId !== null) {
@@ -202,6 +209,11 @@ final class Gateway
     /** The daemon's answer to a subscribe this gateway sent; answers to other commands are ignored. */
     public function status(int $request, int $status): void
     {
+        $owner = $this->sendOwner[$request] ?? null;
+        if ($owner !== null) {
+            $this->sendAnswered($request, $owner, $status);
+            return;
+        }
         $join = $this->pending[$request] ?? null;
         if ($join === null) {
             return;
@@ -227,6 +239,27 @@ final class Gateway
         } elseif ($status !== StatusCode::NO_SUCH_CONN) {
             $this->daemonRefused++;
             $this->subscriptionError($join['conn'], $join['channel'], 'ServerError', 'Subscription could not be completed');
+        }
+    }
+
+    /**
+     * The daemon's answer to the message that told a browser it joined a channel. Not OK means the browser
+     * was not told (a full send queue, a budget used up): its page would wait for the answer for ever while
+     * the room counts it as a member. The connection is closed, so its page reconnects and joins again, and
+     * closed() takes the member out (ADR-0042 A2). NO_SUCH_CONN is a browser that has already gone.
+     */
+    private function sendAnswered(int $request, int $conn, int $status): void
+    {
+        unset($this->sendOwner[$request]);
+        $state = $this->conns[$conn] ?? null;
+        if ($state === null) {
+            return;
+        }
+        unset($state->sends[$request]);
+        if ($status !== StatusCode::OK && $status !== StatusCode::NO_SUCH_CONN && !$state->closing) {
+            $state->closing = true;
+            $this->daemonRefused++;
+            $this->link->close($conn, self::CLOSE_ERROR, 'could not answer a join');
         }
     }
 
@@ -441,9 +474,15 @@ final class Gateway
     private function sendSucceeded(int $conn, string $channel, bool $again = false): bool
     {
         try {
-            $this->link->send($conn, $this->succeededFrame($channel, $again));
+            $request = $this->link->send($conn, $this->succeededFrame($channel, $again));
         } catch (MessageTooLarge) {
             return false;
+        }
+        // The daemon answers every send with a STATUS; one that is not OK means the browser was not told
+        // (see status()), so remember which send was an answer to a join.
+        if ($request !== 0 && isset($this->conns[$conn])) {
+            $this->conns[$conn]->sends[$request] = true;
+            $this->sendOwner[$request] = $conn;
         }
         return true;
     }

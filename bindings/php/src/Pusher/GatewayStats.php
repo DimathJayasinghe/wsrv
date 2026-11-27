@@ -44,9 +44,10 @@ final class GatewayStats
         /** `pusher:subscription_error` frames (4300): channel name, quota, presence cap, daemon refusal. */
         public readonly int $subscriptionErrors,
         /**
-         * Joins the daemon refused: a broker bound (`broker_max_topics` 1024, `broker_max_subscriptions` 100 000,
-         * `broker_max_subscribers_per_topic` 10 000 by default) or another error status. Rising means the
-         * daemon is too small for the site, not that a browser misbehaved.
+         * Commands the daemon refused: a join over a broker bound (`broker_max_topics` 1024,
+         * `broker_max_subscriptions` 100 000, `broker_max_subscribers_per_topic` 10 000 by default) or with another
+         * error status, and a join's answer it could not queue (that browser is closed with 1011). Rising means
+         * the daemon is too small for the site, not that a browser misbehaved.
          */
         public readonly int $daemonRefused,
         /** Connections the gateway closed with 1008 for collecting `max_strikes`. */

@@ -158,6 +158,20 @@ std::optional<Result<void>> EmbeddedConfig::set_more_key(std::string_view key,
     return std::nullopt;
 }
 
+EmbeddedConfig::EmbeddedConfig() noexcept {
+    server_.session.outbound.max_queued_bytes = 2 * server_.session.assembler.max_message_size;
+}
+
+std::size_t EmbeddedConfig::max_outbound_message() const noexcept {
+    return largest_outbound_message(server_);
+}
+
+BrokerConfig EmbeddedConfig::broker_config() const noexcept {
+    BrokerConfig applied = broker_;
+    applied.max_payload_bytes = std::min(applied.max_payload_bytes, max_outbound_message());
+    return applied;
+}
+
 void EmbeddedConfig::apply_to(ServerBuilder& builder) const {
     builder.listen(host_, port_);
     builder.config() = server_;
@@ -170,7 +184,7 @@ void EmbeddedConfig::apply_to(ServerBuilder& builder) const {
         }
     }
     builder.config().publish_max_body_bytes =
-        broker_.max_payload_bytes;  // one bound for both doors
+        broker_config().max_payload_bytes;  // one bound for both doors
     if (deflate_enabled_) {
         builder.permessage_deflate(deflate_);  // build() checks the ranges and the zlib build
     }

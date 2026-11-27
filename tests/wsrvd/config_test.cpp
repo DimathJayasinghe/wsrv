@@ -29,6 +29,7 @@ TEST(DaemonConfig, DefaultsAfterTheSocketIsGiven) {
     EXPECT_TRUE(config.token_file().empty());
     const std::size_t message = config.embedded().server().session.assembler.max_message_size;
     EXPECT_EQ(config.max_frame(), message + DaemonConfig::kDefaultFrameHeadroom);
+    EXPECT_FALSE(config.max_frame_lowered());
 }
 
 TEST(DaemonConfig, TheSocketPathIsRequired) {
@@ -172,7 +173,8 @@ TEST(DaemonConfig, OtherKeysGoToTheEmbeddedConfigWithItsRules) {
     ASSERT_TRUE(config.set("max_message_size", "65536").has_value());
     ASSERT_TRUE(config.finish().has_value());
     EXPECT_EQ(config.embedded().port(), 8080);
-    EXPECT_EQ(config.max_frame(), 65536U + DaemonConfig::kDefaultFrameHeadroom);
+    EXPECT_EQ(config.max_frame(), 2U * 65536U - 2U)
+        << "64 KiB of headroom would promise 131072; the queue takes 131056 + the SEND fields 14";
     const auto bad = config.set("listen_port", "not-a-port");
     ASSERT_FALSE(bad.has_value());
     EXPECT_EQ(bad.error().code, ErrorCode::InvalidConfig);
@@ -280,9 +282,59 @@ TEST(DaemonConfig, TheAdminTokenFileIsRecordedNotReadAndNeedsTheAdminPort) {
 
 TEST(DaemonConfig, AnExplicitFrameLimitIsUsed) {
     DaemonConfig config = with_socket();
-    ASSERT_TRUE(config.set("ipc_max_frame", "2097152").has_value());
+    ASSERT_TRUE(config.set("ipc_max_frame", "1572864").has_value());
     ASSERT_TRUE(config.finish().has_value());
-    EXPECT_EQ(config.max_frame(), 2097152U);
+    EXPECT_EQ(config.max_frame(), 1572864U);
+    EXPECT_FALSE(config.max_frame_lowered());
+}
+
+// ADR-0043: the connection's outbound queue holds 2 * max_message_size bytes, 16 of them per
+// message, so a message over 2 * max_message_size - 16 can never be sent. A SEND frame carries 14
+// bytes besides its payload (the frame length counts what follows its own 4 bytes), so a frame
+// limit above 2 * max_message_size - 2 only lets a worker hand the daemon something it would drop.
+// The limit is lowered to that, and the worker's own client then refuses the message before it is
+// written. (Before this, the daemon said OK and the browser never got the message.)
+constexpr std::size_t kSmall = 16384;
+constexpr std::size_t kSmallFrame = 2 * kSmall - 16 + 14;
+
+TEST(DaemonConfig, TheDefaultFrameLimitIsLoweredToWhatTheOutboundQueueCanTake) {
+    DaemonConfig config = with_socket();
+    ASSERT_TRUE(config.set("max_message_size", std::to_string(kSmall)).has_value());
+    ASSERT_TRUE(config.finish().has_value());
+    EXPECT_EQ(config.max_frame(), kSmallFrame) << "16384 + 64 KiB would promise 81920";
+    EXPECT_FALSE(config.max_frame_lowered()) << "nobody asked for the larger value";
+}
+
+TEST(DaemonConfig, AnExplicitFrameLimitAboveTheQueueIsLoweredAndSaysSo) {
+    DaemonConfig config = with_socket();
+    ASSERT_TRUE(config.set("max_message_size", std::to_string(kSmall)).has_value());
+    ASSERT_TRUE(config.set("ipc_max_frame", "524288").has_value());
+    ASSERT_TRUE(config.finish().has_value()) << "an existing deployment must still start";
+    EXPECT_EQ(config.max_frame(), kSmallFrame);
+    EXPECT_TRUE(config.max_frame_lowered());
+}
+
+TEST(DaemonConfig, TheFrameLimitIsLoweredByExactlyOneByteAndNoMore) {
+    DaemonConfig at = with_socket();
+    ASSERT_TRUE(at.set("max_message_size", std::to_string(kSmall)).has_value());
+    ASSERT_TRUE(at.set("ipc_max_frame", std::to_string(kSmallFrame)).has_value());
+    ASSERT_TRUE(at.finish().has_value());
+    EXPECT_EQ(at.max_frame(), kSmallFrame);
+    EXPECT_FALSE(at.max_frame_lowered());
+
+    DaemonConfig over = with_socket();
+    ASSERT_TRUE(over.set("max_message_size", std::to_string(kSmall)).has_value());
+    ASSERT_TRUE(over.set("ipc_max_frame", std::to_string(kSmallFrame + 1)).has_value());
+    ASSERT_TRUE(over.finish().has_value());
+    EXPECT_EQ(over.max_frame(), kSmallFrame);
+    EXPECT_TRUE(over.max_frame_lowered());
+}
+
+TEST(DaemonConfig, TheLoweredFrameLimitStillHoldsTheBiggestInboundMessage) {
+    DaemonConfig config = with_socket();
+    ASSERT_TRUE(config.set("max_message_size", std::to_string(kSmall)).has_value());
+    ASSERT_TRUE(config.finish().has_value());
+    EXPECT_GE(config.max_frame(), kSmall + DaemonConfig::kEventOverhead);
 }
 
 TEST(DaemonConfig, AnExplicitFrameLimitMustHoldTheBiggestMessagePlusItsFrameFields) {

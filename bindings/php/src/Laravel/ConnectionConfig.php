@@ -57,6 +57,17 @@ final class ConnectionConfig
     {
     }
 
+    /** @return array<string, mixed> the key and nothing that is a secret (the app secret and the tokens) */
+    public function __debugInfo(): array
+    {
+        return ['key' => $this->config['key'] ?? null, 'secrets' => '(hidden)'];
+    }
+
+    public function __serialize(): array
+    {
+        throw new \LogicException('a ConnectionConfig holds the app secret and tokens and cannot be serialized');
+    }
+
     /**
      * The value of the `--stats-interval` option of `wsrv:echo` (ADR-0042 A2): whole seconds, 0 for off.
      * It comes from a command line, so a string; anything but plain digits is an error, not a default.
