@@ -779,6 +779,27 @@ TEST_F(ConnectionTest, AWriterDestroyedWithoutFinishClosesWith1011) {  // EC-F34
     EXPECT_TRUE(host.logged("unfinished"));
 }
 
+TEST_F(ConnectionTest, AWriterAssignedOverAnOpenWriterClosesWith1011) {  // EC-F34, T16
+    // The message being replaced can no longer be finished, as with a destroyed writer: the
+    // connection closes rather than leave half a message on the wire.
+    establish();
+    script.on_text = [&](Session& s, std::string_view) {
+        auto begun = s.begin_text();
+        ASSERT_TRUE(begun.has_value());
+        script.writer.emplace(std::move(*begun));
+        ASSERT_TRUE(script.writer->write_text("half").has_value());
+        *script.writer = MessageWriter{nullptr};  // an empty writer takes the place of the open one
+        EXPECT_FALSE(script.writer->open());
+    };
+    send_frame(Opcode::Text, "go");
+    bool internal_error = false;
+    for (const auto& frame : output().frames) {
+        internal_error |=
+            frame.opcode == Opcode::Close && code_of(frame) == std::string("\x03\xf3", 2);
+    }
+    EXPECT_TRUE(internal_error);
+}
+
 TEST_F(ConnectionTest, AHandlerThatThrowsMidStreamGetsExactlyOne1011) {  // EC-A01, EC-F34
     establish();
     script.on_text = [&](Session& s, std::string_view) {
