@@ -43,6 +43,14 @@ final class Gateway
     /** How often a close the daemon refused is asked again, and how many at a time (see retryCloses()). */
     private const CLOSE_RETRY_SECONDS = 1.0;
     private const CLOSE_RETRIES_PER_CALL = 64;
+    /**
+     * How long a public join waits for its connection to prove who it is (ADR-0042 A4; the expiry runs on a one-second tick, so a
+     * refusal comes 5 to 6 seconds in), when only the part of the public-name
+     * budget kept for such connections is left. pusher-js sends the subscribe of a public channel at once, but the subscribe of a
+     * private one only after the page's own HTTP call to the auth route has come back, so on a signed-in page the public join always
+     * arrives first and must be able to wait for that call. A constant: it has to cover a slow auth route and no more.
+     */
+    private const PARK_SECONDS = 5.0;
     /** One strike is forgiven for each full period of this many quiet seconds (ADR-0042 A2). A constant: the knob for a site is max_strikes. */
     private const STRIKE_FORGIVE_SECONDS = 60.0;
     /** Member lists kept for connections that ask to join a presence channel they are already in (ADR-0042 A2). */
@@ -66,6 +74,8 @@ final class Gateway
     private array $closeOwner = [];
     /** @var array<int, true> connections whose close the daemon refused and that retryCloses() asks again */
     private array $closeRetry = [];
+    /** @var array<int, true> connections that have public joins parked (ConnState::$parked); expireParked() walks only these */
+    private array $parkedConns = [];
     private readonly PresenceTable $presence;
     /**
      * The public channel names the gateway holds, by how many joins hold each: a connection that is in the channel and a
@@ -117,8 +127,9 @@ final class Gateway
      * which refuses a URL that does not carry the app key with 404).
      *
      * It also registers a one-second timer on the Worker that asks again for closes the daemon refused
-     * (retryCloses()). Worker timers run in Worker::run(), which is what Supervisor and `wsrv:echo` use; an
-     * embedder that drives the Worker with step() must call $gateway->retryCloses() itself, about once a second.
+     * (retryCloses()) and settles the public joins that waited too long for a signature (expireParked()). Worker
+     * timers run in Worker::run(), which is what Supervisor and `wsrv:echo` use; an embedder that drives the Worker
+     * with step() must call both on the gateway itself, about once a second.
      */
     public static function forWorker(GatewayConfig $config, Worker $worker, bool $checkAppKey = false): self
     {
@@ -141,6 +152,7 @@ final class Gateway
         // A close the daemon could not take (its task queue was full) is asked again; see retryCloses().
         $worker->every(self::CLOSE_RETRY_SECONDS, static function () use ($gateway): void {
             $gateway->retryCloses();
+            $gateway->expireParked();
         });
         if ($checkAppKey) {
             $worker->on('authenticate', static fn (Upgrade $u): bool|int => $gateway->acceptsPath($u->request->path) ? true : 404);
@@ -225,7 +237,7 @@ final class Gateway
         foreach (array_keys($state->sends) as $request) {
             unset($this->sendOwner[$request]);
         }
-        unset($this->closeOwner[$state->closeRequest], $this->closeRetry[$conn]);
+        unset($this->closeOwner[$state->closeRequest], $this->closeRetry[$conn], $this->parkedConns[$conn]);
         // The daemon dropped this connection's rooms when it closed; only the member list and the held names are ours.
         foreach ($state->channels as $channel => $userId) {
             $this->releasePublic((string) $channel);
@@ -454,8 +466,11 @@ final class Gateway
                 break;
             }
         }
+        if (isset($state->parked[$channel])) {
+            return;                                  // a join for it is already waiting for a signature (ADR-0042 A4)
+        }
         if ($revived === null) {
-            if (count($state->channels) + count($state->pending) >= $this->config->maxChannelsPerConnection) {
+            if (count($state->channels) + count($state->pending) + count($state->parked) >= $this->config->maxChannelsPerConnection) {
                 $this->subscriptionError($conn, $channel, 'LimitReached', 'Connection is over channel quota');
                 return;
             }
@@ -469,6 +484,13 @@ final class Gateway
             if (!is_string($auth) || !$this->config->verify($state->socketId, $channel, $signed, $auth)) {
                 $this->error($conn, self::ERR_UNAUTHORIZED, 'Connection is unauthorized');
                 return;
+            }
+            // The application's own auth route signed this: a visitor who is not anonymous (ADR-0042 A4). Whatever happens to the
+            // join below (a full presence channel, a bad member), the signature did verify.
+            $state->verified = true;
+            if ($state->parked !== []) {
+                // Public joins that came before this signature (pusher-js sends them first): admitted now, in the order they came.
+                $this->admitParked($conn, $state);
             }
             if ($kind === ChannelKind::Presence) {
                 $member = $this->member($channelData);
@@ -484,14 +506,25 @@ final class Gateway
             }
         }
 
-        if ($kind === ChannelKind::Public && !isset($this->publicHeld[$channel])
-            && count($this->publicHeld) >= $this->config->maxPublicChannels) {
-            // A new public name when the budget of names is used up (ADR-0042 A3). A name somebody holds is never refused (a join
-            // that was cancelled and is revived holds its own name too): it costs the daemon no new room.
-            // Anonymous browsers can fill the budget, not the daemon's whole table.
-            $this->publicRefused++;
-            $this->subscriptionError($conn, $channel, 'LimitReached', 'The server is at its public channel limit');
-            return;
+        if ($kind === ChannelKind::Public && !isset($this->publicHeld[$channel])) {
+            // A new public name. A name somebody holds is never refused (a join that was cancelled and is revived holds its own
+            // name too): it costs the daemon no new room.
+            $held = count($this->publicHeld);
+            if ($held >= $this->config->maxPublicChannels) {
+                // The budget of names is used up (ADR-0042 A3): anonymous browsers can fill the budget, not the daemon's table.
+                $this->publicRefused++;
+                $this->subscriptionError($conn, $channel, 'LimitReached', 'The server is at its public channel limit');
+                return;
+            }
+            if (!$state->verified && $held >= $this->config->maxPublicChannels - $this->config->publicChannelsReserved) {
+                // Only the part kept for connections that proved who they are is left (A4). This connection has not, yet: pusher-js
+                // sends a public subscribe before the private one it is waiting on the auth route for. So the join waits instead of
+                // being refused. It holds no name, asks nothing of the daemon and counts against the channel quota; a signature that
+                // verifies admits it (admitParked), and expireParked() refuses it when none comes.
+                $state->parked[$channel] = ($this->clock)();
+                $this->parkedConns[$conn] = true;
+                return;
+            }
         }
         if ($revived !== null) {
             // Left and joined again before the daemon answered: the one request in flight serves the
@@ -499,10 +532,75 @@ final class Gateway
             $this->pending[$revived] = ['conn' => $conn, 'channel' => $channel, 'userId' => $userId, 'info' => $info, 'cancelled' => false];
             return;
         }
+        $this->startJoin($conn, $state, $channel, $userId, $info);
+    }
+
+    /** Ask the daemon to put the connection in the room, and remember the join until it answers. */
+    private function startJoin(int $conn, ConnState $state, string $channel, ?string $userId, ?array $info): void
+    {
         $request = $this->link->subscribe($conn, $channel);
         $this->pending[$request] = ['conn' => $conn, 'channel' => $channel, 'userId' => $userId, 'info' => $info, 'cancelled' => false];
         $state->pending[$request] = true;
         $this->holdPublic($channel);
+    }
+
+    /**
+     * Settle every parked join of a connection that has just proved who it is (ADR-0042 A4), in the order they came: each is sent
+     * to the daemon if its name is held or the budget still has room for it, and refused with LimitReached (no strike) if not.
+     */
+    private function admitParked(int $conn, ConnState $state): void
+    {
+        foreach (array_keys($state->parked) as $channel) {
+            $this->settleParked($conn, $state, (string) $channel);
+        }
+        unset($this->parkedConns[$conn]);
+    }
+
+    /**
+     * Refuse the parked joins that no signature has followed within PARK_SECONDS, with the answer an unparked join would have had
+     * (a join whose name has been taken by somebody else in the meantime, or whose room the budget now has, is admitted instead).
+     * Called every second by the timer forWorker() sets up, and by hand in tests; an embedder that drives the Worker with step()
+     * calls it about once a second. Each parked join is looked at about PARK_SECONDS times, so the work stays proportional to
+     * the frames that parked them. Nothing parked costs nothing.
+     */
+    public function expireParked(): void
+    {
+        if ($this->parkedConns === []) {
+            return;
+        }
+        $now = ($this->clock)();
+        foreach (array_keys($this->parkedConns) as $conn) {
+            $state = $this->conns[$conn] ?? null;
+            if ($state === null || $state->closing) {
+                // Gone, or being closed: nobody is left to answer.
+                if ($state !== null) {
+                    $state->parked = [];
+                }
+                unset($this->parkedConns[$conn]);
+                continue;
+            }
+            foreach ($state->parked as $channel => $since) {
+                if ($now - $since >= self::PARK_SECONDS) {
+                    $this->settleParked($conn, $state, (string) $channel);
+                }
+            }
+            if ($state->parked === []) {
+                unset($this->parkedConns[$conn]);
+            }
+        }
+    }
+
+    /** The end of a parked join: the rule of the public budget, applied to the connection as it is now. */
+    private function settleParked(int $conn, ConnState $state, string $channel): void
+    {
+        unset($state->parked[$channel]);
+        $limit = $this->config->maxPublicChannels - ($state->verified ? 0 : $this->config->publicChannelsReserved);
+        if (!isset($this->publicHeld[$channel]) && count($this->publicHeld) >= $limit) {
+            $this->publicRefused++;
+            $this->subscriptionError($conn, $channel, 'LimitReached', 'The server is at its public channel limit');
+            return;
+        }
+        $this->startJoin($conn, $state, $channel, null, null);
     }
 
     /** A connection joined, or is joining, this channel: if it is a public one, count it against the name (ADR-0042 A3). */
@@ -670,6 +768,14 @@ final class Gateway
         $channel = ($frame->object() ?? [])['channel'] ?? null;
         if (!is_string($channel)) {
             $this->invalid($conn, $state);
+            return;
+        }
+        if (isset($state->parked[$channel])) {
+            // A public join still waiting for a signature (ADR-0042 A4): nothing was asked of the daemon, so nothing to undo.
+            unset($state->parked[$channel]);
+            if ($state->parked === []) {
+                unset($this->parkedConns[$conn]);
+            }
             return;
         }
         if (!array_key_exists($channel, $state->channels)) {

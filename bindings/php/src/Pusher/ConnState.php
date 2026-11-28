@@ -18,6 +18,19 @@ final class ConnState
     public int $strikes = 0;
     /** When the previous strike happened (or the connection opened). */
     public float $strikeStamp;
+    /**
+     * A signature for a private or presence channel verified for this connection, so it is not an anonymous visitor: it may
+     * take the part of the public-name budget that is kept back for such connections (ADR-0042 A4). It lasts as long as the
+     * connection, whatever channels it leaves.
+     */
+    public bool $verified = false;
+    /**
+     * @var array<string, float> public channels this connection asked to join while only the part of the public-name budget kept
+     *                           for connections that proved who they are was left => when it asked (ADR-0042 A4). They hold no
+     *                           name and ask nothing of the daemon; each counts against the channel quota. They are admitted or
+     *                           refused when a signature verifies, or after Gateway::PARK_SECONDS.
+     */
+    public array $parked = [];
     /** The gateway asked the daemon to close it; further frames are ignored. */
     public bool $closing = false;
     /** @var array{int, string}|null the close code and reason to ask for again if the daemon refuses the close */

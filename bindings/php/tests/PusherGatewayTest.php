@@ -1451,6 +1451,348 @@ test('pusher gateway: the budget counts public names held, so a name somebody ho
     assertSame(held_public($gw), recount_public($gw));
 });
 
+test('pusher config: publicChannelsReserved defaults to a quarter of the public budget and stays below it (ADR-0042 A4)', function () {
+    assertSame(128, (new GatewayConfig(GW_KEY, GW_SECRET))->publicChannelsReserved);
+    assertSame(0, (new GatewayConfig(GW_KEY, GW_SECRET, maxPublicChannels: 3))->publicChannelsReserved, 'a quarter of 3 rounds down to none');
+    assertSame(250, (new GatewayConfig(GW_KEY, GW_SECRET, maxPublicChannels: 1000))->publicChannelsReserved);
+    assertSame(0, (new GatewayConfig(GW_KEY, GW_SECRET, publicChannelsReserved: 0))->publicChannelsReserved, '0 switches it off');
+    assertSame(511, (new GatewayConfig(GW_KEY, GW_SECRET, publicChannelsReserved: 511))->publicChannelsReserved);
+    assertThrows(InvalidArgumentException::class, fn () => new GatewayConfig(GW_KEY, GW_SECRET, publicChannelsReserved: -1));
+    assertThrows(InvalidArgumentException::class, fn () => new GatewayConfig(GW_KEY, GW_SECRET, publicChannelsReserved: 512), 'all of the budget would leave anonymous visitors nothing');
+    assertThrows(InvalidArgumentException::class, fn () => new GatewayConfig(GW_KEY, GW_SECRET, maxPublicChannels: 10, publicChannelsReserved: 10));
+});
+
+test('pusher gateway: the top of the public budget is kept for connections that proved who they are (ADR-0042 A4)', function () {
+    [$gw, $link, $clock] = gateway(['maxPublicChannels' => 4, 'publicChannelsReserved' => 2]);
+    $s = [];
+    foreach ([1, 2, 3] as $c) {
+        $s[$c] = open_conn($gw, $link, $c);
+    }
+    // an anonymous connection may take the part that is not kept back
+    join_channel($gw, $link, 1, $s[1], 'a');
+    join_channel($gw, $link, 1, $s[1], 'b');
+    // a third new name from it is not let in although the budget is not full: it waits for a signature (nothing goes to the daemon),
+    // and with none it is refused after the wait, with no strike, counted
+    $link->clear();
+    $gw->received(1, subscribe_frame('c', $s[1]));
+    assertSame([], $link->subscribed);
+    assertSame(0, $gw->stats()->publicRefused);
+    $clock->now += 6.0;
+    $gw->expireParked();
+    $f = $link->lastFrame(1);
+    assertSame('pusher:subscription_error', $f['event']);
+    assertSame('LimitReached', $f['data']['type']);
+    assertSame([], $link->subscribed);
+    assertSame(1, $gw->stats()->publicRefused);
+    // a signature that does not verify proves nothing: the waiting join stays waiting and is refused like the first
+    $gw->received(2, subscribe_frame('d', $s[2]));
+    $gw->received(2, subscribe_frame('private-x', $s[2], null, 'a-secret-the-app-does-not-have'));
+    assertSame('pusher:error', $link->lastFrame(2)['event']);
+    assertSame([2], parked_index($gw), 'still waiting after a bad signature');
+    assertSame([], $link->subscribed);
+    $clock->now += 6.0;
+    $gw->expireParked();
+    assertSame('LimitReached', $link->lastFrame(2)['data']['type'], 'still anonymous after a bad signature');
+    assertSame(2, $gw->stats()->publicRefused);
+    // a valid one does: this connection may now use the kept part
+    join_channel($gw, $link, 2, $s[2], 'private-x');
+    join_channel($gw, $link, 2, $s[2], 'c');
+    join_channel($gw, $link, 2, $s[2], 'd');
+    assertSame(4, $gw->stats()->publicChannels);
+    $link->clear();
+    $gw->received(2, subscribe_frame('e', $s[2]));
+    assertSame('LimitReached', $link->lastFrame(2)['data']['type'], 'the whole budget is still a limit, also for a signed-in connection');
+    // a name that is held is joinable by an anonymous connection, with the budget used up
+    join_channel($gw, $link, 3, $s[3], 'c');
+    assertSame('pusher_internal:subscription_succeeded', $link->lastFrame(3)['event']);
+    // the proof lasts as long as the connection: leaving the private channel does not take it back
+    $gw->received(2, frame_text('pusher:unsubscribe', ['channel' => 'private-x']));
+    $gw->received(2, frame_text('pusher:unsubscribe', ['channel' => 'd']));
+    assertSame(3, $gw->stats()->publicChannels);
+    join_channel($gw, $link, 2, $s[2], 'e');
+    assertSame('pusher_internal:subscription_succeeded', $link->lastFrame(2)['event']);
+    // refusals cost no strike
+    assertSame([], $link->closed);
+    assertSame(0, $gw->stats()->strikeCloses);
+    assertSame(held_public($gw), recount_public($gw));
+});
+
+test('pusher gateway: with nothing kept back an anonymous connection may use the whole budget, as in 1.1.0', function () {
+    [$gw, $link] = gateway(['maxPublicChannels' => 3, 'publicChannelsReserved' => 0]);
+    $sock = open_conn($gw, $link, 1);
+    foreach (['a', 'b', 'c'] as $name) {
+        join_channel($gw, $link, 1, $sock, $name);
+    }
+    assertSame(3, $gw->stats()->publicChannels);
+    $link->clear();
+    $gw->received(1, subscribe_frame('d', $sock));
+    assertSame('LimitReached', $link->lastFrame(1)['data']['type']);
+});
+
+test('pusher gateway: on the defaults a normal load is never refused, and the kept part starts after 384 names (ADR-0042 A4)', function () {
+    [$gw, $link, $clock] = gateway();
+    $conns = [];
+    for ($c = 1; $c <= 8; $c++) {
+        $conns[$c] = open_conn($gw, $link, $c);
+    }
+    // 384 distinct names (512 less the 128 kept back) from six anonymous connections of 64 names each: every one is admitted
+    for ($c = 1; $c <= 6; $c++) {
+        for ($j = 0; $j < 64; $j++) {
+            join_channel($gw, $link, $c, $conns[$c], "pub.$c.$j");
+        }
+    }
+    assertSame(384, $gw->stats()->publicChannels);
+    assertSame(0, $gw->stats()->publicRefused, 'nothing under the line is refused');
+    // the 385th new name: an anonymous connection waits and is then refused ...
+    $link->clear();
+    $gw->received(7, subscribe_frame('pub.late', $conns[7]));
+    assertSame([], $link->subscribed, 'it waits for a signature');
+    $clock->now += 6.0;
+    $gw->expireParked();
+    assertSame('LimitReached', $link->lastFrame(7)['data']['type']);
+    // ... and a signed-in page gets it however its subscribes are ordered: the public one first (as pusher-js sends it, before the
+    // auth route has answered for the private one) and then the signed one
+    $gw->received(8, subscribe_frame('pub.late', $conns[8]));
+    $gw->received(8, subscribe_frame('private-user.8', $conns[8]));
+    foreach ($link->subscribed as [, , $request]) {
+        $gw->status($request, StatusCode::OK);
+    }
+    $events = array_column($link->frames(8), 'event');
+    assertSame(2, count(array_filter($events, static fn ($e) => $e === 'pusher_internal:subscription_succeeded')), 'both joins were answered with success');
+    assertSame(385, $gw->stats()->publicChannels);
+    assertSame(1, $gw->stats()->publicRefused);
+    assertSame(held_public($gw), recount_public($gw));
+});
+
+/** The connections the gateway's index says have joins waiting for a signature. */
+function parked_index(Gateway $gw): array
+{
+    $ids = array_keys((new ReflectionProperty($gw, 'parkedConns'))->getValue($gw));
+    sort($ids);
+    return $ids;
+}
+
+/** The connections whose own state says they have one: what the index must equal. */
+function parked_recount(Gateway $gw): array
+{
+    $ids = [];
+    foreach ((new ReflectionProperty($gw, 'conns'))->getValue($gw) as $id => $state) {
+        if ($state->parked !== []) {
+            $ids[] = $id;
+        }
+    }
+    sort($ids);
+    return $ids;
+}
+
+test('pusher gateway: a public join that arrives before the signed one waits for it instead of being refused (ADR-0042 A4)', function () {
+    [$gw, $link] = gateway(['maxPublicChannels' => 4, 'publicChannelsReserved' => 2]);
+    $s1 = open_conn($gw, $link, 1);
+    $s2 = open_conn($gw, $link, 2);
+    join_channel($gw, $link, 1, $s1, 'a');
+    join_channel($gw, $link, 1, $s1, 'b');
+    // pusher-js sends a public subscribe at once and a private one only after the page's HTTP call to the auth route returns: the public one first
+    $link->clear();
+    $before = count($link->frames(2));
+    $gw->received(2, subscribe_frame('news', $s2));
+    assertSame([], $link->subscribed, 'nothing goes to the daemon yet');
+    assertSame($before, count($link->frames(2)), 'and nothing is answered yet');
+    assertSame(0, $gw->stats()->publicRefused);
+    assertSame(2, $gw->stats()->publicChannels, 'a waiting join holds no name');
+    assertSame([2], parked_index($gw));
+    assertSame([2], parked_recount($gw));
+    $gw->received(2, subscribe_frame('private-App.User.1', $s2));
+    assertSame(['news', 'private-App.User.1'], array_column($link->subscribed, 1), 'the waiting join goes first, once the signature verified');
+    foreach ($link->subscribed as [, , $request]) {
+        $gw->status($request, StatusCode::OK);
+    }
+    $events = array_column(array_slice($link->frames(2), $before), 'event');
+    assertSame(2, count(array_filter($events, static fn ($e) => $e === 'pusher_internal:subscription_succeeded')), 'both joins were answered with success');
+    assertSame(3, $gw->stats()->publicChannels);
+    assertSame(0, $gw->stats()->publicRefused);
+    assertSame([], parked_index($gw));
+    assertSame(held_public($gw), recount_public($gw));
+});
+
+test('pusher gateway: a waiting join that no signature follows is refused after a short wait, with no strike (ADR-0042 A4)', function () {
+    [$gw, $link, $clock] = gateway(['maxPublicChannels' => 4, 'publicChannelsReserved' => 2]);
+    $s1 = open_conn($gw, $link, 1);
+    $s2 = open_conn($gw, $link, 2);
+    join_channel($gw, $link, 1, $s1, 'a');
+    join_channel($gw, $link, 1, $s1, 'b');
+    $link->clear();
+    $gw->received(2, subscribe_frame('c', $s2));
+    $clock->now += 4.0;
+    $gw->expireParked();
+    assertSame([2], parked_index($gw), 'four seconds is not enough to give up: an auth route can be slow');
+    assertSame(0, $gw->stats()->publicRefused);
+    $clock->now += 1.0;                                   // 5 seconds in all: the wait is over at the second, not after it
+    $gw->expireParked();
+    $f = $link->lastFrame(2);
+    assertSame('pusher:subscription_error', $f['event']);
+    assertSame('LimitReached', $f['data']['type']);
+    assertSame(1, $gw->stats()->publicRefused);
+    assertSame([], $link->subscribed);
+    assertSame([], parked_index($gw));
+    assertSame([], $link->closed);
+    assertSame(0, $gw->stats()->strikeCloses);
+    // a signature that comes after does not bring the refused join back
+    join_channel($gw, $link, 2, $s2, 'private-x');
+    assertSame(['private-x'], array_column($link->subscribed, 1));
+    // a second call with nothing waiting costs nothing and changes nothing
+    $gw->expireParked();
+    assertSame(1, $gw->stats()->publicRefused);
+    assertSame(held_public($gw), recount_public($gw));
+});
+
+test('pusher gateway: when the signature comes, a waiting join is admitted only if the budget still has room or the name is held (ADR-0042 A4)', function () {
+    [$gw, $link] = gateway(['maxPublicChannels' => 4, 'publicChannelsReserved' => 2]);
+    $s = [];
+    foreach ([1, 2, 3] as $c) {
+        $s[$c] = open_conn($gw, $link, $c);
+    }
+    join_channel($gw, $link, 1, $s[1], 'a');
+    join_channel($gw, $link, 1, $s[1], 'b');
+    // connection 2 sends its public joins first and waits
+    $gw->received(2, subscribe_frame('c', $s[2]));
+    $gw->received(2, subscribe_frame('d', $s[2]));
+    $gw->received(2, subscribe_frame('x', $s[2]));
+    assertSame(2, $gw->stats()->publicChannels);
+    // meanwhile a signed-in connection takes the rest of the budget, among it the name 'x'
+    join_channel($gw, $link, 3, $s[3], 'private-y');
+    join_channel($gw, $link, 3, $s[3], 'x');
+    join_channel($gw, $link, 3, $s[3], 'y');
+    assertSame(4, $gw->stats()->publicChannels);
+    $link->clear();
+    $before = count($link->frames(2));
+    $gw->received(2, subscribe_frame('private-z', $s[2]));
+    // 'c' and 'd' find the budget full and are refused; 'x' is held, so it is never refused
+    $answers = array_slice($link->frames(2), $before);
+    $refused = array_values(array_map(static fn ($f) => $f['data']['type'] ?? '', array_filter($answers, static fn ($f) => $f['event'] === 'pusher:subscription_error')));
+    assertSame(['LimitReached', 'LimitReached'], $refused);
+    assertSame(['x', 'private-z'], array_column($link->subscribed, 1));
+    assertSame(2, $gw->stats()->publicRefused);
+    assertSame([], parked_index($gw));
+    foreach ($link->subscribed as [, , $request]) {
+        $gw->status($request, StatusCode::OK);
+    }
+    assertSame(4, $gw->stats()->publicChannels);
+    assertSame(held_public($gw), recount_public($gw));
+});
+
+test('pusher gateway: a waiting join whose name has become held is admitted, not refused, when its wait ends (ADR-0042 A4)', function () {
+    [$gw, $link, $clock] = gateway(['maxPublicChannels' => 4, 'publicChannelsReserved' => 2]);
+    $s = [];
+    foreach ([1, 2, 3] as $c) {
+        $s[$c] = open_conn($gw, $link, $c);
+    }
+    join_channel($gw, $link, 1, $s[1], 'a');
+    join_channel($gw, $link, 1, $s[1], 'b');
+    $gw->received(2, subscribe_frame('c', $s[2]));
+    join_channel($gw, $link, 3, $s[3], 'private-y');
+    join_channel($gw, $link, 3, $s[3], 'c');
+    $link->clear();
+    $clock->now += 6.0;
+    $gw->expireParked();
+    assertSame(['c'], array_column($link->subscribed, 1), 'somebody holds it now: it costs no new room');
+    assertSame(0, $gw->stats()->publicRefused);
+    assertSame([], parked_index($gw));
+});
+
+test('pusher gateway: waiting joins count against the channel quota, are dropped by an unsubscribe or a close, and leave nothing behind (ADR-0042 A4)', function () {
+    [$gw, $link, $clock] = gateway(['maxPublicChannels' => 4, 'publicChannelsReserved' => 2, 'maxChannelsPerConnection' => 2]);
+    $s1 = open_conn($gw, $link, 1);
+    $s2 = open_conn($gw, $link, 2);
+    join_channel($gw, $link, 1, $s1, 'a');
+    join_channel($gw, $link, 1, $s1, 'b');
+    $gw->received(2, subscribe_frame('c', $s2));
+    $clock->now += 2.0;
+    $gw->received(2, subscribe_frame('c', $s2));
+    $state = (new ReflectionProperty($gw, 'conns'))->getValue($gw)[2];
+    assertSame(1, count($state->parked), 'a repeat of a waiting join is one join');
+    assertSame(1000.0, $state->parked['c'], 'and asking again does not make it wait longer');
+    $gw->received(2, subscribe_frame('d', $s2));
+    assertSame(2, count($state->parked));
+    $link->clear();
+    $gw->received(2, subscribe_frame('e', $s2));
+    assertSame('LimitReached', $link->lastFrame(2)['data']['type'], 'the quota counts joins that wait');
+    assertSame(2, count($state->parked));
+    // an unsubscribe drops one; its wait never ends in an answer
+    $gw->received(2, frame_text('pusher:unsubscribe', ['channel' => 'c']));
+    assertSame(['d'], array_keys($state->parked));
+    assertSame([2], parked_index($gw));
+    $link->clear();
+    $clock->now += 6.0;
+    $gw->expireParked();
+    $answered = array_map(static fn ($f) => $f['data']['type'] ?? '', array_filter($link->frames(2), static fn ($f) => $f['event'] === 'pusher:subscription_error'));
+    assertSame(1, count($answered), 'only d is answered');
+    // a close with a waiting join leaves no index entry
+    $gw->received(2, subscribe_frame('f', $s2));
+    assertSame([2], parked_index($gw));
+    $gw->closed(2);
+    assertSame([], parked_index($gw));
+    assertSame(parked_recount($gw), parked_index($gw));
+    assertSame(held_public($gw), recount_public($gw));
+});
+
+test('pusher gateway: a connection that is being closed gets no answer for its waiting joins, and they are dropped (ADR-0042 A4)', function () {
+    [$gw, $link, $clock] = gateway(['maxPublicChannels' => 4, 'publicChannelsReserved' => 2, 'maxStrikes' => 1]);
+    $s1 = open_conn($gw, $link, 1);
+    $s2 = open_conn($gw, $link, 2);
+    join_channel($gw, $link, 1, $s1, 'a');
+    join_channel($gw, $link, 1, $s1, 'b');
+    $gw->received(2, subscribe_frame('c', $s2));
+    $gw->received(2, 'garbage');                          // one strike is the limit here: the gateway asks for the close
+    assertSame(1, count($link->closed));
+    $link->clear();
+    $clock->now += 6.0;
+    $gw->expireParked();
+    assertSame([], $link->frames(2), 'nothing is sent to a connection that is being closed');
+    assertSame([], $link->subscribed);
+    assertSame([], parked_index($gw));
+    assertSame(0, $gw->stats()->publicRefused);
+});
+
+test('pusher gateway: forWorker sets up the timer that settles the public joins that waited too long (ADR-0042 A4)', function () {
+    [$client, $daemon] = ready_client();
+    $worker = new Worker($client);
+    $gateway = Gateway::forWorker(new GatewayConfig(GW_KEY, GW_SECRET, maxPublicChannels: 2, publicChannelsReserved: 1), $worker);
+    $join = static fn (string $channel): string => event_bytes(2, 1, json_encode(['event' => 'pusher:subscribe', 'data' => ['channel' => $channel]]));
+    fwrite($daemon, event_bytes(1, 1, 'a') . $join('a') . $join('b'));   // the first name goes to the daemon, the second waits
+    for ($i = 0; $i < 4; $i++) {
+        $worker->step(0.1);
+    }
+    $state = (new ReflectionProperty($gateway, 'conns'))->getValue($gateway)[1];
+    assertSame(['b'], array_keys($state->parked), 'the second public name waits for a signature');
+    $state->parked['b'] = hrtime(true) / 1e9 - 10.0;      // it has waited far longer than it may
+    $timers = (new ReflectionProperty($worker, 'timers'))->getValue($worker);
+    ($timers[0]['call'])();
+    assertSame([], $state->parked);
+    assertSame(1, $gateway->stats()->publicRefused);
+});
+
+test('pusher gateway: a public join of a signed-in connection, or with nothing kept back, never waits (ADR-0042 A4)', function () {
+    [$gw, $link] = gateway(['maxPublicChannels' => 4, 'publicChannelsReserved' => 2]);
+    $s1 = open_conn($gw, $link, 1);
+    $s2 = open_conn($gw, $link, 2);
+    join_channel($gw, $link, 1, $s1, 'a');
+    join_channel($gw, $link, 1, $s1, 'b');
+    join_channel($gw, $link, 2, $s2, 'private-x');
+    $link->clear();
+    $gw->received(2, subscribe_frame('c', $s2));
+    assertSame(['c'], array_column($link->subscribed, 1), 'a connection that is signed in goes straight to the daemon');
+    assertSame([], parked_index($gw));
+    [$gw, $link] = gateway(['maxPublicChannels' => 2, 'publicChannelsReserved' => 0]);
+    $s1 = open_conn($gw, $link, 1);
+    $s2 = open_conn($gw, $link, 2);
+    join_channel($gw, $link, 1, $s1, 'a');
+    join_channel($gw, $link, 1, $s1, 'b');
+    $link->clear();
+    $gw->received(2, subscribe_frame('c', $s2));
+    assertSame('LimitReached', $link->lastFrame(2)['data']['type'], 'with the budget full for everyone nothing waits');
+    assertSame([], parked_index($gw));
+});
+
 test('pusher gateway: a public name is reserved when its join goes to the daemon and given back however the join or the membership ends', function () {
     [$gw, $link] = gateway(['maxPublicChannels' => 2]);
     $s = [];
@@ -1617,7 +1959,7 @@ test('pusher gateway: churn: in any order of joins, answers, leaves and closes n
     foreach ([1, 2, 3, 4, 5, 6, 7, 8] as $seed) {
         mt_srand($seed);
         [$gw, $link, $clock] = gateway([
-            'maxChannelsPerConnection' => $quota, 'maxPresenceMembers' => $members, 'maxStrikes' => 1_000_000, 'maxPublicChannels' => 3,
+            'maxChannelsPerConnection' => $quota, 'maxPresenceMembers' => $members, 'maxStrikes' => 1_000_000, 'maxPublicChannels' => 3, 'publicChannelsReserved' => 1,
             'messagesPerSecond' => 1_000_000, 'messageBurst' => 1_000_000, 'clientEventsPerSecond' => 100_000,
         ]);
         $open = [];        // conn => socket id
@@ -1673,9 +2015,26 @@ test('pusher gateway: churn: in any order of joins, answers, leaves and closes n
                 $gw->received($conn, mt_rand(0, 1) === 0 ? 'garbage' : '{"event":"pusher:ping"}');
             }
             $clock->now += mt_rand(0, 3) === 0 ? 1.0 : 0.0;
+            if (mt_rand(0, 2) === 0) {
+                $gw->expireParked();                      // the timer of Gateway::forWorker(), about every second
+            }
             $sync();
             $s = $gw->stats();
             assertSame(count($open), $s->connections, "seed $seed step $i");
+            // A4: the connections that have parked joins are the ones the index says, and a parked join is a public name the connection is
+            // neither in nor joining, that holds nothing, and that counts against the quota with the rest.
+            assertSame(parked_recount($gw), parked_index($gw), "seed $seed step $i: the index of connections with parked joins");
+            foreach ((new ReflectionProperty($gw, 'conns'))->getValue($gw) as $state) {
+                $joining = [];
+                foreach (array_keys($state->pending) as $request) {
+                    $joining[] = (string) (new ReflectionProperty($gw, 'pending'))->getValue($gw)[$request]['channel'];
+                }
+                foreach (array_keys($state->parked) as $name) {
+                    assertSame(ChannelKind::Public, ChannelName::kind((string) $name), "seed $seed step $i: only a public join waits");
+                    assertTrue(!array_key_exists($name, $state->channels) && !in_array((string) $name, $joining, true), "seed $seed step $i: a parked join is not also a join");
+                }
+                assertTrue(count($state->channels) + count($state->pending) + count($state->parked) <= $quota, "seed $seed step $i: parked joins count against the quota");
+            }
             assertTrue($s->channels <= count($open) * $quota, "seed $seed step $i: more memberships than the quota allows");
             assertTrue($s->joinsInProgress <= count($open) * $quota, "seed $seed step $i: more joins in progress than the quota allows");
             assertTrue($s->presenceMembers <= $s->presenceChannels * $members, "seed $seed step $i: a presence channel over its member cap");
@@ -1705,6 +2064,7 @@ test('pusher gateway: churn: in any order of joins, answers, leaves and closes n
         $s = $gw->stats();
         assertSame([0, 0, 0, 0, 0, 0], [$s->connections, $s->channels, $s->joinsInProgress, $s->presenceChannels, $s->presenceMembers, $s->publicChannels], "seed $seed: nothing survives its connections");
         assertSame([], held_public($gw), "seed $seed: no public name outlives its connections");
+        assertSame([], parked_index($gw), "seed $seed: no parked join outlives its connection");
     }
 });
 

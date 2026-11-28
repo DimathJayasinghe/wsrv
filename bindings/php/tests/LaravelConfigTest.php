@@ -108,4 +108,10 @@ test('laravel config: public_channels and max_public_channels reach the gateway,
     }
     assertThrows(InvalidArgumentException::class, fn () => ConnectionConfig::fromArray(laravel_config(['options' => ['max_public_channels' => '5']])));
     assertThrows(InvalidArgumentException::class, fn () => ConnectionConfig::fromArray(laravel_config(['options' => ['max_public_channels' => 0]])));
+    // ADR-0042 A4: the part of the budget kept for signed-in connections
+    $g = ConnectionConfig::fromArray(laravel_config(['options' => ['max_public_channels' => 100, 'public_channels_reserved' => 40]]))->gateway();
+    assertSame(40, $g->publicChannelsReserved);
+    assertSame(25, ConnectionConfig::fromArray(laravel_config(['options' => ['max_public_channels' => 100]]))->gateway()->publicChannelsReserved);
+    assertThrows(InvalidArgumentException::class, fn () => ConnectionConfig::fromArray(laravel_config(['options' => ['public_channels_reserved' => '5']])));
+    assertThrows(InvalidArgumentException::class, fn () => ConnectionConfig::fromArray(laravel_config(['options' => ['max_public_channels' => 100, 'public_channels_reserved' => 100]]))->gateway());
 });

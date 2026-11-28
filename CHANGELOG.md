@@ -4,6 +4,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 Known gaps are listed in [docs/RELEASE.md](docs/RELEASE.md). `0.1.0-rc.1` and `0.1.0-rc.2` were early pre-releases of what is below.
 
+## [Unreleased]
+
+### Security
+- **Anonymous visitors can no longer use up the whole public-channel budget** (ADR-0042 amendment A4, Proposed until the owner accepts). In 1.1.0, 16 scripted connections from one address could take all 512 public channel names (`max_public_channels`), after which no new public name opened for anyone, signed-in users included. A quarter of the budget is now kept for connections that have proved who they are: a connection whose signature for a private or presence channel verified may take it. Any other connection that asks for a new public name once `max_public_channels - public_channels_reserved` are held waits about 5 seconds (5 to 6: the check runs once a second) for such a signature (pusher-js sends a page's public subscribe at once and its private one only after the page's call to the auth route returns, so on a signed-in page the public join comes first) and is then answered `LimitReached` (no strike). New option `public_channels_reserved` (`GatewayConfig`, Laravel `options`): default a quarter of `max_public_channels` (128 of 512), `0` restores the 1.1.0 rule. New `Gateway::expireParked()`, called by the one-second timer `Gateway::forWorker()` already sets up (an embedder that drives the Worker with `step()` calls it about once a second). **Behaviour change:** an anonymous visitor may now hold 384 distinct public names where 1.1.0 allowed 512, and is told so after a few seconds; a site that needs more raises `max_public_channels` (the reserve grows with it) or sets the reserve to 0. This narrows the risk, it does not remove it: visitors can still use up their share, a visitor with an account counts as signed in, a signed-in user whose auth route takes over about 6 seconds can still be refused while the budget is full, and only an exact `public_channels` list closes it. Tests first (unit tests in both subscribe orders, a churn test with parked joins, the real-daemon flood check, a normal-load acceptance test, 34 mutants killed). Daemon unchanged.
+
 ## [1.1.0] - 2026-11-28
 
 Reached through `1.1.0-rc.1` (2026-11-28); the final tag has the same sources.

@@ -25,6 +25,8 @@ final class GatewayConfig
 
     /** How many frames one connection may send at once; see the constructor. */
     public readonly int $messageBurst;
+    /** How many of the maxPublicChannels names only a connection that has proved who it is may take; see the constructor. */
+    public readonly int $publicChannelsReserved;
     /** @var array<string, true> the exact names of publicChannels */
     private readonly array $publicExact;
     /** @var list<string> the prefixes of publicChannels (the entries that ended in a star, without it) */
@@ -52,6 +54,15 @@ final class GatewayConfig
      * @param list<string>|null $publicChannels the public channels the site has: exact names, or a prefix ending in one star
      *                                 (`orders.*`). null (the default) means any name, [] means none. Private and presence channels
      *                                 are not listed: a signature decides those
+     * @param int|null $publicChannelsReserved the top of the maxPublicChannels budget that is kept for connections that have proved
+     *                                 who they are: a connection whose signature for a private or presence channel verified. A new public
+     *                                 name takes one of these only for such a connection, so anonymous visitors can use up
+     *                                 `maxPublicChannels - publicChannelsReserved` names and no more, and a signed-in user can still open a new
+     *                                 one. 0 keeps the rule of 1.1.0 (anonymous visitors may use the whole budget); at most
+     *                                 maxPublicChannels - 1; null means a quarter of maxPublicChannels (ADR-0042 A4). A public join that
+     *                                 comes first (pusher-js sends it before the private one, which waits for the auth route) waits about
+     *                                 5 seconds (5 to 6) for the signature before it is refused. It does not help a site where nobody joins a
+     *                                 private or presence channel: list its public channels (publicChannels) instead
      */
     public function __construct(
         public readonly string $appKey,
@@ -68,6 +79,7 @@ final class GatewayConfig
         public readonly int $maxStrikes = 8,
         public readonly int $maxPublicChannels = 512,
         public readonly ?array $publicChannels = null,
+        ?int $publicChannelsReserved = null,
     ) {
         if (preg_match('/\A[A-Za-z0-9._-]{1,64}\z/', $appKey) !== 1) {
             throw new \InvalidArgumentException('appKey must be 1 to 64 letters, digits, dots, dashes or underscores');
@@ -101,6 +113,13 @@ final class GatewayConfig
             );
         }
         $this->messageBurst = $burst;
+        // A quarter of the budget by default, never all of it: anonymous visitors must keep some names, or a site whose users
+        // are all anonymous would have none.
+        $reserved = $publicChannelsReserved ?? intdiv($maxPublicChannels, 4);
+        if ($reserved < 0 || $reserved >= $maxPublicChannels) {
+            throw new \InvalidArgumentException('publicChannelsReserved must be between 0 and maxPublicChannels - 1');
+        }
+        $this->publicChannelsReserved = $reserved;
         [$this->publicExact, $this->publicPrefixes] = self::parsePublicChannels($publicChannels);
     }
 
