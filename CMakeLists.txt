@@ -10,7 +10,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
 endif()
 
 project(wsrv
-    VERSION 1.0.0
+    VERSION 1.1.0
     DESCRIPTION "From-scratch C++23 WebSocket (RFC 6455) server core"
     LANGUAGES CXX)
 
