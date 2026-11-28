@@ -1,8 +1,8 @@
 # ADR-0043: A message that can never be sent is refused, not dropped
 
-- Status: **Proposed** (2026-11-27), for the owner to accept (the project owner moves Proposed to Accepted). Drafted by the maintainer assistant on the advisor's recommendation, under the owner's standing instruction that design questions go to the advisor and that a failure that can happen is fixed before it happens. Found by an independent review of the Echo operations branch (ADR-0042 A2).
+- Status: **Accepted** (2026-11-27, by the project owner). Drafted by the maintainer assistant on the advisor's recommendation, under the owner's standing instruction that design questions go to the advisor and that a failure that can happen is fixed before it happens. Found by an independent review of the Echo operations branch (ADR-0042 A2).
 - Date: 2026-11-27
-- Deciders: maintainer assistant (advisor's recommendation); the owner accepts, and is asked in the pull request
+- Deciders: maintainer assistant (advisor's recommendation); accepted by the project owner
 
 ## Context
 Each connection has an outbound queue of `max_queued_bytes`, and every queued message costs its payload plus 16 bytes (`kMessageOverhead`). `OutboundScheduler::can_enqueue` therefore refuses, with `BufferFull` ("can never fit"), a message larger than `max_queued_bytes - 16` however empty the queue is.
