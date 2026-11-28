@@ -11,5 +11,5 @@ namespace Wsrv;
  */
 final class Version
 {
-    public const PACKAGE = '1.0.0';
+    public const PACKAGE = '1.1.0';
 }
