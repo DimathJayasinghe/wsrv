@@ -12,9 +12,7 @@ MessageWriter::MessageWriter(MessageWriter&& other) noexcept
 
 MessageWriter& MessageWriter::operator=(MessageWriter&& other) noexcept {
     if (this != &other) {
-        if (open()) {
-            sink()->stream_abandon();  // the message we are replacing can no longer be finished
-        }
+        abandon_if_open();  // the message we are replacing can no longer be finished
         link_ = std::move(other.link_);
         finished_ = other.finished_;
         other.link_.reset();
@@ -23,8 +21,18 @@ MessageWriter& MessageWriter::operator=(MessageWriter&& other) noexcept {
 }
 
 MessageWriter::~MessageWriter() {
-    if (open()) {
-        sink()->stream_abandon();
+    abandon_if_open();
+}
+
+void MessageWriter::abandon_if_open() noexcept {
+    // The sink is read once and the pointer that was tested is the one used: asking sink() twice
+    // (as open() followed by sink()->... did) is a second read that GCC 15 cannot prove is the
+    // same non-null pointer (-Wnull-dereference).
+    if (finished_) {
+        return;
+    }
+    if (IMessageSink* const target = sink()) {
+        target->stream_abandon();
     }
 }
 

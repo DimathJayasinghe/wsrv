@@ -75,6 +75,8 @@ private:
     [[nodiscard]] IMessageSink* sink() const noexcept {
         return link_ != nullptr ? link_->sink : nullptr;
     }
+    /// Tell the connection this message will never be finished, if it is still open.
+    void abandon_if_open() noexcept;
 
     std::shared_ptr<StreamLink> link_;
     bool finished_ = false;
