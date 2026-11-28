@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/svg/wsrv-horizontal-white.svg">
+    <img src="docs/brand/svg/wsrv-horizontal.svg" alt="wsrv" width="260">
+  </picture>
+</p>
+
 # wsrv: a WebSocket server for PHP, with a C++ core
 
 Hold thousands of WebSocket connections in one small daemon and write the logic in PHP (or any

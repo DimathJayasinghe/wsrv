@@ -21,6 +21,7 @@ Reading order for newcomers: **PROJECT_PLAN → REQUIREMENTS → ARCHITECTURE �
 | [UPGRADING.md](UPGRADING.md) | What to do when moving from one release to the next (1.0 to 1.1: the publish token rule) |
 | [OPERATIONS.md](OPERATIONS.md) | Config, logging, metrics, lifecycle, hardening |
 | [BENCHMARKS.md](BENCHMARKS.md) | wsrv against Workerman, Swoole and Reverb: numbers, noise, limits, how to rerun |
+| [brand/](brand/README.md) | The logo, its colours, clear space and minimum sizes; masters, favicons and web icons |
 | [adr/](adr/) | Architecture decision records |
 | [learning/](learning/) | Lessons written as we build: what, why, how |
 
