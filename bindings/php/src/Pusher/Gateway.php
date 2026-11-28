@@ -44,7 +44,8 @@ final class Gateway
     private const CLOSE_RETRY_SECONDS = 1.0;
     private const CLOSE_RETRIES_PER_CALL = 64;
     /**
-     * How long a public join waits for its connection to prove who it is (ADR-0042 A4), when only the part of the public-name
+     * How long a public join waits for its connection to prove who it is (ADR-0042 A4; the expiry runs on a one-second tick, so a
+     * refusal comes 5 to 6 seconds in), when only the part of the public-name
      * budget kept for such connections is left. pusher-js sends the subscribe of a public channel at once, but the subscribe of a
      * private one only after the page's own HTTP call to the auth route has come back, so on a signed-in page the public join always
      * arrives first and must be able to wait for that call. A constant: it has to cover a slow auth route and no more.

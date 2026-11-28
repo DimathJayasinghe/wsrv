@@ -1591,7 +1591,7 @@ test('pusher gateway: a public join that arrives before the signed one waits for
     $s2 = open_conn($gw, $link, 2);
     join_channel($gw, $link, 1, $s1, 'a');
     join_channel($gw, $link, 1, $s1, 'b');
-    // pusher-js sends the subscribe of every channel of a page in the order the app declared them: here the public one first
+    // pusher-js sends a public subscribe at once and a private one only after the page's HTTP call to the auth route returns: the public one first
     $link->clear();
     $before = count($link->frames(2));
     $gw->received(2, subscribe_frame('news', $s2));

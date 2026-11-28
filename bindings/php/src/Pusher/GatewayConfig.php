@@ -60,8 +60,8 @@ final class GatewayConfig
      *                                 `maxPublicChannels - publicChannelsReserved` names and no more, and a signed-in user can still open a new
      *                                 one. 0 keeps the rule of 1.1.0 (anonymous visitors may use the whole budget); at most
      *                                 maxPublicChannels - 1; null means a quarter of maxPublicChannels (ADR-0042 A4). A public join that
-     *                                 comes first (pusher-js sends it before the private one, which waits for the auth route) waits up to
-     *                                 5 seconds for the signature before it is refused. It does not help a site where nobody joins a
+     *                                 comes first (pusher-js sends it before the private one, which waits for the auth route) waits about
+     *                                 5 seconds (5 to 6) for the signature before it is refused. It does not help a site where nobody joins a
      *                                 private or presence channel: list its public channels (publicChannels) instead
      */
     public function __construct(
