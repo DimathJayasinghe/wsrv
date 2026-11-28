@@ -158,7 +158,7 @@ std::optional<Result<void>> EmbeddedConfig::set_more_key(std::string_view key,
     return std::nullopt;
 }
 
-EmbeddedConfig::EmbeddedConfig() noexcept {
+EmbeddedConfig::EmbeddedConfig() {
     server_.session.outbound.max_queued_bytes = 2 * server_.session.assembler.max_message_size;
 }
 

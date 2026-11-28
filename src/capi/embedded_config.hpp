@@ -98,7 +98,7 @@ public:
     /// The outbound queue starts at twice max_message_size, the rule set_max_message_size() applies
     /// when the key is given (ADR-0043): without it the queue was as large as the biggest message,
     /// and a maximum-size message could be received but never sent back.
-    EmbeddedConfig() noexcept;
+    EmbeddedConfig();
 
     /// @return Error{InvalidConfig} for an unknown key or a malformed value; nothing changes then.
     [[nodiscard]] Result<void> set(std::string_view key, std::string_view value);
