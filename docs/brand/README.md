@@ -3,7 +3,7 @@
 ## 1. The logo
 - **Idea**: a circle (the browser) and a square (the server) share a window: the connection between them. One flat shape with one real hole.
 - **Versions**: horizontal (primary) · stacked · symbol · wordmark. Ink on light, white on dark. The *lit* version (amber window) is optional, for places with room: app icon, docs header, social card.
-- **Files**: `svg/` masters (use these; the README uses `wsrv-horizontal.svg` and, on a dark theme, `wsrv-horizontal-white.svg`) · `web/` favicon, Apple touch icon, PWA icons, manifest and the `<head>` snippet · `variants/` one-colour black, brand-colour, square and app-icon versions.
+- **Files**: `svg/` masters (use these; the README uses `wsrv-horizontal.svg` and, on a dark theme, `wsrv-horizontal-white.svg`) · `web/` favicon, Apple touch icon, PWA icons, manifest and the `<head>` snippet · `variants/` one-colour black, brand-colour, square and app-icon versions. `social-preview.png` (1280x640) is the image for the repository's social preview (GitHub: Settings, General, Social preview).
 
 ## 2. Clear space
 Keep a clear zone of **1 × the circle's radius** (about 27 % of the symbol's height) on every side. The zone scales with the logo.
