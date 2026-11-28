@@ -52,7 +52,7 @@ $settle = function (float $seconds = 0.25) use ($worker): void {
 $browser = function () use ($port, $settle): array {
     $ws = ws_connect($port, '', '/app/' . KEY . '?protocol=7&client=js&version=8.4.0&flash=false');
     $settle();
-    $hello = pusher_read($ws);
+    $hello = pusher_read_pumped($ws);
     assertSame('pusher:connection_established', $hello['event']);
     return [$ws, $hello['data']['socket_id']];
 };
@@ -70,13 +70,14 @@ function pusher_read($ws): array
 }
 
 /**
- * Like pusher_read(), but runs the worker while it waits for the frame: one the worker has yet to
- * produce is waited for (up to $seconds), not missed because a fixed sleep was too short on a slow
- * sanitizer build. stream_select() does not see the bytes PHP has already buffered, hence unread_bytes.
+ * Run the worker until $ws has bytes to read, or fail after $seconds. A frame the worker has yet to produce is
+ * waited for, not missed because a fixed stretch of stepping was too short on a loaded machine or a slow
+ * sanitizer build: with nobody stepping the worker, a blocking read just waits for its timeout.
+ * stream_select() does not see the bytes PHP has already buffered, hence unread_bytes.
  *
  * @param resource $ws
  */
-function pusher_read_when_ready($ws, Worker $worker, float $seconds = 10.0): array
+function wait_readable($ws, Worker $worker, float $seconds = 10.0): void
 {
     $deadline = microtime(true) + $seconds;
     while (stream_get_meta_data($ws)['unread_bytes'] === 0) {
@@ -89,7 +90,41 @@ function pusher_read_when_ready($ws, Worker $worker, float $seconds = 10.0): arr
         assertTrue(microtime(true) < $deadline, "no frame within $seconds seconds");
         $worker->step(0.02);
     }
+}
+
+/**
+ * Like pusher_read(), but runs the worker while it waits for the frame (see wait_readable()).
+ *
+ * @param resource $ws
+ */
+function pusher_read_when_ready($ws, Worker $worker, float $seconds = 10.0): array
+{
+    wait_readable($ws, $worker, $seconds);
     return pusher_read($ws);
+}
+
+/**
+ * pusher_read_when_ready() for the test's main worker ($worker, which most checks use).
+ *
+ * @param resource $ws
+ */
+function pusher_read_pumped($ws): array
+{
+    global $worker;
+    return pusher_read_when_ready($ws, $worker);
+}
+
+/**
+ * ws_read() for the main worker: waits for the first byte while running it (a close frame, say).
+ *
+ * @param resource $ws
+ * @return array{0:int, 1:string}
+ */
+function ws_read_pumped($ws): array
+{
+    global $worker;
+    wait_readable($ws, $worker);
+    return ws_read($ws);
 }
 
 /** @param resource $ws */
@@ -130,19 +165,19 @@ $check('the socket id names the connection the daemon knows', function () use ($
 $check('ping is answered with pong', function () use ($a, $settle) {
     ws_send($a, 1, '{"event":"pusher:ping"}');
     $settle();
-    assertSame('pusher:pong', pusher_read($a)['event']);
+    assertSame('pusher:pong', pusher_read_pumped($a)['event']);
 });
 
 $check('a public channel: subscribe, then a Laravel-style broadcast arrives', function () use ($a, $settle, $publisher) {
     pusher_send($a, 'pusher:subscribe', ['channel' => 'orders']);
     $settle();
-    $ok = pusher_read($a);
+    $ok = pusher_read_pumped($a);
     assertSame('pusher_internal:subscription_succeeded', $ok['event']);
     assertSame('orders', $ok['channel']);
     $frame = json_encode(['event' => 'OrderShipped', 'data' => json_encode(['id' => 7]), 'channel' => 'orders']);
     $result = $publisher->publish('orders', $frame);
     assertSame(1, $result->subscribers);
-    $got = pusher_read($a);
+    $got = pusher_read_pumped($a);
     assertSame('OrderShipped', $got['event']);
     assertSame(['id' => 7], $got['data']);
 });
@@ -150,20 +185,20 @@ $check('a public channel: subscribe, then a Laravel-style broadcast arrives', fu
 $check('a private channel needs the right signature', function () use ($a, $b, $sockA, $sockB, $settle) {
     pusher_send($b, 'pusher:subscribe', ['channel' => 'private-chat.1', 'auth' => sign($sockA, 'private-chat.1')]);
     $settle();
-    $err = pusher_read($b);
+    $err = pusher_read_pumped($b);
     assertSame('pusher:error', $err['event']);
     assertSame(4009, $err['data']['code']);
     pusher_send($a, 'pusher:subscribe', ['channel' => 'private-chat.1', 'auth' => sign($sockA, 'private-chat.1')]);
     pusher_send($b, 'pusher:subscribe', ['channel' => 'private-chat.1', 'auth' => sign($sockB, 'private-chat.1')]);
     $settle();
-    assertSame('pusher_internal:subscription_succeeded', pusher_read($a)['event']);
-    assertSame('pusher_internal:subscription_succeeded', pusher_read($b)['event']);
+    assertSame('pusher_internal:subscription_succeeded', pusher_read_pumped($a)['event']);
+    assertSame('pusher_internal:subscription_succeeded', pusher_read_pumped($b)['event']);
 });
 
 $check('a whisper reaches the other member and not the sender', function () use ($a, $b, $settle) {
     pusher_send($a, 'client-typing', ['who' => 'ada'], 'private-chat.1');
     $settle();
-    $got = pusher_read($b);
+    $got = pusher_read_pumped($b);
     assertSame('client-typing', $got['event']);
     assertSame('private-chat.1', $got['channel']);
     assertSame(['who' => 'ada'], $got['data']);
@@ -171,14 +206,14 @@ $check('a whisper reaches the other member and not the sender', function () use 
     // A had nothing queued: the next thing it sees is the answer to its ping.
     ws_send($a, 1, '{"event":"pusher:ping"}');
     $settle();
-    assertSame('pusher:pong', pusher_read($a)['event']);
+    assertSame('pusher:pong', pusher_read_pumped($a)['event']);
 });
 
 $check('toOthers: a broadcast keeps the sender out through its socket id', function () use ($a, $b, $sockA, $publisher, $settle) {
     $frame = json_encode(['event' => 'Msg', 'data' => '{}', 'channel' => 'private-chat.1']);
     $result = $publisher->publish('private-chat.1', $frame, false, SocketId::connection($sockA));
     assertSame(1, $result->subscribers);
-    assertSame('Msg', pusher_read($b)['event']);
+    assertSame('Msg', pusher_read_pumped($b)['event']);
 });
 
 $check('presence: members, member_added, member_removed over a real daemon', function () use ($port, $a, $b, $sockA, $sockB, $settle) {
@@ -186,26 +221,26 @@ $check('presence: members, member_added, member_removed over a real daemon', fun
     $dataB = json_encode(['user_id' => '2', 'user_info' => ['name' => 'Bob']]);
     pusher_send($a, 'pusher:subscribe', ['channel' => 'presence-room', 'auth' => sign($sockA, 'presence-room', $dataA), 'channel_data' => $dataA]);
     $settle();
-    $ok = pusher_read($a);
+    $ok = pusher_read_pumped($a);
     assertSame(1, $ok['data']['presence']['count']);
     pusher_send($b, 'pusher:subscribe', ['channel' => 'presence-room', 'auth' => sign($sockB, 'presence-room', $dataB), 'channel_data' => $dataB]);
     $settle();
-    $added = pusher_read($a);
+    $added = pusher_read_pumped($a);
     assertSame('pusher_internal:member_added', $added['event']);
     assertSame(['user_id' => '2', 'user_info' => ['name' => 'Bob']], $added['data']);
-    $okB = pusher_read($b);
+    $okB = pusher_read_pumped($b);
     assertSame(2, $okB['data']['presence']['count']);
     assertSame(['name' => 'Ada'], $okB['data']['presence']['hash']['1']);
 
     [$c, ] = [ws_connect($port, '', '/app/' . KEY), null];
     $settle();
-    pusher_read($c);                                            // connection_established
+    pusher_read_pumped($c);                                            // connection_established
     fclose($c);                                                 // a browser that is not a member just goes away
     $settle();
 
     pusher_send($b, 'pusher:unsubscribe', ['channel' => 'presence-room']);
     $settle();
-    $removed = pusher_read($a);
+    $removed = pusher_read_pumped($a);
     assertSame('pusher_internal:member_removed', $removed['event']);
     assertSame(['user_id' => '2'], $removed['data']);
 });
@@ -213,16 +248,16 @@ $check('presence: members, member_added, member_removed over a real daemon', fun
 $check('a closed browser is removed from presence and told to nobody', function () use ($a, $sockA, $port, $settle) {
     [$d, $sockD] = [ws_connect($port, '', '/app/' . KEY), null];
     $settle();
-    $hello = pusher_read($d);
+    $hello = pusher_read_pumped($d);
     $sockD = $hello['data']['socket_id'];
     $dataD = json_encode(['user_id' => '9']);
     pusher_send($d, 'pusher:subscribe', ['channel' => 'presence-room', 'auth' => sign($sockD, 'presence-room', $dataD), 'channel_data' => $dataD]);
     $settle();
-    assertSame('pusher_internal:subscription_succeeded', pusher_read($d)['event']);
-    assertSame('pusher_internal:member_added', pusher_read($a)['event']);
+    assertSame('pusher_internal:subscription_succeeded', pusher_read_pumped($d)['event']);
+    assertSame('pusher_internal:member_added', pusher_read_pumped($a)['event']);
     fclose($d);
     $settle(0.5);
-    $removed = pusher_read($a);
+    $removed = pusher_read_pumped($a);
     assertSame('pusher_internal:member_removed', $removed['event']);
     assertSame(['user_id' => '9'], $removed['data']);
 });
@@ -234,7 +269,7 @@ $check('a repeated presence subscribe is answered with the members who are in no
     $again = function () use ($a, $sockA, $dataA, $settle): array {
         pusher_send($a, 'pusher:subscribe', ['channel' => 'presence-room', 'auth' => sign($sockA, 'presence-room', $dataA), 'channel_data' => $dataA]);
         $settle();
-        $f = pusher_read($a);
+        $f = pusher_read_pumped($a);
         assertSame('pusher_internal:subscription_succeeded', $f['event']);
         assertSame('presence-room', $f['channel']);
         return $f['data']['presence']['ids'];
@@ -245,19 +280,19 @@ $check('a repeated presence subscribe is answered with the members who are in no
     $dataE = json_encode(['user_id' => '7']);
     pusher_send($e, 'pusher:subscribe', ['channel' => 'presence-room', 'auth' => sign($sockE, 'presence-room', $dataE), 'channel_data' => $dataE]);
     $settle();
-    assertSame(['1', '7'], pusher_read($e)['data']['presence']['ids']);
-    assertSame('pusher_internal:member_added', pusher_read($a)['event']);
+    assertSame(['1', '7'], pusher_read_pumped($e)['data']['presence']['ids']);
+    assertSame('pusher_internal:member_added', pusher_read_pumped($a)['event']);
     assertSame(['1', '7'], $again(), 'a member who came is in the answer');
     fclose($e);
     $settle(0.5);
-    assertSame('pusher_internal:member_removed', pusher_read($a)['event']);
+    assertSame('pusher_internal:member_removed', pusher_read_pumped($a)['event']);
     assertSame(['1'], $again(), 'and out of it again when they left');
 });
 
 $check('hostile input: bad frames are answered, strikes close the connection, the daemon stays up', function () use ($port, $settle) {
     $x = ws_connect($port, '', '/app/' . KEY);
     $settle();
-    pusher_read($x);
+    pusher_read_pumped($x);
     for ($i = 0; $i < 8; $i++) {
         ws_send($x, 1, 'not json ' . $i);
     }
@@ -265,7 +300,7 @@ $check('hostile input: bad frames are answered, strikes close the connection, th
     $errors = 0;
     $closed = false;
     for ($i = 0; $i < 12 && !$closed; $i++) {
-        [$op, $payload] = ws_read($x);
+        [$op, $payload] = ws_read_pumped($x);
         if ($op === 8) {
             $closed = true;
             assertSame(1008, unpack('n', substr($payload, 0, 2))[1]);
@@ -281,26 +316,26 @@ $check('hostile input: bad frames are answered, strikes close the connection, th
 $check('a message over the daemon size limit closes only that connection', function () use ($port, $a, $settle) {
     $y = ws_connect($port, '', '/app/' . KEY);
     $settle();
-    pusher_read($y);
+    pusher_read_pumped($y);
     ws_send($y, 1, str_repeat('x', 20000));
     $settle();
-    [$op, $payload] = ws_read($y);
+    [$op, $payload] = ws_read_pumped($y);
     assertSame(8, $op);
     assertSame(1009, unpack('n', substr($payload, 0, 2))[1]);
     fclose($y);
     ws_send($a, 1, '{"event":"pusher:ping"}');
     $settle();
-    assertSame('pusher:pong', pusher_read($a)['event']);
+    assertSame('pusher:pong', pusher_read_pumped($a)['event']);
 });
 
 $check('channel quota: the fifth channel is refused with LimitReached', function () use ($a, $settle) {
     // a already holds orders, private-chat.1 and presence-room; one more fits
     pusher_send($a, 'pusher:subscribe', ['channel' => 'c1']);
     $settle();
-    assertSame('pusher_internal:subscription_succeeded', pusher_read($a)['event']);
+    assertSame('pusher_internal:subscription_succeeded', pusher_read_pumped($a)['event']);
     pusher_send($a, 'pusher:subscribe', ['channel' => 'c2']);
     $settle();
-    $f = pusher_read($a);
+    $f = pusher_read_pumped($a);
     assertSame('pusher:subscription_error', $f['event']);
     assertSame('LimitReached', $f['data']['type']);
 });
@@ -344,7 +379,7 @@ $check('the defaults carry a page that subscribes to 64 channels at once, and th
     [$ws, $head] = ws_finish($pending);
     assertTrue(str_starts_with($head, 'HTTP/1.1 101'), 'upgrade: ' . strtok($head, "\r\n"));
     $strictSettle();
-    assertSame('pusher:connection_established', pusher_read($ws)['event']);
+    assertSame('pusher:connection_established', pusher_read_when_ready($ws, $strictWorker)['event']);
     for ($i = 0; $i < 64; $i++) {
         pusher_send($ws, 'pusher:subscribe', ['channel' => "burst.$i"]);
     }
@@ -389,7 +424,7 @@ $check('a member list too large for the daemon frame fails that join alone: the 
     for ($i = 1; $i <= 6; $i++) {
         $ws = ws_connect($small['port'], '', $path);
         $step();
-        $socketId = pusher_read($ws)['data']['socket_id'];
+        $socketId = pusher_read_when_ready($ws, $smallWorker)['data']['socket_id'];
         $data = json_encode(['user_id' => "u$i", 'user_info' => ['bio' => $info]], JSON_THROW_ON_ERROR);
         pusher_send($ws, 'pusher:subscribe', [
             'channel' => 'presence-big', 'auth' => sign($socketId, 'presence-big', $data), 'channel_data' => $data,
@@ -434,7 +469,7 @@ $check('a member list too large for the daemon frame fails that join alone: the 
     // The worker's link survived: a new browser is still answered, and the room has exactly the members who fit.
     $late = ws_connect($small['port'], '', $path);
     $step();
-    assertSame('pusher:connection_established', pusher_read($late)['event']);
+    assertSame('pusher:connection_established', pusher_read_when_ready($late, $smallWorker)['event']);
     $stats = $smallGateway->stats();
     assertSame(count($in), $stats->joins, 'only the joins that were answered are counted');
     assertSame(count($refused), $stats->subscriptionErrors);
@@ -477,7 +512,7 @@ $check('a member list over what the daemon can send to a browser fails that join
     for ($i = 1; $i <= 36; $i++) {
         $ws = ws_connect($queue['port'], '', $path);
         $step(0.1);
-        $socketId = pusher_read($ws)['data']['socket_id'];
+        $socketId = pusher_read_when_ready($ws, $queueWorker)['data']['socket_id'];
         $data = json_encode(['user_id' => "u$i", 'user_info' => ['bio' => $info]], JSON_THROW_ON_ERROR);
         pusher_send($ws, 'pusher:subscribe', [
             'channel' => 'presence-q', 'auth' => sign($socketId, 'presence-q', $data), 'channel_data' => $data,
@@ -531,10 +566,10 @@ $check('sixteen anonymous connections joining 64 public names each cannot keep a
             $openWorker->step(0.05);
         }
     };
-    $connect = function () use ($open, $path, $step): array {
+    $connect = function () use ($open, $path, $step, $openWorker): array {
         $ws = ws_connect($open['port'], '', $path);
         $step();
-        return [$ws, pusher_read($ws)['data']['socket_id']];
+        return [$ws, pusher_read_when_ready($ws, $openWorker)['data']['socket_id']];
     };
     $attackers = [];
     for ($a = 0; $a < 16; $a++) {
