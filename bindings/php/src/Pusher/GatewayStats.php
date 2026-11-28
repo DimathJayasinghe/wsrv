@@ -60,8 +60,8 @@ final class GatewayStats
         public readonly int $publicDenied,
         /**
          * Joins of a new public name refused because `max_public_channels` names were already held, or, for a connection that has
-         * not proved who it is, `max_public_channels - public_channels_reserved` (answer: LimitReached; no
-         * strike). Rising means anonymous browsers are using the budget: a flood of names, or a site that needs a larger one.
+         * not proved who it is, `max_public_channels - public_channels_reserved` and no signature came within a few seconds (answer:
+         * LimitReached; no strike). Rising means anonymous browsers are using the budget: a flood of names, or a site that needs a larger one.
          */
         public readonly int $publicRefused,
     ) {

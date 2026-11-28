@@ -29,7 +29,7 @@ What to do when you move from one release to the next. The full list of changes 
 
 **One default that changed without a setting:** the official image no longer sets `WSRVD_IPC_SOCKET`; the built-in default path is the same (`/run/wsrv/ipc.sock`) and applies when neither `ipc_socket` nor `ipc_port` is set, so every existing way of running the image behaves as before.
 
-**If you adopt Laravel Echo, read this first:** public channels need no signature, so the gateway limits them (`max_public_channels`, default 512), and a site that knows its public channel names should list them (`public_channels`); unset means any name. The daemon's `broker_max_topics` (1 024 by default) is global and must be sized for a channel per user. Both are in section 2 of the Echo guide, with the numbers.
+**If you adopt Laravel Echo, read this first:** public channels need no signature, so the gateway limits them (`max_public_channels`, default 512), a quarter of that budget is kept for signed-in users (`public_channels_reserved`), and a site that knows its public channel names should list them (`public_channels`); unset means any name. The daemon's `broker_max_topics` (1 024 by default) is global and must be sized for a channel per user. Both are in section 2 of the Echo guide, with the numbers.
 
 ## Rolling back
 

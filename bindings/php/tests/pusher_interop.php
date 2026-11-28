@@ -77,7 +77,7 @@ function pusher_read($ws): array
  *
  * @param resource $ws
  */
-function wait_readable($ws, Worker $worker, float $seconds = 10.0): void
+function wait_readable($ws, Worker $worker, float $seconds = 10.0, ?Gateway $gateway = null): void
 {
     $deadline = microtime(true) + $seconds;
     while (stream_get_meta_data($ws)['unread_bytes'] === 0) {
@@ -89,6 +89,7 @@ function wait_readable($ws, Worker $worker, float $seconds = 10.0): void
         }
         assertTrue(microtime(true) < $deadline, "no frame within $seconds seconds");
         $worker->step(0.02);
+        $gateway?->expireParked();   // what the timer of Worker::run() does; step() runs no timers
     }
 }
 
@@ -97,9 +98,9 @@ function wait_readable($ws, Worker $worker, float $seconds = 10.0): void
  *
  * @param resource $ws
  */
-function pusher_read_when_ready($ws, Worker $worker, float $seconds = 10.0): array
+function pusher_read_when_ready($ws, Worker $worker, float $seconds = 10.0, ?Gateway $gateway = null): array
 {
-    wait_readable($ws, $worker, $seconds);
+    wait_readable($ws, $worker, $seconds, $gateway);
     return pusher_read($ws);
 }
 
@@ -566,10 +567,13 @@ $check('sixteen anonymous connections joining 64 public names each cannot keep a
             $openWorker->step(0.05);
         }
     };
-    $connect = function () use ($open, $path, $step, $openWorker): array {
+    // A public join over the part of the budget kept for signed-in users waits for a signature and is refused after 5 seconds
+    // (ADR-0042 A4), and step() runs no timers: every read here runs the gateway's expiry as Worker::run() would.
+    $read = fn ($ws): array => pusher_read_when_ready($ws, $openWorker, 20.0, $openGateway);
+    $connect = function () use ($open, $path, $step, $read): array {
         $ws = ws_connect($open['port'], '', $path);
         $step();
-        return [$ws, pusher_read_when_ready($ws, $openWorker)['data']['socket_id']];
+        return [$ws, $read($ws)['data']['socket_id']];
     };
     $attackers = [];
     for ($a = 0; $a < 16; $a++) {
@@ -583,7 +587,7 @@ $check('sixteen anonymous connections joining 64 public names each cannot keep a
     $refused = 0;
     foreach ($attackers as $ws) {
         for ($j = 0; $j < 64; $j++) {
-            $f = pusher_read_when_ready($ws, $openWorker);
+            $f = $read($ws);
             if ($f['event'] === 'pusher_internal:subscription_succeeded') {
                 $joined++;
             } else {
@@ -601,34 +605,54 @@ $check('sixteen anonymous connections joining 64 public names each cannot keep a
     [$user, $userSocket] = $connect();
     $data = json_encode(['user_id' => '7', 'user_info' => ['name' => 'Ada']], JSON_THROW_ON_ERROR);
     pusher_send($user, 'pusher:subscribe', ['channel' => 'private-user.7', 'auth' => sign($userSocket, 'private-user.7')]);
-    $f = pusher_read_when_ready($user, $openWorker);
+    $f = $read($user);
     assertSame('pusher_internal:subscription_succeeded', $f['event'], "private-user.7 after $joined anonymous joins: " . json_encode($f));
     pusher_send($user, 'pusher:subscribe', ['channel' => 'presence-room.1', 'auth' => sign($userSocket, 'presence-room.1', $data), 'channel_data' => $data]);
-    $f = pusher_read_when_ready($user, $openWorker);
+    $f = $read($user);
     assertSame('pusher_internal:subscription_succeeded', $f['event'], 'presence-room.1: ' . json_encode($f));
 
     // A name somebody already holds stays joinable when the budget of new names is used up: it costs no topic.
     pusher_send($user, 'pusher:subscribe', ['channel' => 'flood.0.0']);
-    $f = pusher_read_when_ready($user, $openWorker);
+    $f = $read($user);
     assertSame('pusher_internal:subscription_succeeded', $f['event'], 'a name that is held: ' . json_encode($f));
 
     // A new public name: refused for another anonymous visitor (the budget that is not kept back is used up), admitted for
     // the signed-in user, whose signature on private-user.7 verified (ADR-0042 A4).
     [$late] = $connect();
     pusher_send($late, 'pusher:subscribe', ['channel' => 'news.late']);
-    $f = pusher_read_when_ready($late, $openWorker);
+    $f = $read($late);
     assertSame('pusher:subscription_error', $f['event'], 'a new name for an anonymous visitor: ' . json_encode($f));
     assertSame('LimitReached', $f['data']['type']);
     pusher_send($user, 'pusher:subscribe', ['channel' => 'news.user']);
-    $f = pusher_read_when_ready($user, $openWorker);
+    $f = $read($user);
     assertSame('pusher_internal:subscription_succeeded', $f['event'], 'a new name for a signed-in user: ' . json_encode($f));
+
+    // The order pusher-js really sends them in: the public subscribe at once, the private one only after the page's own call to the
+    // auth route has come back. The public join waits for the signature, is not answered meanwhile, and is admitted with it.
+    [$second, $secondSocket] = $connect();
+    pusher_send($second, 'pusher:subscribe', ['channel' => 'news.first']);
+    $step(0.5);                                            // a slow auth route
+    $readable = [$second];
+    $noWrite = null;
+    $noExcept = null;
+    assertSame(0, stream_select($readable, $noWrite, $noExcept, 0, 0), 'nothing is answered while the join waits');
+    assertSame(0, stream_get_meta_data($second)['unread_bytes']);
+    pusher_send($second, 'pusher:subscribe', ['channel' => 'private-user.9', 'auth' => sign($secondSocket, 'private-user.9')]);
+    $answers = [$read($second), $read($second)];
+    $names = array_map(static fn (array $f): string => $f['channel'] ?? '', $answers);
+    sort($names);
+    assertSame(['news.first', 'private-user.9'], $names, 'both joins answered: ' . json_encode($answers));
+    foreach ($answers as $f) {
+        assertSame('pusher_internal:subscription_succeeded', $f['event'], json_encode($f));
+    }
 
     // What the operator sees: the refusals are the gateway's own, not the daemon's.
     $stats = $openGateway->stats();
     assertSame(0, $stats->daemonRefused, 'the daemon refused nothing: the gateway kept the anonymous joins inside its budget');
     assertSame($refused + 1, $stats->publicRefused);
-    assertSame($joined + 1, $stats->publicChannels);
+    assertSame($joined + 2, $stats->publicChannels, 'news.user and news.first');
 
+    fclose($second);
     fclose($late);
     fclose($user);
     foreach ($attackers as $ws) {
