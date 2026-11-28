@@ -3,6 +3,8 @@
 
 declare(strict_types=1);
 
+use Wsrv\Pusher\ChannelKind;
+use Wsrv\Pusher\ChannelName;
 use Wsrv\Pusher\Gateway;
 use Wsrv\Pusher\GatewayConfig;
 use Wsrv\Pusher\Link;
@@ -185,6 +187,58 @@ test('pusher config: a weak secret, an odd key or a nonsense bound is refused', 
     assertThrows(InvalidArgumentException::class, fn () => new GatewayConfig(GW_KEY, GW_SECRET, activityTimeout: 5));
 });
 
+test('pusher config: publicChannels takes public names and trailing-star prefixes, maxPublicChannels a bound (ADR-0042 A3)', function () {
+    $default = new GatewayConfig(GW_KEY, GW_SECRET);
+    assertSame(null, $default->publicChannels, 'unset means any public channel');
+    assertSame(512, $default->maxPublicChannels);
+    assertSame([], (new GatewayConfig(GW_KEY, GW_SECRET, publicChannels: []))->publicChannels, 'an empty list means none');
+    $names = ['news', 'orders.*', 'a/b:c@d-e.f', str_repeat('n', 128), str_repeat('p', 127) . '*'];
+    assertSame($names, (new GatewayConfig(GW_KEY, GW_SECRET, publicChannels: $names))->publicChannels);
+    $bad = [
+        'an empty name' => [''],
+        'a star alone would be "any": write null' => ['*'],
+        'two stars' => ['news**'],
+        'a star inside' => ['a*b'],
+        'a star in front' => ['*news'],
+        'a private name' => ['private-x'],
+        'a presence name' => ['presence-x'],
+        'a prefix that is private' => ['private-*'],
+        'a prefix that is presence' => ['presence-*'],
+        'a cache channel' => ['cache-x'],
+        'a cache prefix' => ['cache-*'],
+        'a space' => ['a b'],
+        'an equals sign (Pusher allows it, wsrv does not)' => ['a=b'],
+        'a name of 129 bytes' => [str_repeat('a', 129)],
+        'a prefix that makes 129 bytes' => [str_repeat('a', 128) . '*'],
+        'an integer' => [5],
+        'a null entry' => ['news', null],
+        'an array entry' => [['news']],
+        'not a list' => ['x' => 'news'],
+        'more than 1000 entries' => array_map(static fn (int $i): string => "n$i", range(1, 1001)),
+    ];
+    foreach ($bad as $why => $list) {
+        assertThrows(InvalidArgumentException::class, fn () => new GatewayConfig(GW_KEY, GW_SECRET, publicChannels: $list), $why);
+    }
+    new GatewayConfig(GW_KEY, GW_SECRET, publicChannels: array_map(static fn (int $i): string => "n$i", range(1, 1000)));
+    assertThrows(InvalidArgumentException::class, fn () => new GatewayConfig(GW_KEY, GW_SECRET, maxPublicChannels: 0));
+    assertThrows(InvalidArgumentException::class, fn () => new GatewayConfig(GW_KEY, GW_SECRET, maxPublicChannels: 1_000_001));
+    assertSame(1, (new GatewayConfig(GW_KEY, GW_SECRET, maxPublicChannels: 1))->maxPublicChannels);
+});
+
+test('pusher config: a public channel is allowed by its exact name or by a listed prefix, and nothing else', function () {
+    $c = new GatewayConfig(GW_KEY, GW_SECRET, publicChannels: ['news', 'product.*', 'a/b']);
+    foreach (['news', 'product.', 'product.7', 'product.7.reviews', 'a/b'] as $name) {
+        assertTrue($c->allowsPublicChannel($name), "$name is allowed");
+    }
+    foreach (['new', 'news.', 'newsx', 'News', 'product', 'produc', 'products', 'xproduct.7', 'a/', 'a/bc', ''] as $name) {
+        assertTrue(!$c->allowsPublicChannel($name), "$name is not allowed");
+    }
+    assertTrue((new GatewayConfig(GW_KEY, GW_SECRET))->allowsPublicChannel('anything.at.all'), 'unset: any');
+    assertTrue(!(new GatewayConfig(GW_KEY, GW_SECRET, publicChannels: []))->allowsPublicChannel('news'), '[]: none');
+    $many = new GatewayConfig(GW_KEY, GW_SECRET, publicChannels: array_map(static fn (int $i): string => "p$i.*", range(1, 1000)));
+    assertTrue($many->allowsPublicChannel('p1000.x') && !$many->allowsPublicChannel('p1001.x'), 'a thousand prefixes');
+});
+
 test('pusher config: the secret does not appear when the object is printed, dumped, encoded or in a stack trace', function () {
     $config = new GatewayConfig(GW_KEY, GW_SECRET);
     assertTrue(!str_contains(print_r($config, true), GW_SECRET), 'print_r');
@@ -209,14 +263,16 @@ test('pusher stats: every field is reported under its own name, in the documente
         'connections' => 1, 'channels' => 2, 'joinsInProgress' => 3, 'presenceChannels' => 4, 'presenceMembers' => 5,
         'memoryBytes' => 6, 'opened' => 7, 'frames' => 8, 'joins' => 9, 'badFrames' => 10, 'unauthorized' => 11,
         'rateLimited' => 12, 'subscriptionErrors' => 13, 'daemonRefused' => 14, 'strikeCloses' => 15,
+        'publicChannels' => 16, 'publicDenied' => 17, 'publicRefused' => 18,
     ];
     $stats = new \Wsrv\Pusher\GatewayStats(...$named);
     assertSame([
         'connections' => 1, 'channels' => 2, 'joins_in_progress' => 3, 'presence_channels' => 4, 'presence_members' => 5,
         'memory_bytes' => 6, 'opened' => 7, 'frames' => 8, 'joins' => 9, 'bad_frames' => 10, 'unauthorized' => 11,
         'rate_limited' => 12, 'subscription_errors' => 13, 'daemon_refused' => 14, 'strike_closes' => 15,
+        'public_channels' => 16, 'public_denied' => 17, 'public_refused' => 18,
     ], $stats->toArray());
-    assertSame('connections=1 channels=2 joins_in_progress=3 presence_channels=4 presence_members=5 memory_bytes=6 opened=7 frames=8 joins=9 bad_frames=10 unauthorized=11 rate_limited=12 subscription_errors=13 daemon_refused=14 strike_closes=15', $stats->line());
+    assertSame('connections=1 channels=2 joins_in_progress=3 presence_channels=4 presence_members=5 memory_bytes=6 opened=7 frames=8 joins=9 bad_frames=10 unauthorized=11 rate_limited=12 subscription_errors=13 daemon_refused=14 strike_closes=15 public_channels=16 public_denied=17 public_refused=18', $stats->line());
 });
 
 test('the app secret and the tokens do not appear when a ConnectionConfig or a Publisher is printed, dumped or serialized', function () {
@@ -1258,13 +1314,234 @@ test('pusher gateway: a repeated subscribe that no longer fits one frame takes t
     assertSame(5, $gw->stats()->presenceMembers);
 });
 
+// ---- public channels: an allowlist and a budget (ADR-0042 A3) -------------------------------------------
+// A public channel needs no signature, and each distinct name is a room in the daemon's broker, whose table is
+// small by default. So the names anonymous browsers can bring in are bounded twice: by an optional list of the
+// names the site really has, and by a budget on how many distinct names are held at once.
+
+/** @return array<string, int> the public names the gateway holds and by how many joins (private state, read for the tests) */
+function held_public(Gateway $gw): array
+{
+    $held = (new ReflectionProperty($gw, 'publicHeld'))->getValue($gw);
+    ksort($held);
+    return $held;
+}
+
+/**
+ * What the per-connection state says the gateway should hold: each public name once for every connection that
+ * is in it and once for every join of it still waiting for the daemon (cancelled or not).
+ *
+ * @return array<string, int>
+ */
+function recount_public(Gateway $gw): array
+{
+    $conns = (new ReflectionProperty($gw, 'conns'))->getValue($gw);
+    $pending = (new ReflectionProperty($gw, 'pending'))->getValue($gw);
+    $held = [];
+    $add = static function (string $name) use (&$held): void {
+        if (ChannelName::kind($name) === ChannelKind::Public) {
+            $held[$name] = ($held[$name] ?? 0) + 1;
+        }
+    };
+    foreach ($conns as $state) {
+        foreach (array_keys($state->channels) as $name) {
+            $add((string) $name);
+        }
+        foreach (array_keys($state->pending) as $request) {
+            $add((string) $pending[$request]['channel']);
+        }
+    }
+    ksort($held);
+    return $held;
+}
+
+test('pusher gateway: public channels are open by default, closed with [], and limited to the listed names and prefixes with a list', function () {
+    [$gw, $link] = gateway();
+    $sock = open_conn($gw, $link, 1);
+    join_channel($gw, $link, 1, $sock, 'whatever.you.like');
+    assertSame('pusher_internal:subscription_succeeded', $link->lastFrame(1)['event'], 'unset means any');
+
+    [$gw, $link] = gateway(['publicChannels' => ['news', 'product.*']]);
+    $sock = open_conn($gw, $link, 1);
+    foreach (['news', 'product.7', 'product.'] as $name) {
+        join_channel($gw, $link, 1, $sock, $name);
+        assertSame('pusher_internal:subscription_succeeded', $link->lastFrame(1)['event'], $name);
+    }
+    $link->clear();
+    foreach (['products', 'news.extra', 'other', 'News'] as $name) {
+        $gw->received(1, subscribe_frame($name, $sock));
+        $f = $link->lastFrame(1);
+        assertSame('pusher:subscription_error', $f['event'], $name);
+        assertSame('AuthError', $f['data']['type'], $name);
+        assertSame($name, $f['channel'], $name);
+    }
+    assertSame([], $link->subscribed, 'the daemon was not asked about a name that is not listed');
+    assertSame(4, $gw->stats()->publicDenied);
+    assertSame(3, $gw->stats()->publicChannels, 'and no name of theirs is held');
+    // the list is about public channels: a signed join to a private or presence channel is not subject to it
+    join_channel($gw, $link, 1, $sock, 'private-orders.1');
+    assertSame('pusher_internal:subscription_succeeded', $link->lastFrame(1)['event']);
+    join_channel($gw, $link, 1, $sock, 'presence-room.1', user_data('1'));
+    assertSame('pusher_internal:subscription_succeeded', $link->lastFrame(1)['event']);
+    // a refused name costs no strike: a page that asks for many is told no each time, and stays connected
+    $link->clear();
+    for ($i = 0; $i < 100; $i++) {
+        $gw->received(1, subscribe_frame("nope.$i", $sock));
+    }
+    assertSame([], $link->closed);
+    assertSame(0, $gw->stats()->strikeCloses);
+    assertSame(104, $gw->stats()->publicDenied);
+
+    [$gw, $link] = gateway(['publicChannels' => []]);
+    $sock = open_conn($gw, $link, 1);
+    $gw->received(1, subscribe_frame('news', $sock));
+    assertSame('AuthError', $link->lastFrame(1)['data']['type'], '[] means none');
+    join_channel($gw, $link, 1, $sock, 'private-x');
+    assertSame('pusher_internal:subscription_succeeded', $link->lastFrame(1)['event'], 'private channels still work');
+});
+
+test('pusher gateway: the budget counts public names held, so a name somebody holds can always be joined', function () {
+    [$gw, $link] = gateway(['maxPublicChannels' => 3]);
+    $s = [];
+    foreach ([1, 2, 3] as $c) {
+        $s[$c] = open_conn($gw, $link, $c);
+    }
+    foreach (['a', 'b', 'c'] as $name) {
+        join_channel($gw, $link, 1, $s[1], $name);
+    }
+    assertSame(3, $gw->stats()->publicChannels);
+    // a fourth name is refused: nothing goes to the daemon, no strike, and it is counted
+    $link->clear();
+    $gw->received(2, subscribe_frame('d', $s[2]));
+    $f = $link->lastFrame(2);
+    assertSame('pusher:subscription_error', $f['event']);
+    assertSame('LimitReached', $f['data']['type']);
+    assertSame([], $link->subscribed);
+    assertSame(1, $gw->stats()->publicRefused);
+    // a name that is held is joined by anyone, also with the budget used up: it costs the daemon no topic
+    join_channel($gw, $link, 2, $s[2], 'a');
+    join_channel($gw, $link, 3, $s[3], 'a');
+    assertSame('pusher_internal:subscription_succeeded', $link->lastFrame(3)['event']);
+    assertSame(3, $gw->stats()->publicChannels, 'three joins of one name are one name');
+    // private and presence names are not public names
+    join_channel($gw, $link, 2, $s[2], 'private-x');
+    join_channel($gw, $link, 2, $s[2], 'presence-r', user_data('2'));
+    assertSame(3, $gw->stats()->publicChannels);
+    // one holder leaving does not free the name while two others are in it
+    $gw->received(1, frame_text('pusher:unsubscribe', ['channel' => 'a']));
+    assertSame(3, $gw->stats()->publicChannels);
+    $link->clear();
+    $gw->received(2, subscribe_frame('d', $s[2]));
+    assertSame('LimitReached', $link->lastFrame(2)['data']['type'], 'still full');
+    // the last holder leaving frees it
+    $gw->received(2, frame_text('pusher:unsubscribe', ['channel' => 'a']));
+    $gw->received(3, frame_text('pusher:unsubscribe', ['channel' => 'a']));
+    assertSame(2, $gw->stats()->publicChannels);
+    join_channel($gw, $link, 2, $s[2], 'd');
+    assertSame('pusher_internal:subscription_succeeded', $link->lastFrame(2)['event']);
+    assertSame(3, $gw->stats()->publicChannels);
+    // refusals cost no strike, however many
+    $link->clear();
+    for ($i = 0; $i < 100; $i++) {
+        $gw->received(3, subscribe_frame("z$i", $s[3]));
+    }
+    assertSame([], $link->closed);
+    assertSame(0, $gw->stats()->strikeCloses);
+    assertSame(102, $gw->stats()->publicRefused);
+    assertSame(held_public($gw), recount_public($gw));
+});
+
+test('pusher gateway: a public name is reserved when its join goes to the daemon and given back however the join or the membership ends', function () {
+    [$gw, $link] = gateway(['maxPublicChannels' => 2]);
+    $s = [];
+    foreach ([1, 2, 3] as $c) {
+        $s[$c] = open_conn($gw, $link, $c);
+    }
+    $consistent = function (string $when) use ($gw): void {
+        assertSame(recount_public($gw), held_public($gw), $when);
+        assertSame(count(held_public($gw)), $gw->stats()->publicChannels, $when);
+    };
+    $gw->received(1, subscribe_frame('a', $s[1]));
+    $ra = $link->lastRequest();
+    $gw->received(2, subscribe_frame('b', $s[2]));
+    $rb = $link->lastRequest();
+    $consistent('two joins waiting');
+    assertSame(2, $gw->stats()->publicChannels, 'a join the daemon has not answered already holds its name');
+    $link->clear();
+    $gw->received(3, subscribe_frame('c', $s[3]));
+    assertSame('LimitReached', $link->lastFrame(3)['data']['type']);
+
+    // the daemon refuses a: the name is free again
+    $gw->status($ra, StatusCode::LIMIT);
+    $consistent('a refused by the daemon');
+    assertSame(1, $gw->stats()->publicChannels);
+    join_channel($gw, $link, 3, $s[3], 'c');
+    $consistent('c joined');
+    assertSame(2, $gw->stats()->publicChannels);
+
+    // b is cancelled by an unsubscribe: it keeps its place until the daemon answers
+    $gw->received(2, frame_text('pusher:unsubscribe', ['channel' => 'b']));
+    $consistent('b cancelled');
+    assertSame(2, $gw->stats()->publicChannels);
+    $link->clear();
+    $gw->received(1, subscribe_frame('d', $s[1]));
+    assertSame('LimitReached', $link->lastFrame(1)['data']['type'], 'the cancelled join still holds b');
+    $link->clear();
+    $gw->status($rb, StatusCode::OK);                       // the daemon did put it in the room: it is taken out again
+    $consistent('b answered after its cancel');
+    assertSame(1, $gw->stats()->publicChannels);
+    assertSame([[2, 'b']], $link->unsubscribed);
+
+    // leaving b and joining it again before the answer is one reservation, not two
+    $gw->received(2, subscribe_frame('b', $s[2]));
+    $rb = $link->lastRequest();
+    $gw->received(2, frame_text('pusher:unsubscribe', ['channel' => 'b']));
+    $gw->received(2, subscribe_frame('b', $s[2]));
+    $consistent('b revived');
+    assertSame(2, $gw->stats()->publicChannels);
+    $gw->status($rb, StatusCode::OK);
+    $consistent('b joined after reviving');
+    assertSame(2, $gw->stats()->publicChannels);
+
+    // a connection that is gone: no question for the daemon about it
+    $gw->status($link->lastRequest(), StatusCode::NO_SUCH_CONN);   // nothing pending for it any more; must change nothing
+    $consistent('a stray answer');
+    $gw->closed(2);
+    $consistent('the connection with b closed');
+    assertSame(1, $gw->stats()->publicChannels);
+
+    // closing with a join waiting and with a membership gives both back
+    $gw->received(1, subscribe_frame('e', $s[1]));
+    $consistent('e waiting');
+    assertSame(2, $gw->stats()->publicChannels);
+    $gw->closed(1);
+    $consistent('the connection with e waiting closed');
+    assertSame(1, $gw->stats()->publicChannels);
+    $gw->closed(3);
+    $consistent('everyone gone');
+    assertSame([], held_public($gw));
+    assertSame(0, $gw->stats()->publicChannels);
+
+    // a refusal of any other kind gives it back too
+    $s[4] = open_conn($gw, $link, 4);
+    $gw->received(4, subscribe_frame('x', $s[4]));
+    $gw->status($link->lastRequest(), StatusCode::INTERNAL);
+    $consistent('an internal error');
+    assertSame(0, $gw->stats()->publicChannels);
+    $gw->received(4, subscribe_frame('y', $s[4]));
+    $gw->status($link->lastRequest(), StatusCode::NO_SUCH_CONN);
+    $consistent('the daemon says the connection is gone');
+    assertSame(0, $gw->stats()->publicChannels);
+});
+
 // ---- statistics and churn (ADR-0042 A2) -----------------------------------------------------------------
 
 test('pusher gateway: stats show what the gateway holds and count what happened', function () {
     [$gw, $link] = gateway(['maxStrikes' => 3, 'maxChannelsPerConnection' => 4]);
     $zero = $gw->stats();
     foreach (['connections', 'channels', 'joins_in_progress', 'presence_channels', 'presence_members', 'opened', 'frames',
-        'joins', 'bad_frames', 'unauthorized', 'rate_limited', 'subscription_errors', 'daemon_refused', 'strike_closes'] as $key) {
+        'joins', 'bad_frames', 'unauthorized', 'rate_limited', 'subscription_errors', 'daemon_refused', 'strike_closes',
+        'public_channels', 'public_denied', 'public_refused'] as $key) {
         assertSame(0, $zero->toArray()[$key], "$key starts at zero");
     }
     assertTrue($zero->memoryBytes > 0, 'the memory in use is read from the process');
@@ -1327,7 +1604,7 @@ test('pusher gateway: stats line is one line of key=value numbers in a fixed ord
     assertSame(
         ['connections', 'channels', 'joins_in_progress', 'presence_channels', 'presence_members', 'memory_bytes',
             'opened', 'frames', 'joins', 'bad_frames', 'unauthorized', 'rate_limited', 'subscription_errors', 'daemon_refused',
-            'strike_closes'],
+            'strike_closes', 'public_channels', 'public_denied', 'public_refused'],
         array_keys($gw->stats()->toArray()),
     );
     assertSame(1, $gw->stats()->connections, 'and the number in the line is the real one');
@@ -1340,7 +1617,7 @@ test('pusher gateway: churn: in any order of joins, answers, leaves and closes n
     foreach ([1, 2, 3, 4, 5, 6, 7, 8] as $seed) {
         mt_srand($seed);
         [$gw, $link, $clock] = gateway([
-            'maxChannelsPerConnection' => $quota, 'maxPresenceMembers' => $members, 'maxStrikes' => 1_000_000,
+            'maxChannelsPerConnection' => $quota, 'maxPresenceMembers' => $members, 'maxStrikes' => 1_000_000, 'maxPublicChannels' => 3,
             'messagesPerSecond' => 1_000_000, 'messageBurst' => 1_000_000, 'clientEventsPerSecond' => 100_000,
         ]);
         $open = [];        // conn => socket id
@@ -1348,7 +1625,7 @@ test('pusher gateway: churn: in any order of joins, answers, leaves and closes n
         $outstanding = []; // subscribe requests not answered yet: request => [conn, topic]
         $seen = 0;         // how much of $link->log has been applied to $rooms
         $next = 1;
-        $topics = ['news', 'private-a', 'private-b', 'presence-r1', 'presence-r2', 'presence-r3'];
+        $topics = ['news', 'pub-a', 'pub-b', 'pub-c', 'private-a', 'private-b', 'presence-r1', 'presence-r2', 'presence-r3'];
         $sync = function () use ($link, &$seen, &$rooms, &$outstanding, &$open): void {
             for (; $seen < count($link->log); $seen++) {
                 [$kind, $conn, $topic, $request] = $link->log[$seen];
@@ -1403,6 +1680,10 @@ test('pusher gateway: churn: in any order of joins, answers, leaves and closes n
             assertTrue($s->joinsInProgress <= count($open) * $quota, "seed $seed step $i: more joins in progress than the quota allows");
             assertTrue($s->presenceMembers <= $s->presenceChannels * $members, "seed $seed step $i: a presence channel over its member cap");
             assertTrue($s->presenceChannels <= count($open) * $quota, "seed $seed step $i: a presence channel nobody is in");
+            $publicNow = held_public($gw);
+            assertSame(recount_public($gw), $publicNow, "seed $seed step $i: the public names held are the ones the connections are in or are joining");
+            assertTrue(count($publicNow) <= 3, "seed $seed step $i: more public names than the budget");
+            assertSame(count($publicNow), $s->publicChannels, "seed $seed step $i: the gauge");
         }
         // The daemon answers whatever is left. Then the gateway and the daemon must agree on who is in which room.
         $sync();
@@ -1422,7 +1703,8 @@ test('pusher gateway: churn: in any order of joins, answers, leaves and closes n
             $gw->closed($conn);
         }
         $s = $gw->stats();
-        assertSame([0, 0, 0, 0, 0], [$s->connections, $s->channels, $s->joinsInProgress, $s->presenceChannels, $s->presenceMembers], "seed $seed: nothing survives its connections");
+        assertSame([0, 0, 0, 0, 0, 0], [$s->connections, $s->channels, $s->joinsInProgress, $s->presenceChannels, $s->presenceMembers, $s->publicChannels], "seed $seed: nothing survives its connections");
+        assertSame([], held_public($gw), "seed $seed: no public name outlives its connections");
     }
 });
 

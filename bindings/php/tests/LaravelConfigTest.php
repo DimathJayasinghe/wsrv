@@ -93,3 +93,19 @@ test('laravel config: the statistics interval of the wsrv:echo command is whole 
         assertThrows(InvalidArgumentException::class, fn () => ConnectionConfig::statsInterval($bad), 'accepted ' . var_export($bad, true));
     }
 });
+
+test('laravel config: public_channels and max_public_channels reach the gateway, and a wrong type is refused (ADR-0042 A3)', function () {
+    $g = ConnectionConfig::fromArray(laravel_config(['options' => ['public_channels' => ['news', 'orders.*'], 'max_public_channels' => 100]]))->gateway();
+    assertSame(['news', 'orders.*'], $g->publicChannels);
+    assertSame(100, $g->maxPublicChannels);
+    $g = ConnectionConfig::fromArray(laravel_config(['options' => ['public_channels' => null]]))->gateway();
+    assertSame(null, $g->publicChannels, 'null is the same as leaving it out: any public channel');
+    $g = ConnectionConfig::fromArray(laravel_config(['options' => ['public_channels' => []]]))->gateway();
+    assertSame([], $g->publicChannels, 'an empty list is none');
+    assertSame(512, ConnectionConfig::fromArray(laravel_config())->gateway()->maxPublicChannels);
+    foreach (['news', 5, true, ['x' => 'news'], ['news', 5], [['a']], ['private-x'], ['a*b']] as $bad) {
+        assertThrows(InvalidArgumentException::class, fn () => ConnectionConfig::fromArray(laravel_config(['options' => ['public_channels' => $bad]])), json_encode($bad));
+    }
+    assertThrows(InvalidArgumentException::class, fn () => ConnectionConfig::fromArray(laravel_config(['options' => ['max_public_channels' => '5']])));
+    assertThrows(InvalidArgumentException::class, fn () => ConnectionConfig::fromArray(laravel_config(['options' => ['max_public_channels' => 0]])));
+});

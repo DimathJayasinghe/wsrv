@@ -68,6 +68,15 @@ final class Gateway
     private array $closeRetry = [];
     private readonly PresenceTable $presence;
     /**
+     * The public channel names the gateway holds, by how many joins hold each: a connection that is in the channel and a
+     * join of it that the daemon has not answered yet each count once (ADR-0042 A3). The number of keys is what
+     * `maxPublicChannels` bounds. Every place that adds or removes an entry of a connection's `channels` or `pending` calls
+     * holdPublic() or releasePublic(); the churn test recounts it from the connections' own state at every step.
+     *
+     * @var array<string, int>
+     */
+    private array $publicHeld = [];
+    /**
      * The answer to a repeated join, by presence channel: [the channel's revision when it was built, the frame].
      * Only repeats are kept (a first join changes the list at once, so keeping it would help nobody), at most
      * LIST_FRAMES_KEPT of them, oldest out first, and none larger than LIST_FRAME_KEPT_MAX_BYTES, so this holds
@@ -88,6 +97,8 @@ final class Gateway
     private int $subscriptionErrors = 0;
     private int $daemonRefused = 0;
     private int $strikeCloses = 0;
+    private int $publicDenied = 0;
+    private int $publicRefused = 0;
 
     /** @param callable(): float|null $clock seconds as a float; for tests */
     public function __construct(
@@ -208,14 +219,16 @@ final class Gateway
         }
         unset($this->conns[$conn]);
         foreach (array_keys($state->pending) as $request) {
+            $this->releasePublic((string) ($this->pending[$request]['channel'] ?? ''));
             unset($this->pending[$request]);
         }
         foreach (array_keys($state->sends) as $request) {
             unset($this->sendOwner[$request]);
         }
         unset($this->closeOwner[$state->closeRequest], $this->closeRetry[$conn]);
-        // The daemon dropped this connection's rooms when it closed; only the member list is ours.
+        // The daemon dropped this connection's rooms when it closed; only the member list and the held names are ours.
         foreach ($state->channels as $channel => $userId) {
+            $this->releasePublic((string) $channel);
             if ($userId !== null) {
                 $this->memberLeft((string) $channel, $conn, $userId);
             }
@@ -240,6 +253,7 @@ final class Gateway
             return;
         }
         unset($this->pending[$request]);
+        $this->releasePublic($join['channel']);   // answered: it no longer waits (joined() holds the name again if it succeeded)
         $state = $this->conns[$join['conn']] ?? null;
         if ($state === null) {
             return;
@@ -376,6 +390,9 @@ final class Gateway
             subscriptionErrors: $this->subscriptionErrors,
             daemonRefused: $this->daemonRefused,
             strikeCloses: $this->strikeCloses,
+            publicChannels: count($this->publicHeld),
+            publicDenied: $this->publicDenied,
+            publicRefused: $this->publicRefused,
         );
     }
 
@@ -410,6 +427,14 @@ final class Gateway
             $this->subscriptionError($conn, $channel, 'InvalidChannelName', $problem);
             return;
         }
+        $kind = ChannelName::kind($channel);
+        if ($kind === ChannelKind::Public && !$this->config->allowsPublicChannel($channel)) {
+            // Not a channel this site has (ADR-0042 A3). Nothing is asked of the daemon and it costs no strike: a page
+            // may simply be asking for what the site does not list.
+            $this->publicDenied++;
+            $this->subscriptionError($conn, $channel, 'AuthError', 'The channel is not one of the public channels this server allows');
+            return;
+        }
         if (array_key_exists($channel, $state->channels)) {
             // Already in: say so again, change nothing. Unless the member list has grown past one frame since
             // this connection joined: then it cannot be told who is here, so it leaves, as if it had asked to.
@@ -436,7 +461,6 @@ final class Gateway
             }
         }
 
-        $kind = ChannelName::kind($channel);
         $userId = null;
         $info = null;
         if ($kind !== ChannelKind::Public) {
@@ -460,6 +484,15 @@ final class Gateway
             }
         }
 
+        if ($kind === ChannelKind::Public && !isset($this->publicHeld[$channel])
+            && count($this->publicHeld) >= $this->config->maxPublicChannels) {
+            // A new public name when the budget of names is used up (ADR-0042 A3). A name somebody holds is never refused (a join
+            // that was cancelled and is revived holds its own name too): it costs the daemon no new room.
+            // Anonymous browsers can fill the budget, not the daemon's whole table.
+            $this->publicRefused++;
+            $this->subscriptionError($conn, $channel, 'LimitReached', 'The server is at its public channel limit');
+            return;
+        }
         if ($revived !== null) {
             // Left and joined again before the daemon answered: the one request in flight serves the
             // new join, with the member this signature is for.
@@ -469,6 +502,23 @@ final class Gateway
         $request = $this->link->subscribe($conn, $channel);
         $this->pending[$request] = ['conn' => $conn, 'channel' => $channel, 'userId' => $userId, 'info' => $info, 'cancelled' => false];
         $state->pending[$request] = true;
+        $this->holdPublic($channel);
+    }
+
+    /** A connection joined, or is joining, this channel: if it is a public one, count it against the name (ADR-0042 A3). */
+    private function holdPublic(string $channel): void
+    {
+        if (ChannelName::kind($channel) === ChannelKind::Public) {
+            $this->publicHeld[$channel] = ($this->publicHeld[$channel] ?? 0) + 1;
+        }
+    }
+
+    /** The other half of holdPublic(): a join ended or a connection left. The name is free when nobody holds it. */
+    private function releasePublic(string $channel): void
+    {
+        if (isset($this->publicHeld[$channel]) && --$this->publicHeld[$channel] <= 0) {
+            unset($this->publicHeld[$channel]);
+        }
     }
 
     /**
@@ -516,6 +566,7 @@ final class Gateway
     {
         if ($userId === null) {
             $state->channels[$channel] = null;
+            $this->holdPublic($channel);
             $this->joins++;
             $this->sendSucceeded($conn, $channel);   // a few bytes: it cannot be too large
             return;
@@ -640,6 +691,7 @@ final class Gateway
     {
         $userId = $state->channels[$channel];
         unset($state->channels[$channel]);
+        $this->releasePublic($channel);
         $this->link->unsubscribe($conn, $channel);
         if ($userId !== null) {
             $this->memberLeft($channel, $conn, $userId);

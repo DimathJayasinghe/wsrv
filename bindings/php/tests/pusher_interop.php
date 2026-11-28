@@ -511,6 +511,83 @@ $check('a member list over what the daemon can send to a browser fails that join
 
 proc_terminate($queue['process'], SIGTERM);
 
+
+// ---- anonymous public joins must not starve the signed joins of real users -----------------------------
+
+// A public channel needs no signature, and every distinct name is a room (a topic) in the daemon's broker,
+// whose table holds 1 024 by default. One connection may hold 64 names and one address 100 connections, so
+// sixteen scripted connections could fill the table in a fraction of a second, and a user who then logged
+// in was told "The server is at its channel limit" for their private and presence channels (ADR-0042 A3).
+// The daemon and the gateway here are on their defaults.
+$open = start_wsrvd($daemonPath, $dir, 'open', $tokenFile);
+$openWorker = new Worker(Client::connect($open['socket'], '', 5.0));
+$openGateway = Gateway::forWorker(new GatewayConfig(KEY, SECRET), $openWorker);
+
+$check('sixteen anonymous connections joining 64 public names each cannot keep a signed user out of their channels', function () use ($open, $openWorker, $openGateway) {
+    $path = '/app/' . KEY . '?protocol=7&client=js&version=8.4.0&flash=false';
+    $step = function (float $seconds = 0.25) use ($openWorker): void {
+        $end = microtime(true) + $seconds;
+        while (microtime(true) < $end) {
+            $openWorker->step(0.05);
+        }
+    };
+    $connect = function () use ($open, $path, $step): array {
+        $ws = ws_connect($open['port'], '', $path);
+        $step();
+        return [$ws, pusher_read($ws)['data']['socket_id']];
+    };
+    $attackers = [];
+    for ($a = 0; $a < 16; $a++) {
+        [$ws] = $connect();
+        for ($j = 0; $j < 64; $j++) {
+            pusher_send($ws, 'pusher:subscribe', ['channel' => "flood.$a.$j"]);
+        }
+        $attackers[] = $ws;
+    }
+    $joined = 0;
+    $refused = 0;
+    foreach ($attackers as $ws) {
+        for ($j = 0; $j < 64; $j++) {
+            $f = pusher_read_when_ready($ws, $openWorker);
+            if ($f['event'] === 'pusher_internal:subscription_succeeded') {
+                $joined++;
+            } else {
+                assertSame('pusher:subscription_error', $f['event']);
+                assertSame('LimitReached', $f['data']['type']);
+                $refused++;
+            }
+        }
+    }
+    assertSame(1024, $joined + $refused, 'every one of the 16 x 64 joins was answered');
+
+    // A user logs in. Their signed joins to new names must work, whatever the anonymous ones did.
+    [$user, $userSocket] = $connect();
+    $data = json_encode(['user_id' => '7', 'user_info' => ['name' => 'Ada']], JSON_THROW_ON_ERROR);
+    pusher_send($user, 'pusher:subscribe', ['channel' => 'private-user.7', 'auth' => sign($userSocket, 'private-user.7')]);
+    $f = pusher_read_when_ready($user, $openWorker);
+    assertSame('pusher_internal:subscription_succeeded', $f['event'], "private-user.7 after $joined anonymous joins: " . json_encode($f));
+    pusher_send($user, 'pusher:subscribe', ['channel' => 'presence-room.1', 'auth' => sign($userSocket, 'presence-room.1', $data), 'channel_data' => $data]);
+    $f = pusher_read_when_ready($user, $openWorker);
+    assertSame('pusher_internal:subscription_succeeded', $f['event'], 'presence-room.1: ' . json_encode($f));
+
+    // A name somebody already holds stays joinable when the budget of new names is used up: it costs no topic.
+    pusher_send($user, 'pusher:subscribe', ['channel' => 'flood.0.0']);
+    $f = pusher_read_when_ready($user, $openWorker);
+    assertSame('pusher_internal:subscription_succeeded', $f['event'], 'a name that is held: ' . json_encode($f));
+
+    // What the operator sees: the refusals are the gateway's own, not the daemon's.
+    $stats = $openGateway->stats();
+    assertSame(0, $stats->daemonRefused, 'the daemon refused nothing: the gateway kept the anonymous joins inside its budget');
+    assertSame($refused, $stats->publicRefused);
+    assertSame($joined, $stats->publicChannels);
+
+    fclose($user);
+    foreach ($attackers as $ws) {
+        fclose($ws);
+    }
+});
+
+proc_terminate($open['process'], SIGTERM);
 proc_terminate($small['process'], SIGTERM);
 proc_terminate($strict['process'], SIGTERM);
 

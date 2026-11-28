@@ -46,13 +46,23 @@ final class GatewayStats
         /**
          * Commands the daemon refused: a join over a broker bound (`broker_max_topics` 1024,
          * `broker_max_subscriptions` 100 000, `broker_max_subscribers_per_topic` 10 000 by default) or with another
-         * error status, a join's answer it could not queue (that browser is closed with 1011), and a close it could not queue (asked again
-         * each second). Rising means
-         * the daemon is too small for the site, not that a browser misbehaved.
+         * error status, a join's answer it could not queue (that browser is closed with 1011), and a close it could not
+         * queue (asked again each second). Rising means the daemon's own limits were reached: it is too small for the
+         * site, or private and presence names exist in numbers the users of the site do not make. Anonymous public
+         * names are bounded by `public_refused` first (ADR-0042 A3).
          */
         public readonly int $daemonRefused,
         /** Connections the gateway closed with 1008 for collecting `max_strikes`. */
         public readonly int $strikeCloses,
+        /** Distinct public channel names held now, joined or waiting for the daemon (limit: `max_public_channels`). A gauge. */
+        public readonly int $publicChannels,
+        /** Joins refused because the name is not in `public_channels` (answer: subscription_error AuthError; no strike). */
+        public readonly int $publicDenied,
+        /**
+         * Joins of a new public name refused because `max_public_channels` names were already held (answer: LimitReached; no
+         * strike). Rising means anonymous browsers are using the budget: a flood of names, or a site that needs a larger one.
+         */
+        public readonly int $publicRefused,
     ) {
     }
 
@@ -79,6 +89,9 @@ final class GatewayStats
             'subscription_errors' => $this->subscriptionErrors,
             'daemon_refused' => $this->daemonRefused,
             'strike_closes' => $this->strikeCloses,
+            'public_channels' => $this->publicChannels,
+            'public_denied' => $this->publicDenied,
+            'public_refused' => $this->publicRefused,
         ];
     }
 
