@@ -84,6 +84,20 @@ TEST(ServerConfig, ThePendingSendBudgetHasABoundedDefaultAndIsRangeChecked) {  /
     EXPECT_TRUE(wsrv::validate(config).has_value()) << "tiny is allowed: it only refuses sends";
 }
 
+TEST(ServerConfig, TheBufferedBytesBudgetHasABoundedDefaultAndIsRangeChecked) {  // ADR-0040
+    wsrv::ServerConfig config;
+    EXPECT_EQ(config.max_buffered_bytes, std::size_t{1} << 30) << "1 GiB, for the whole server";
+    EXPECT_TRUE(wsrv::validate(config).has_value());
+    config.max_buffered_bytes = 0;
+    EXPECT_FALSE(wsrv::validate(config).has_value()) << "no unlimited value";
+    config.max_buffered_bytes = wsrv::kMaxConfiguredBufferedBytes + 1;
+    EXPECT_FALSE(wsrv::validate(config).has_value());
+    config.max_buffered_bytes = wsrv::kMaxConfiguredBufferedBytes;
+    EXPECT_TRUE(wsrv::validate(config).has_value());
+    config.max_buffered_bytes = 1;
+    EXPECT_TRUE(wsrv::validate(config).has_value()) << "tiny is allowed: it only refuses clients";
+}
+
 TEST(ServerConfig, PendingHandshakesNeedAPositiveBoundThatNeverExceedsTheConnectionCap) {
     ServerConfig config;
     config.max_pending_handshakes = 0;

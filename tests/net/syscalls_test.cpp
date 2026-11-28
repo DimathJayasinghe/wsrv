@@ -13,6 +13,7 @@
 #include <fstream>
 #include <string>
 
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
@@ -208,6 +209,35 @@ TEST(LinuxSyscalls, StatPathFillsFileInfoAndLstatDoesNotFollowLinks) {
 
     EXPECT_EQ(sys.unlink_path(file.c_str()).err, 0);
     EXPECT_EQ(sys.unlink_path(file.c_str()).err, ENOENT);
+    std::error_code ignored;
+    fs::remove_all(pattern, ignored);
+}
+
+TEST(LinuxSyscalls, OpenFileCreatesExclusivelyAndNeverFollowsALink) {
+    namespace fs = std::filesystem;
+    wsrv::LinuxSyscalls sys;
+    std::string pattern = (fs::temp_directory_path() / "wsrv-open-XXXXXX").string();
+    ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
+    const std::string file = pattern + "/secret";
+
+    const wsrv::SysResult created = sys.open_file(file.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+    ASSERT_EQ(created.err, 0);
+    EXPECT_GE(created.value, 0);
+    EXPECT_NE(::fcntl(static_cast<int>(created.value), F_GETFD) & FD_CLOEXEC, 0)
+        << "O_CLOEXEC is always added";
+    sys.close(static_cast<int>(created.value));
+    struct stat info {};
+    ASSERT_EQ(::stat(file.c_str(), &info), 0);
+    EXPECT_EQ(info.st_mode & 0777U, 0600U);
+
+    // O_EXCL: an existing file is never reopened for writing, and a symlink is not followed.
+    EXPECT_EQ(sys.open_file(file.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600).err, EEXIST);
+    const std::string link = pattern + "/link";
+    ASSERT_EQ(::symlink(file.c_str(), link.c_str()), 0);
+    EXPECT_EQ(sys.open_file(link.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600).err, EEXIST);
+    EXPECT_EQ(
+        sys.open_file((pattern + "/missing-dir/x").c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600).err,
+        ENOENT);
     std::error_code ignored;
     fs::remove_all(pattern, ignored);
 }

@@ -1,14 +1,24 @@
 # IPC protocol v0.3 (`wsrvd`)
 
-The wire contract between the `wsrvd` sidecar and ONE application (ADR-0017). Any language that can open a Unix socket can implement a client in a few hundred lines. The reference implementation of the codec is `src/ipc/` (sans-I/O, fuzzed); the behaviour described here is implemented in `apps/wsrvd/`.
+The wire contract between the `wsrvd` sidecar and ONE application (ADR-0017). Any language that can open a Unix socket (or, since 1.1, a TCP connection) can implement a client in a few hundred lines. The reference implementation of the codec is `src/ipc/` (sans-I/O, fuzzed); the behaviour described here is implemented in `apps/wsrvd/`.
 
 Terms: **daemon** = `wsrvd`; **application** = the program that connected to its Unix socket; **connection** = one WebSocket connection, identified by a `u64` id that is never reused.
 
 ## 1. Transport and security
+Two transports carry the same protocol (sections 2 to 9 are identical on both); the daemon serves one of them (ADR-0038).
+
+**Unix socket** (`ipc_socket`), the default:
 - A Unix domain stream socket at the path given by `ipc_socket`. The daemon creates it with mode `0600`.
 - After `accept`, the daemon reads the peer's uid from the kernel (`SO_PEERCRED`). A peer whose uid differs from the daemon's is dropped **without any reply**.
 - Optional shared token (`ipc_token_file`, a file of mode `0600`), sent in `HELLO`, compared in constant time. With no token configured, only the uid check protects the socket; the daemon warns at startup.
 - One application at a time. A second connection receives `STATUS(request 0, BACKPRESSURE)` and is closed.
+
+**TCP** (`ipc_port`, `ipc_host`, since 1.1), for a worker that cannot reach a Unix socket (macOS or Windows against a daemon in Docker, another machine):
+- A TCP listener on `ipc_host:ipc_port` (default `127.0.0.1`). There is no peer uid, so **the token is mandatory** and is the only authentication. It must be one that `wsrvd --generate-token=FILE` made (`wsrv1_`, 64 lowercase hex digits of 32 random bytes, `_`, a CRC-32 in 8 hex digits; 79 bytes): the daemon refuses any other over TCP at its start, because a token somebody chose can be guessed however long it is. Constant-time comparison, the same single `STATUS(request 0, INVALID_ARGUMENT)` for every failure.
+- **The link is not encrypted.** The messages and the token cross it in clear: use loopback, a private network, a VPN or an SSH tunnel, never the open internet. Anyone who can reach the port can try to authenticate and can make connections that fail; treat it like a database port.
+- A connection that has not yet sent `HELLO` waits in a room of **8** places, not in the application's slot, each with its own `HELLO` deadline. The first to send an accepted `HELLO` becomes the application and every other waiting connection receives `BACKPRESSURE`; when a ninth arrives the oldest waiting one is evicted and receives `BACKPRESSURE`. So an idle or hostile connection cannot lock the real application out, and keeping it out takes more than 8 new connections inside the window between its connect and its `HELLO`. An authenticated application is never displaced; a second authenticated one still receives `BACKPRESSURE`. A flood at that rate is a network-level problem: bind to loopback or a private network.
+- The daemon enables `TCP_NODELAY` and keepalive probes (30 s idle, 10 s apart, 3 probes) on the accepted socket, so an application whose host vanished frees the slot in about a minute. A client should set `TCP_NODELAY` too.
+- After refusing a connection (`BACKPRESSURE`, a rejected `HELLO`) the daemon sends its status and FIN, then keeps the socket for up to 2 s, discarding what arrives, so that closing cannot make the operating system reset the connection and wipe the status before the peer has read it (Windows drops received data on a reset). A client that wants a clean end reads the status and closes.
 
 ## 2. Framing
 Every frame, both directions:
@@ -51,7 +61,7 @@ u8  flags     reserved; MUST be 0
 Per connection the order is always Open, then messages, then exactly one Close. A Handshake event comes before the Open of the same `conn` if the upgrade is accepted; a refused upgrade produces neither an Open nor a Close.
 
 ### `STATUS`
-Answers every command (`SEND_*`, `CLOSE`, `HANDSHAKE_ACCEPT`, `HANDSHAKE_REJECT`) with the command's `request` id. `status` uses the values of `wsrv_status` in `include/wsrv/wsrv.h` (0 OK, 2 INVALID_ARGUMENT, 5 NO_SUCH_CONN, 6 BACKPRESSURE, 7 INVALID_UTF8, ...). **OK means accepted for sending, not delivered** (ADR-0016 section 5).
+Answers every command (`SEND_*`, `CLOSE`, `HANDSHAKE_ACCEPT`, `HANDSHAKE_REJECT`) with the command's `request` id. `status` uses the values of `wsrv_status` in `include/wsrv/wsrv.h` (0 OK, 2 INVALID_ARGUMENT, 5 NO_SUCH_CONN, 6 BACKPRESSURE, 7 INVALID_UTF8, ...). **A message that can never be sent is refused at once, not accepted:** a `SEND_*` payload (or a `PUBLISH` payload) larger than `2 x max_message_size - 16` bytes, which is the most one connection's outbound queue can ever hold, gets `INVALID_ARGUMENT` (ADR-0043). The `max_frame` of `HELLO_OK` never exceeds that size plus the 14 bytes a `SEND_*` frame carries besides its payload (`2 x max_message_size - 2`), so a client that checks its frames against `max_frame` never sends one; `wsrvd` logs `ipc_max_frame_lowered` when an operator asked for more. **OK means accepted for sending, not delivered** (ADR-0016 section 5).
 - `request` is chosen by the application; number commands from 1. **Request id 0 is reserved**: a command with id 0 is refused with `INVALID_ARGUMENT` and not executed, and a `STATUS` with request 0 can only be about the handshake.
 - A command for a connection the application was not told about, or that has ended, gets `NO_SUCH_CONN`. (Handshake answers have their own rule, section 9.)
 

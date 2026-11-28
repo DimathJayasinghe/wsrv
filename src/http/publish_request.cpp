@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "http/publish_request.hpp"
 
-#include "http/token.hpp"
+#include "http/bearer.hpp"
 
 #include <cstddef>
 #include <limits>
@@ -13,7 +13,6 @@ namespace wsrv {
 namespace {
 
 constexpr std::string_view kTarget = "/publish";
-constexpr std::string_view kScheme = "Bearer";
 /// 2^64 has 20 digits; a length with more than 19 cannot be a std::size_t, so it is refused
 /// without being parsed.
 constexpr std::size_t kMaxDecimalDigits = 19;
@@ -42,22 +41,6 @@ std::optional<std::uint64_t> parse_decimal(std::string_view text) noexcept {
         value = value * 10U + digit;
     }
     return value;
-}
-
-/// "Bearer" (any case, RFC 9110 section 11.1), exactly one space, then a credential with no space
-/// or control character in it. Anything else is "not a credential": 401.
-std::optional<std::string_view> bearer_of(std::string_view value) {
-    if (value.size() <= kScheme.size() + 1 || !iequals(value.substr(0, kScheme.size()), kScheme) ||
-        value[kScheme.size()] != ' ') {
-        return std::nullopt;
-    }
-    const std::string_view credential = value.substr(kScheme.size() + 1);
-    for (const char c : credential) {
-        if (c <= ' ' || c == 0x7f) {
-            return std::nullopt;
-        }
-    }
-    return credential;
 }
 
 /// Which names the query has shown so far: each may appear once.
@@ -125,9 +108,7 @@ HttpResult<PublishRequest> interpret_publish(const HttpRequest& head) {
     }
     PublishRequest out;
     // Credential: shape only. Whether it is the right one is the caller's decision.
-    const auto auth = head.values("Authorization");
-    const std::optional<std::string_view> bearer =
-        auth.size() == 1 ? bearer_of(auth.front()) : std::nullopt;
+    const std::optional<std::string_view> bearer = bearer_credential(head);
     if (!bearer) {
         return refuse(401, "credential required");
     }

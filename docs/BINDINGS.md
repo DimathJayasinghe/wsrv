@@ -32,7 +32,7 @@ Recommendation: ship **A + B**, with B implemented first for broadest reach (PHP
 ## 3. Stable C ABI (`include/wsrv/wsrv.h`)
 
 - Pure C99 header, opaque handles, no C++ types, no exceptions across the boundary, no allocation ownership ambiguity.
-- Versioned: `wsrv_abi_version()` (1.0 from wsrv 1.0, ADR-0016 A4); additive changes only within a major version; symbol visibility hidden except `WSRV_API` functions.
+- Versioned: `wsrv_abi_version()` (1.0 from wsrv 1.0, 1.1 from wsrv 1.1 which adds the configuration key `max_buffered_bytes`; ADR-0016 A4); additive changes only within a major version; symbol visibility hidden except `WSRV_API` functions.
 - Thread-safety documented per function (`any-thread` vs `owner-thread`).
 
 Sketch:
@@ -104,7 +104,7 @@ FPM requests only *publish* (short-lived connection / persistent pconnect to wsr
 
 **What exists today (M12 slice 1, `bindings/php/`, pure PHP, no extension).** Two classes over the IPC protocol (`docs/IPC_PROTOCOL.md`):
 - `Wsrv\Client`: one connection to `wsrvd`: `connect()`, `poll()`, `sendText()`, `sendBinary()`, `closeConnection()`, `ping()`.
-- `Wsrv\Worker`: the callback style on top of it: `on('open'|'message'|'close'|'error'|'status', ...)`, `run()`, `step()`, `stop()`, with a `Connection` handle given to callbacks.
+- `Wsrv\Worker`: the callback style on top of it: `on('open'|'message'|'close'|'error'|'status', ...)`, `run()`, `step()`, `stop()`, and `every($seconds, $fn)` (a periodic call while `run()` serves, checked after each step; ADR-0042 A2), with a `Connection` handle given to callbacks.
 
 `Wsrv\Client::publish()` / `subscribe()` (publish-only FPM requests, topics and rooms) are **not** implemented: the C++ `Broker` exists (M10, ADR-0024) but exposing it to a host language needs its own design (ADR-0024 section 7). The *embedded* mode (FFI, Mode A) exists as `Wsrv\Embedded\Server` (M12 slices 2-3, ADR-0025): lifecycle, `open`/`message`/`close`/`error` handlers, `send`/`close`, `step()`/`run()`. Autobahn through it passes (0 FAILED, plain and wss). The handshake hook (`authenticate`, ADR-0025 A1) works too. Still open for it: topics and rooms, the loop adapters. The native PHP extension is not planned for 1.0. The class below is the target ergonomics (the final name is `Wsrv\Embedded\Server`).
 

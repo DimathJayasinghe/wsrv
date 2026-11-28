@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "wsrvd/startup.hpp"
 
+#include "net/endpoint.hpp"
+#include "server/config.hpp"
 #include "support/fake_syscalls.hpp"
 
 #include <gtest/gtest.h>
@@ -20,6 +22,12 @@ namespace fs = std::filesystem;
 using wsrv::ErrorCode;
 using wsrv::test::FakeSyscalls;
 using wsrv::wsrvd::prepare;
+using wsrv::wsrvd::usage;
+
+/// A token in the form `wsrvd --generate-token` writes (computed independently, see
+/// token_format_test).
+constexpr std::string_view kGenerated =
+    "wsrv1_000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f_27994e12";
 
 struct StartupTest : public ::testing::Test {
     FakeSyscalls sys;
@@ -96,16 +104,88 @@ TEST_F(StartupTest, AnUnsafeTokenFileStopsTheStartup) {
     EXPECT_EQ(startup.error().code, ErrorCode::InvalidConfig);
 }
 
+// ADR-0038 section 3: the TCP transport. The token is the only authentication, so it must be one
+// the generator made: a length floor lets "MyCompanyWebsocketToken2026!!!!!" through.
+TEST_F(StartupTest, TheTcpTransportNeedsATokenTheGeneratorMade) {
+    const std::string generated = std::string{kGenerated};
+    const std::string good = write("good", generated + "\n");
+    const auto startup = run({"--ipc-port=9300", "--ipc-token-file=" + good});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_TRUE(startup->config.tcp());
+    EXPECT_EQ(startup->token, generated);
+}
+
+TEST_F(StartupTest, ALongButChosenTokenIsRefusedOverTcpAndTheMessageSaysWhatToRun) {
+    for (const std::string& weak : {std::string(31, 't'),
+                                    std::string(32, 't'),
+                                    std::string{"MyCompanyWebsocketToken2026!!!!!"},
+                                    std::string(200, 'x')}) {
+        const std::string file = write("weak", weak + "\n");
+        const auto result = run({"--ipc-port=9300", "--ipc-token-file=" + file});
+        ASSERT_FALSE(result.has_value()) << weak;
+        EXPECT_EQ(result.error().code, ErrorCode::InvalidConfig);
+        const std::string message{result.error().context};
+        EXPECT_NE(message.find("--generate-token"), std::string::npos) << message;
+        EXPECT_EQ(message.find(weak), std::string::npos) << "the token must never be echoed";
+    }
+}
+
+TEST_F(StartupTest, ATokenWithOneDigitChangedIsRefusedOverTcp) {
+    std::string typo = std::string{kGenerated};
+    typo[20] = typo[20] == '0' ? '1' : '0';
+    const auto result = run({"--ipc-port=9300", "--ipc-token-file=" + write("typo", typo + "\n")});
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(StartupTest, GenerateTokenIsAModeThatNeedsNoConfigAndNoSecrets) {
+    const auto startup = run({"--generate-token=/data/ipc.token"});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_EQ(startup->generate_token, "/data/ipc.token");
+    EXPECT_FALSE(startup->healthcheck);
+}
+
+TEST_F(StartupTest, GenerateTokenTakesNoOtherArguments) {
+    // Anything else on the line is a mistake worth stopping for, not something to ignore quietly.
+    EXPECT_FALSE(run({"--generate-token=/data/t", "--ipc-port=9300"}).has_value());
+    EXPECT_FALSE(run({"--ipc-port=9300", "--generate-token=/data/t"}).has_value());
+}
+
+TEST_F(StartupTest, GenerateTokenNeedsAPath) {
+    EXPECT_FALSE(run({"--generate-token="}).has_value());
+    EXPECT_FALSE(run({"--generate-token"}).has_value());
+}
+
+TEST_F(StartupTest, TheUsageTextNamesTheGeneratorAndTheTokenForm) {
+    const std::string text{usage()};
+    EXPECT_NE(text.find("--generate-token=FILE"), std::string::npos);
+    EXPECT_NE(text.find("wsrv1_"), std::string::npos);
+}
+
+TEST_F(StartupTest, ASocketTokenKeepsItsOldRulesWhateverItsLength) {  // 1.0 behaviour is unchanged
+    const std::string token = write("token", "s3cret\n");
+    const auto startup = run({"--ipc-socket=/run/x.sock", "--ipc-token-file=" + token});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_FALSE(startup->config.tcp());
+}
+
+TEST_F(StartupTest, ANamedBinaryHasNoDefaultSocketUnlessItWasBuiltWithOne) {
+    // Tests are built without WSRVD_DEFAULT_IPC_SOCKET, like the release binaries: neither key is
+    // an error, not a guessed path.
+    const auto startup = run({"--listen-port=9000"});
+    ASSERT_FALSE(startup.has_value());
+    EXPECT_EQ(startup.error().code, ErrorCode::InvalidConfig);
+}
+
 // ADR-0028: the publish endpoint. Its token is a file like the IPC token, never a key or a flag.
 TEST_F(StartupTest, ThePublishTokenIsReadFromItsFileAndGivenToTheEmbeddedConfig) {
-    const std::string token = write("publish", std::string(40, 'p') + "\n");
+    const std::string token = write("publish", std::string{kGenerated} + "\n");
     const auto startup = run({"--ipc-socket=/run/x.sock",
                               "--broker=true",
                               "--publish-port=9200",
                               "--publish-token-file=" + token});
     ASSERT_TRUE(startup.has_value());
     EXPECT_TRUE(startup->config.embedded().publish_requested());
-    EXPECT_EQ(startup->config.embedded().publish_token(), std::string(40, 'p'));
+    EXPECT_EQ(startup->config.embedded().publish_token(), std::string{kGenerated});
     EXPECT_TRUE(startup->config.embedded().check_publish().has_value());
 }
 
@@ -115,7 +195,7 @@ TEST_F(StartupTest, ThePublishTokenHasNoKeyAndNoFlag) {
 }
 
 TEST_F(StartupTest, APublishPortAndItsTokenFileComeAsAPair) {
-    const std::string token = write("publish", std::string(40, 'p'));
+    const std::string token = write("publish", std::string{kGenerated});
     EXPECT_FALSE(
         run({"--ipc-socket=/run/x.sock", "--broker=true", "--publish-port=9200"}).has_value());
     EXPECT_FALSE(run({"--ipc-socket=/run/x.sock", "--publish-token-file=" + token}).has_value());
@@ -123,7 +203,7 @@ TEST_F(StartupTest, APublishPortAndItsTokenFileComeAsAPair) {
 
 TEST_F(StartupTest, AShortOrUnsafePublishTokenStopsTheStartup) {
     const std::string shortened = write("short", std::string(31, 'p'));
-    const std::string open = write("open", std::string(40, 'p'), 0644);
+    const std::string open = write("open", std::string{kGenerated}, 0644);
     for (const std::string& file : {shortened, open}) {
         const auto startup = run({"--ipc-socket=/run/x.sock",
                                   "--broker=true",
@@ -132,6 +212,141 @@ TEST_F(StartupTest, AShortOrUnsafePublishTokenStopsTheStartup) {
         ASSERT_FALSE(startup.has_value()) << file;
         EXPECT_EQ(startup.error().code, ErrorCode::InvalidConfig);
     }
+}
+
+// ADR-0039: the publish endpoint is plain HTTP and reachable from the network, and a length floor
+// cannot tell a random token from a long guessable one, so only the generated form starts it. The
+// rule holds on loopback too, and the message says it is new in 1.1 (a 1.0 configuration that
+// worked must be told why it stops) and names the fix without printing the token.
+TEST_F(StartupTest, ALongButChosenPublishTokenStopsTheStartupAndTheMessageNamesTheFix) {
+    const std::string chosen = "MyCompanyWebsocketToken2026!!!!!MyCompany";  // 40 bytes, guessable
+    const std::string hex64 = write("hex64", std::string(64, 'a'));          // what 1.0 docs made
+    for (const std::string& file : {write("chosen", chosen), hex64}) {
+        for (const char* host : {"--publish-host=127.0.0.1", "--publish-host=0.0.0.0"}) {
+            const auto startup = run({"--ipc-socket=/run/x.sock",
+                                      "--broker=true",
+                                      "--publish-port=9200",
+                                      host,
+                                      "--publish-token-file=" + file});
+            ASSERT_FALSE(startup.has_value()) << file << " " << host;
+            EXPECT_EQ(startup.error().code, ErrorCode::InvalidConfig);
+            const std::string message{startup.error().context};
+            EXPECT_NE(message.find("--generate-token"), std::string::npos) << message;
+            EXPECT_NE(message.find("1.1"), std::string::npos) << message;
+            EXPECT_EQ(message.find(chosen), std::string::npos) << "the token must not be echoed";
+        }
+    }
+}
+
+TEST_F(StartupTest, ATypoInAGeneratedPublishTokenStopsTheStartup) {
+    std::string typo = std::string{kGenerated};
+    typo[10] = typo[10] == 'a' ? 'b' : 'a';
+    const auto startup = run({"--ipc-socket=/run/x.sock",
+                              "--broker=true",
+                              "--publish-port=9200",
+                              "--publish-token-file=" + write("typo", typo)});
+    ASSERT_FALSE(startup.has_value());
+    EXPECT_EQ(startup.error().code, ErrorCode::InvalidConfig);
+}
+
+// ADR-0041: the optional token for the admin listener's /metrics page. Same file rules and the same
+// generated form as the publish token; a file and a port come as a pair; and it must not be a
+// token that already opens something else.
+constexpr std::string_view kOtherGenerated =  // the all-zero token of token_format_test
+    "wsrv1_0000000000000000000000000000000000000000000000000000000000000000_e3805f5e";
+static_assert(kOtherGenerated != kGenerated, "the distinctness tests need two different tokens");
+
+TEST_F(StartupTest, TheAdminTokenIsReadFromItsFileAndGivenToTheEmbeddedConfig) {
+    const std::string token = write("admin", std::string{kGenerated} + "\n");
+    const auto startup =
+        run({"--ipc-socket=/run/x.sock", "--admin-port=9100", "--admin-token-file=" + token});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_TRUE(startup->config.embedded().admin_requested());
+    EXPECT_EQ(startup->config.embedded().admin_token(), std::string{kGenerated});
+}
+
+TEST_F(StartupTest, WithoutAnAdminTokenFileTheAdminListenerIsOpenAsBefore) {
+    const auto startup = run({"--ipc-socket=/run/x.sock", "--admin-port=9100"});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_TRUE(startup->config.embedded().admin_token().empty());
+}
+
+TEST_F(StartupTest, TheAdminTokenHasNoKeyAndNoFlag) {
+    EXPECT_FALSE(run({"--ipc-socket=/run/x.sock",
+                      "--admin-port=9100",
+                      "--admin-token=" + std::string(kGenerated)})
+                     .has_value());
+}
+
+TEST_F(StartupTest, AnAdminTokenFileWithoutAnAdminPortIsAMistake) {
+    const std::string token = write("admin", std::string{kGenerated});
+    const auto startup = run({"--ipc-socket=/run/x.sock", "--admin-token-file=" + token});
+    ASSERT_FALSE(startup.has_value());
+    EXPECT_EQ(startup.error().code, ErrorCode::InvalidConfig);
+    EXPECT_NE(std::string{startup.error().context}.find("admin_port"), std::string::npos);
+}
+
+TEST_F(StartupTest, ABadAdminTokenFileStopsTheStartupAndTheMessageNamesTheFix) {
+    const std::string chosen = "MyCompanyWebsocketToken2026!!!!!MyCompany";  // 40 bytes, guessable
+    std::string typo = std::string{kGenerated};
+    typo[10] = typo[10] == 'a' ? 'b' : 'a';
+    const std::string open = write("open", std::string{kGenerated}, 0644);
+    for (const std::string& file : {write("chosen", chosen),
+                                    write("short", std::string(31, 'p')),
+                                    write("typo", typo),
+                                    open}) {
+        const auto startup =
+            run({"--ipc-socket=/run/x.sock", "--admin-port=9100", "--admin-token-file=" + file});
+        ASSERT_FALSE(startup.has_value()) << file;
+        EXPECT_EQ(startup.error().code, ErrorCode::InvalidConfig);
+        const std::string message{startup.error().context};
+        EXPECT_EQ(message.find(chosen), std::string::npos) << "the token must not be echoed";
+    }
+    const auto chosen_only = run({"--ipc-socket=/run/x.sock",
+                                  "--admin-port=9100",
+                                  "--admin-token-file=" + write("chosen2", chosen)});
+    ASSERT_FALSE(chosen_only.has_value());
+    EXPECT_NE(std::string{chosen_only.error().context}.find("--generate-token"), std::string::npos);
+}
+
+// A scraper holds the admin token. If it were also the publish token the scraper could publish into
+// rooms, and if it were the IPC token it could speak as the application's worker.
+TEST_F(StartupTest, TheAdminTokenMustDifferFromThePublishAndTheIpcToken) {
+    const std::string admin = write("admin", std::string{kGenerated});
+    const std::string same = write("same", std::string{kGenerated});
+    const std::string other = write("other", std::string{kOtherGenerated});
+
+    const auto as_publish = run({"--ipc-socket=/run/x.sock",
+                                 "--broker=true",
+                                 "--admin-port=9100",
+                                 "--admin-token-file=" + admin,
+                                 "--publish-port=9200",
+                                 "--publish-token-file=" + same});
+    ASSERT_FALSE(as_publish.has_value());
+    EXPECT_NE(std::string{as_publish.error().context}.find("publish"), std::string::npos);
+
+    const auto as_ipc = run({"--ipc-socket=/run/x.sock",
+                             "--ipc-token-file=" + same,
+                             "--admin-port=9100",
+                             "--admin-token-file=" + admin});
+    ASSERT_FALSE(as_ipc.has_value());
+    EXPECT_NE(std::string{as_ipc.error().context}.find("ipc"), std::string::npos);
+
+    const auto distinct = run({"--ipc-socket=/run/x.sock",
+                               "--broker=true",
+                               "--admin-port=9100",
+                               "--admin-token-file=" + admin,
+                               "--publish-port=9200",
+                               "--publish-token-file=" + other});
+    EXPECT_TRUE(distinct.has_value()) << "three different tokens are the intended setup";
+}
+
+// The Unix-socket IPC token keeps its old rules: the publish rule must not leak into it.
+TEST_F(StartupTest, TheUnixSocketIpcTokenStillAcceptsAnyToken) {
+    const auto startup = run({"--ipc-socket=/run/x.sock",
+                              "--ipc-token-file=" + write("ipc", "s3cret-chosen-by-a-person\n")});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_EQ(startup->token, "s3cret-chosen-by-a-person");
 }
 
 TEST_F(StartupTest, BadInputIsRefusedBeforeAnythingStarts) {
@@ -162,6 +377,50 @@ TEST_F(EnvironmentTest, AnEnvironmentAloneIsEnoughAndNamesAreTheUpperCasedKeys) 
     EXPECT_EQ(startup->config.socket_path(), "/run/wsrv/ipc.sock");
     EXPECT_EQ(startup->config.embedded().port(), 9100);
     EXPECT_EQ(startup->config.embedded().server().max_connections_per_ip, 7U);
+}
+
+// ADR-0040: the budget is one more key, so it is a flag and a variable with no extra code; this
+// pins that a container operator can set it (the Kubernetes manifest does) and that a bad value is
+// refused at start-up rather than silently ignored.
+TEST_F(EnvironmentTest, TheBufferedBytesBudgetIsAVariableAndAFlagAndABadOneIsRefused) {
+    const auto defaults = run_with({}, {"WSRVD_IPC_SOCKET=/run/a.sock"});
+    ASSERT_TRUE(defaults.has_value());
+    EXPECT_EQ(defaults->config.embedded().server().max_buffered_bytes,
+              wsrv::kDefaultMaxBufferedBytes);
+
+    const auto from_env =
+        run_with({}, {"WSRVD_IPC_SOCKET=/run/a.sock", "WSRVD_MAX_BUFFERED_BYTES=268435456"});
+    ASSERT_TRUE(from_env.has_value());
+    EXPECT_EQ(from_env->config.embedded().server().max_buffered_bytes, 268435456U);
+
+    const auto flag =
+        run_with({"--max-buffered-bytes=1048576"},
+                 {"WSRVD_IPC_SOCKET=/run/a.sock", "WSRVD_MAX_BUFFERED_BYTES=268435456"});
+    ASSERT_TRUE(flag.has_value());
+    EXPECT_EQ(flag->config.embedded().server().max_buffered_bytes, 1048576U)
+        << "a flag wins over the environment";
+
+    for (const char* bad : {"WSRVD_MAX_BUFFERED_BYTES=0",
+                            "WSRVD_MAX_BUFFERED_BYTES=-1",
+                            "WSRVD_MAX_BUFFERED_BYTES=lots",
+                            "WSRVD_MAX_BUFFERED_BYTES=1099511627777"}) {
+        EXPECT_FALSE(run_with({}, {"WSRVD_IPC_SOCKET=/run/a.sock", bad}).has_value())
+            << bad << " (0, a sign, text and one byte over 1 TiB are all refused)";
+    }
+    const auto top =
+        run_with({}, {"WSRVD_IPC_SOCKET=/run/a.sock", "WSRVD_MAX_BUFFERED_BYTES=1099511627776"});
+    ASSERT_TRUE(top.has_value()) << "exactly 1 TiB is the largest value";
+    EXPECT_EQ(top->config.embedded().server().max_buffered_bytes, std::size_t{1} << 40);
+}
+
+TEST_F(EnvironmentTest, TheAdminTokenFileIsAVariableLikeAnyOther) {  // ADR-0041
+    const auto startup =
+        run_with({},
+                 {"WSRVD_IPC_SOCKET=/run/a.sock",
+                  "WSRVD_ADMIN_PORT=9100",
+                  "WSRVD_ADMIN_TOKEN_FILE=" + write("admin", std::string{kGenerated})});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_EQ(startup->config.embedded().admin_token(), std::string{kGenerated});
 }
 
 TEST_F(EnvironmentTest, TheLogSettingsAreFlagsAndVariablesLikeAnyOther) {  // ADR-0037
@@ -298,6 +557,25 @@ TEST_F(EnvironmentTest, HealthcheckIsAModeAndNeedsTheSameConfiguration) {
     EXPECT_FALSE(run_with({"--healthcheck"}, {}).has_value()) << "no socket path: nothing to check";
 }
 
+// ADR-0041: the container's HEALTHCHECK runs with the daemon's environment, so it sees
+// WSRVD_ADMIN_TOKEN_FILE too. It must neither need that file (a probe that fails because a secret
+// is unreadable would restart a healthy pod) nor send a credential.
+TEST_F(EnvironmentTest, HealthcheckWithAnAdminTokenFileDoesNotReadTheFile) {
+    const auto startup = run_with({"--healthcheck"},
+                                  {"WSRVD_IPC_SOCKET=/run/a.sock",
+                                   "WSRVD_ADMIN_PORT=9100",
+                                   "WSRVD_ADMIN_TOKEN_FILE=/run/secrets/does-not-exist"});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_TRUE(startup->healthcheck);
+    EXPECT_TRUE(startup->config.embedded().admin_token().empty()) << "no token file is read";
+    const auto daemon = run_with({},
+                                 {"WSRVD_IPC_SOCKET=/run/a.sock",
+                                  "WSRVD_ADMIN_PORT=9100",
+                                  "WSRVD_ADMIN_TOKEN_FILE=/run/secrets/does-not-exist"});
+    EXPECT_FALSE(daemon.has_value())
+        << "the daemon itself does read it, and a missing file stops it";
+}
+
 TEST(Usage, NamesTheEnvironmentAndHealthcheckAndSaysTokensAreNeverEnvironment) {  // ADR-0030
     const std::string_view text = wsrv::wsrvd::usage();
     EXPECT_NE(text.find("--healthcheck"), std::string_view::npos);
@@ -324,11 +602,43 @@ TEST(Usage, NamesThePerIpLimitFlagsWithTheirDefaults) {  // ADR-0021 section 5
     EXPECT_NE(text.find("0 = no limit"), std::string_view::npos);
 }
 
+TEST(Usage, NamesTheBufferedBytesBudgetAndWhatToSetItTo) {  // ADR-0040
+    const std::string_view text = wsrv::wsrvd::usage();
+    EXPECT_NE(text.find("--max-buffered-bytes"), std::string_view::npos);
+    EXPECT_NE(text.find("half the memory limit"), std::string_view::npos);
+}
+
+TEST(Usage, NamesTheAdminTokenFileAndSaysWhichPagesItProtects) {  // ADR-0041
+    const std::string_view text = wsrv::wsrvd::usage();
+    EXPECT_NE(text.find("--admin-token-file"), std::string_view::npos);
+    EXPECT_NE(text.find("/metrics"), std::string_view::npos);
+}
+
 TEST(Usage, NamesTheAdminFlagsAndWarnsThatThePortIsNotAuthenticated) {  // ADR-0023
     const std::string_view text = wsrv::wsrvd::usage();
     EXPECT_NE(text.find("--admin-port"), std::string_view::npos);
     EXPECT_NE(text.find("--admin-host"), std::string_view::npos);
     EXPECT_NE(text.find("no authentication"), std::string_view::npos);
+}
+
+TEST_F(EnvironmentTest,
+       TheTcpTransportCanBeChosenByTheEnvironmentAlone) {  // docker run -e WSRVD_IPC_PORT=...
+    const std::string token = write("token", std::string{kGenerated} + "\n");
+    const auto startup = run_with(
+        {}, {"WSRVD_IPC_PORT=9300", "WSRVD_IPC_HOST=0.0.0.0", "WSRVD_IPC_TOKEN_FILE=" + token});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_TRUE(startup->config.tcp());
+    EXPECT_EQ(wsrv::format_endpoint(startup->config.ipc_endpoint()), "0.0.0.0:9300");
+}
+
+// `docker run --rm wsrvd --generate-token=...` runs with the variables the image sets; none of them
+// matters (and an unknown WSRVD_* one must not stop a run that reads no configuration).
+TEST_F(EnvironmentTest, GenerateTokenIgnoresTheEnvironment) {
+    const auto startup =
+        run_with({"--generate-token=/data/t"},
+                 {"WSRVD_LISTEN_HOST=0.0.0.0", "WSRVD_LISTEN_PORT=8080", "WSRVD_NOT_A_KEY=1"});
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_EQ(startup->generate_token, "/data/t");
 }
 
 }  // namespace

@@ -43,7 +43,14 @@ private:
 // ------------------------------------------------------------------
 
 Verdict check_method(const HttpRequest& request, HandshakeContext& /*context*/) {
-    return request.method == "GET" ? Verdict{} : reject(405, {{"Allow", "GET"}});
+    if (request.method == "GET") {
+        return Verdict{};
+    }
+    // RFC 9110 section 15.5.6: a 405 names the methods that are allowed. The vector is built here,
+    // not as a braced temporary inside the call (GCC 15 reports that one as a dangling pointer).
+    std::vector<HttpHeader> allow;
+    allow.push_back(HttpHeader{"Allow", "GET"});
+    return reject(405, std::move(allow));
 }
 
 Verdict check_http_version(const HttpRequest& request, HandshakeContext& /*context*/) {

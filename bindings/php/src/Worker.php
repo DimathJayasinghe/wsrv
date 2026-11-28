@@ -54,9 +54,14 @@ final class Worker
     /** @var array<int, Connection> connections between their open and close events */
     private array $connections = [];
     private bool $stopping = false;
+    /** @var list<array{every: float, next: float, call: callable}> see every() */
+    private array $timers = [];
+    private readonly \Closure $clock;
 
-    public function __construct(private readonly Client $client)
+    /** @param callable(): float|null $clock seconds as a float; for tests (default: a monotonic clock) */
+    public function __construct(private readonly Client $client, ?callable $clock = null)
     {
+        $this->clock = $clock !== null ? \Closure::fromCallable($clock) : static fn (): float => hrtime(true) / 1e9;
     }
 
     public function on(string $event, callable $handler): self
@@ -95,7 +100,29 @@ final class Worker
         $this->stopping = false;
         while (!$this->stopping) {
             $this->step($pollInterval);
+            if (!$this->stopping) {
+                $this->runTimers();
+            }
         }
+    }
+
+    /**
+     * Call $fn about every $seconds while run() is serving (ADR-0042 A2): a statistics line, a sweep of
+     * your own state. The time is checked after each step(), so a call is at most one poll interval late
+     * (lower the argument of run() for a finer grain) and a long handler delays it. It does not catch up:
+     * after a pause of ten intervals there is one call, not ten. An exception leaves run() like one from
+     * a handler does, and the next call is already scheduled, so a timer that throws does not spin.
+     * Timers belong to this Worker; under a Supervisor, register them in the callback that gets each new one.
+     *
+     * @param callable(): void $fn
+     */
+    public function every(float $seconds, callable $fn): self
+    {
+        if (!is_finite($seconds) || $seconds <= 0.0) {
+            throw new \InvalidArgumentException('every() needs an interval above zero seconds');
+        }
+        $this->timers[] = ['every' => $seconds, 'next' => ($this->clock)() + $seconds, 'call' => $fn];
+        return $this;
     }
 
     /** Ask run() to return after the handler that is running now. Safe to call from a handler. */
@@ -122,6 +149,20 @@ final class Worker
         }
         $this->dispatch($message);
         return true;
+    }
+
+    private function runTimers(): void
+    {
+        if ($this->timers === []) {
+            return;
+        }
+        $now = ($this->clock)();
+        foreach ($this->timers as $i => $timer) {
+            if ($now >= $timer['next']) {
+                $this->timers[$i]['next'] = $now + $timer['every'];
+                ($timer['call'])();
+            }
+        }
     }
 
     private function dispatch(Event $event): void

@@ -21,7 +21,8 @@ namespace wsrv {
 
 Server::Server(Key /*unused*/, ServerConfig config, const ServerDeps& deps)
     : config_{std::move(config)}, factory_{*deps.factory}, decider_{deps.decider},
-      publish_sources_{deps.publish}, wrapper_{deps.transport_wrapper},
+      publish_sources_{deps.publish}, admin_token_{deps.admin_token},
+      wrapper_{deps.transport_wrapper},
       sys_{deps.sys != nullptr ? *deps.sys : static_cast<ISyscalls&>(own_sys_)},
       clock_{deps.clock != nullptr ? *deps.clock : static_cast<const IClock&>(own_clock_)},
       logger_{deps.logger != nullptr ? *deps.logger : static_cast<ILogger&>(own_logger_)} {}
@@ -130,6 +131,7 @@ Result<void> Server::make_shared_state() {
                                                             clock_,
                                                             logger_,
                                                             live_,
+                                                            buffered_,
                                                             decider_,
                                                             pending_.get(),
                                                             wrapper_,
@@ -229,10 +231,17 @@ Result<void> Server::start_admin() {
     admin.listen = *config_.admin;
     admin.max_connections = config_.admin_max_connections;
     admin.request_timeout = config_.admin_request_timeout;
+    if (admin_token_ != nullptr && admin_token_->size() < kMinAdminTokenBytes) {
+        return fail(ErrorCode::InvalidConfig, "admin: the token needs at least 32 bytes");
+    }
     AdminSources sources;
     try {
         sources.metrics_text = [this] { return metrics_text(); };
         sources.ready = [this] { return !shutting_down_; };
+        if (admin_token_ != nullptr) {
+            sources.token = *admin_token_;
+            sources.unauthorized = [this] { note_admin_refusal(); };
+        }
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::ResourceExhausted, "server: out of memory");
     }
@@ -245,8 +254,11 @@ Result<void> Server::start_admin() {
     try {
         logger_.log(LogLevel::Info,
                     "admin_listening",
-                    "server: admin listening on " + format_endpoint(bound));
-        if (!is_loopback(bound)) {
+                    "server: admin listening on " + format_endpoint(bound) +
+                        (admin_token_ != nullptr
+                             ? " (/metrics needs the admin token; /healthz and /readyz do not)"
+                             : ""));
+        if (admin_token_ == nullptr && !is_loopback(bound)) {
             logger_.log(LogLevel::Warn,
                         "admin_exposed",
                         "server: the admin port is not on loopback and has no authentication");
@@ -255,6 +267,18 @@ Result<void> Server::start_admin() {
         return fail(ErrorCode::ResourceExhausted, "server: out of memory");
     }
     return {};
+}
+
+/// A `/metrics` request was refused for its credential (ADR-0041). Logged on the 1st, 2nd, 4th,
+/// 8th... refusal, like the other floods; the count is only touched on loop 0, where the admin
+/// listener runs. The credential the peer sent is never in the line.
+void Server::note_admin_refusal() {
+    ++admin_refusals_;
+    if ((admin_refusals_ & (admin_refusals_ - 1)) == 0) {
+        logger_.log(LogLevel::Warn,
+                    "admin_unauthorized",
+                    "server: a request for /metrics was refused: no valid admin token");
+    }
 }
 
 /// The per-IP table (ADR-0021), unless both limits are off. Its hash is keyed from the OS random
@@ -357,6 +381,12 @@ void Server::on_accept(Fd client, const Endpoint& peer) {
         }
         return;
     }
+    // The connections together hold more than the budget (ADR-0040): shed the newcomer before it
+    // takes a per-IP slot. A soft cap, so the connections that exist are not touched.
+    if (buffered_.load(std::memory_order_relaxed) >= config_.max_buffered_bytes) {
+        refuse_for_buffer_budget(std::move(client));
+        return;
+    }
     // A trusted proxy (ADR-0029) takes no per-IP slot here: its clients are admitted by the
     // connection once the upgrade request names them. The shard decides the same way on release.
     if (ip_limits_ != nullptr && !is_trusted_proxy(config_.trusted_proxies, peer)) {
@@ -400,6 +430,21 @@ void Server::refuse_for_ip_limit(Fd client, Admission verdict) {
     const std::string_view answer = verdict == Admission::TableFull ? kAnswer503 : kAnswer429;
     static_cast<void>(
         sys_.send(client.get(), answer.data(), answer.size(), MSG_NOSIGNAL | MSG_DONTWAIT));
+}  // the descriptor is closed here
+
+/// The buffered-bytes budget is used up (ADR-0040): say so in one send and close, like a refused
+/// address. A 503 and not a silent close, because the server is overloaded, not the client wrong,
+/// and `Retry-After` is the honest answer. Counted, and logged on the 1st, 2nd, 4th... refusal.
+void Server::refuse_for_buffer_budget(Fd client) {
+    main_->metrics().add(Metric::RejectedBufferBudget);
+    const std::uint64_t total = main_->metrics().read(Metric::RejectedBufferBudget);
+    if ((total & (total - 1)) == 0) {  // log the 1st, 2nd, 4th, 8th...: rate-limited
+        logger_.log(LogLevel::Warn,
+                    "buffer_budget",
+                    "server: buffered-bytes budget used up, refusing clients");
+    }
+    static_cast<void>(
+        sys_.send(client.get(), kAnswer503.data(), kAnswer503.size(), MSG_NOSIGNAL | MSG_DONTWAIT));
 }  // the descriptor is closed here
 
 /// Give the descriptor to another loop. The task must be copyable, so the move-only Fd travels in

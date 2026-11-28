@@ -95,6 +95,10 @@ SysResult LinuxSyscalls::unlink_path(const char* path) {
     return captured(::unlink(path));
 }
 
+SysResult LinuxSyscalls::open_file(const char* path, int flags, std::uint32_t mode) {
+    return captured(::open(path, flags | O_CLOEXEC, static_cast<mode_t>(mode)));
+}
+
 SysResult LinuxSyscalls::peer_uid(int fd, std::uint32_t& uid) {
     ucred credentials{};
     socklen_t length = sizeof(credentials);

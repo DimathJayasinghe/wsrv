@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "wsrvd/token_file.hpp"
+#include "wsrvd/token_format.hpp"
 
 namespace wsrv::wsrvd {
 
@@ -15,6 +16,8 @@ namespace {
 constexpr std::string_view kConfigFlag = "--config=";
 constexpr std::string_view kEnvironmentPrefix = "WSRVD_";
 constexpr std::string_view kHealthcheckFlag = "--healthcheck";
+constexpr std::string_view kGenerateTokenFlag = "--generate-token";
+constexpr std::string_view kGenerateTokenPrefix = "--generate-token=";
 
 /// The keys that may be given several times (ADR-0030 section 1): one variable carries a comma list.
 [[nodiscard]] bool repeatable(std::string_view key) noexcept {
@@ -169,6 +172,25 @@ Result<void> apply(DaemonConfig& config, std::string_view arg) {
     return arg == "--help" || arg == "-h";
 }
 
+[[nodiscard]] bool is_generate_token(std::string_view arg) noexcept {
+    return arg == kGenerateTokenFlag || arg.starts_with(kGenerateTokenPrefix);
+}
+
+/// `--generate-token=FILE` is a mode of its own: it reads no environment and no configuration (the
+/// image's WSRVD_* variables are there when it runs, and a run that only writes a file must not
+/// depend on them), and any other argument is a mistake worth stopping for.
+Result<void> read_generate_mode(Startup& startup, std::span<const std::string_view> args) {
+    if (args.size() != 1) {
+        return fail(ErrorCode::InvalidConfig, "--generate-token takes no other argument");
+    }
+    const std::string_view arg = args.front();
+    if (!arg.starts_with(kGenerateTokenPrefix) || arg.size() == kGenerateTokenPrefix.size()) {
+        return fail(ErrorCode::InvalidConfig, "--generate-token needs a file: --generate-token=FILE");
+    }
+    startup.generate_token = std::string{arg.substr(kGenerateTokenPrefix.size())};
+    return {};
+}
+
 /// The arguments in order (`--config=FILE` and `--key=value`); `--healthcheck` is a mode.
 Result<void> apply_arguments(Startup& startup, std::span<const std::string_view> args) {
     for (const std::string_view arg : args) {
@@ -181,26 +203,169 @@ Result<void> apply_arguments(Startup& startup, std::span<const std::string_view>
     return {};
 }
 
-/// The IPC token and the publish token, each read from its file with the permission checks of
-/// read_token_file. The publish token goes straight into the embedded config, never through the key
-/// table, and has the length floor of set_publish_token().
-Result<void> read_secrets(Startup& startup, ISyscalls& sys) {
-    if (!startup.config.token_file().empty()) {
-        Result<std::string> token = read_token_file(sys, startup.config.token_file());
-        if (!token) {
-            return std::unexpected{token.error()};
-        }
-        startup.token = std::move(*token);
+/// The built-in default Unix socket: set only for the official image (CMake option
+/// WSRVD_DEFAULT_IPC_SOCKET), so that `-e WSRVD_IPC_PORT=...` alone selects TCP there (ADR-0038).
+#ifdef WSRVD_DEFAULT_IPC_SOCKET
+constexpr std::string_view kBuiltInSocket = WSRVD_DEFAULT_IPC_SOCKET;
+#else
+constexpr std::string_view kBuiltInSocket{};
+#endif
+
+/// The IPC token, read from its file with the permission checks of read_token_file. Over TCP the
+/// token is the only authentication and can be guessed from the network, so only the form the
+/// generator writes is accepted: a long token somebody chose is not safe (ADR-0038 section 3). The
+/// message names the fix and never echoes the token.
+Result<void> read_ipc_token(Startup& startup, ISyscalls& sys) {
+    if (startup.config.token_file().empty()) {
+        return {};
     }
-    if (!startup.config.publish_token_file().empty()) {
-        Result<std::string> token = read_token_file(sys, startup.config.publish_token_file());
-        if (!token) {
-            return std::unexpected{token.error()};
-        }
-        return startup.config.set_publish_token(std::move(*token));
+    Result<std::string> token = read_token_file(sys, startup.config.token_file());
+    if (!token) {
+        return std::unexpected{token.error()};
     }
+    if (startup.config.tcp() && !is_generated_token(*token)) {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: over TCP the ipc token must be one made by `wsrvd "
+                    "--generate-token=FILE` (a token you chose, however long, can be guessed)");
+    }
+    startup.token = std::move(*token);
     return {};
 }
+
+/// The admin token (ADR-0041). Plain HTTP and the only credential for /metrics, so a long token
+/// somebody chose is as guessable here as anywhere (as ADR-0039). A scraper holds this token, so it
+/// must not also speak as the application's worker: it must differ from the IPC token, which is
+/// read first. The messages name the fix and never echo a token.
+Result<void> read_admin_token(Startup& startup, ISyscalls& sys) {
+    if (startup.config.admin_token_file().empty()) {
+        return {};
+    }
+    Result<std::string> token = read_token_file(sys, startup.config.admin_token_file());
+    if (!token) {
+        return std::unexpected{token.error()};
+    }
+    if (!is_generated_token(*token)) {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: the admin token must be one made by `wsrvd --generate-token=FILE` "
+                    "(a token you chose, however long, can be guessed)");
+    }
+    if (*token == startup.token) {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: the admin token must differ from the ipc token (a scraper that "
+                    "held it could speak as the application); make a new one with `wsrvd "
+                    "--generate-token=FILE`");
+    }
+    return startup.config.set_admin_token(std::move(*token));
+}
+
+/// The publish token (ADR-0028), which goes straight into the embedded config, never through the key
+/// table. The endpoint is plain HTTP and its token the only authentication, so a long token somebody
+/// chose is as unsafe here as over TCP IPC (ADR-0039). The rule is new in 1.1 and the message says
+/// so, because it can stop a 1.0 configuration that worked. It must differ from the admin token,
+/// which is read first (ADR-0041). It never echoes a token, and set_publish_token() keeps the
+/// length floor as the last defence.
+Result<void> read_publish_token(Startup& startup, ISyscalls& sys) {
+    if (startup.config.publish_token_file().empty()) {
+        return {};
+    }
+    Result<std::string> token = read_token_file(sys, startup.config.publish_token_file());
+    if (!token) {
+        return std::unexpected{token.error()};
+    }
+    if (!is_generated_token(*token)) {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: from wsrv 1.1 the publish token must be one made by `wsrvd "
+                    "--generate-token=FILE` (a token you chose, however long, can be guessed); "
+                    "make a new one and give it to your publishers");
+    }
+    const std::string& admin = startup.config.embedded().admin_token();
+    if (!admin.empty() && *token == admin) {
+        return fail(ErrorCode::InvalidConfig,
+                    "config: the publish token must differ from the admin token (a scraper that "
+                    "held it could publish into rooms); make a new one with `wsrvd "
+                    "--generate-token=FILE`");
+    }
+    return startup.config.set_publish_token(std::move(*token));
+}
+
+/// The three secrets, each from its own file, in the order the distinctness rules need: IPC, then
+/// admin (differs from IPC), then publish (differs from admin).
+Result<void> read_secrets(Startup& startup, ISyscalls& sys) {
+    if (const Result<void> ipc = read_ipc_token(startup, sys); !ipc) {
+        return ipc;
+    }
+    if (const Result<void> admin = read_admin_token(startup, sys); !admin) {
+        return admin;
+    }
+    return read_publish_token(startup, sys);
+}
+
+/// The text printed for --help and after a usage error (data, not one long function).
+constexpr std::string_view kUsageText =
+    "usage: wsrvd --ipc-socket=PATH [options]   (or --ipc-port=PORT, below)\n"
+           "\n"
+           "  --ipc-socket=PATH          Unix socket the application connects to\n"
+           "  --ipc-port=PORT  --ipc-host=ADDR (127.0.0.1)  TCP instead of the Unix socket, for a\n"
+           "                             worker on another host or outside Docker; needs\n"
+           "                             --ipc-token-file with a token made by --generate-token\n"
+           "                             (wsrv1_ + 64 hex digits + _ + checksum); the link is\n"
+           "                             plaintext: loopback, a private network or a tunnel only\n"
+           "                             (docs/DEPLOYMENT.md section 11)\n"
+           "  --ipc-token-file=FILE      shared token; FILE must be mode 0600 and yours\n"
+           "  --generate-token=FILE      write a new random token to FILE (mode 0600, refuses an\n"
+           "                             existing file, prints no secret) and exit; use it alone\n"
+           "  --ipc-max-frame=BYTES      largest IPC frame (default: max_message_size + 64 KiB)\n"
+           "  --ipc-hello-timeout-ms=MS  time allowed for HELLO (default 5000)\n"
+           "  --ipc-stall-ms=MS          drop an application that reads nothing for MS (default "
+           "10000)\n"
+           "  --config=FILE              read 'key = value' lines (later arguments override)\n"
+           "  --log-level=error|warn|info|debug (info)  one line per event on stderr, as\n"
+           "                             key=value; see docs/OPERATIONS.md section 2\n"
+           "  --log-peer=BOOL (false)    put the client address in log lines (personal data)\n"
+           "  --healthcheck              probe the running daemon (GET /healthz on the admin port,\n"
+           "                             else connect to the websocket port and, for a Unix socket, the IPC socket);\n"
+           "                             exit 0 = healthy, 1 = not; reads the same settings\n"
+           "  --listen-host=ADDR  --listen-port=PORT  --threads=N  --allow-origin=ORIGIN\n"
+           "  --max-message-size=BYTES  --max-connections=N  --shutdown-grace-ms=MS\n"
+           "  --admin-port=PORT  --admin-host=ADDR (127.0.0.1)  serve /metrics, /healthz and\n"
+           "                             /readyz over plain HTTP on this address; off unless\n"
+           "                             a port is given; there is no authentication (but see\n"
+           "                             --admin-token-file), so keep it on loopback or behind\n"
+           "                             a network policy\n"
+           "  --admin-token-file=FILE    with --admin-port: GET /metrics then needs `Authorization:\n"
+           "                             Bearer <token>`; /healthz and /readyz stay open (probes\n"
+           "                             cannot send one). FILE holds a token made by\n"
+           "                             --generate-token, mode 0600, different from the publish\n"
+           "                             and IPC tokens. The token travels in clear: this keeps\n"
+           "                             out whoever can reach the port, not whoever can read it\n"
+           "  --publish-port=PORT  --publish-host=ADDR (127.0.0.1)  --publish-token-file=FILE\n"
+           "                             accept `POST /publish?topic=T` from other processes and\n"
+           "                             send the body to the subscribers of T (needs\n"
+           "                             --broker=true); FILE holds a token made by\n"
+           "                             --generate-token (required from 1.1), mode 0600; plain\n"
+           "                             HTTP: keep it on loopback or a private network, or put\n"
+           "                             TLS in front\n"
+           "  --max-connections-per-ip=N (100)  --max-new-connections-per-ip-per-second=N (50)\n"
+           "                             per client address (IPv6: per /64); over a limit the\n"
+           "                             client gets 429; 0 = no limit (behind a proxy every user\n"
+           "                             is one address: raise or switch off)\n"
+           "  --max-buffered-bytes=BYTES (1 GiB)  the bytes all connections may hold in unfinished\n"
+           "                             messages and unwritten output; over it new clients get\n"
+           "                             503 (set about half the memory limit: OPERATIONS 1.2.3)\n"
+           "  --permessage-deflate=true  compress messages (RFC 7692; off by default, costs memory\n"
+           "                             per connection: see docs/OPERATIONS.md); tuning, only used\n"
+           "                             with the switch on:\n"
+           "  --deflate-server-max-window-bits=9..15 (12)  --deflate-level=1..9 (6)\n"
+           "  --deflate-server-no-context-takeover=BOOL (true)  --deflate-min-size=BYTES (128)\n"
+           "  --deflate-max-ratio=1..1000 (100)  inflated size limit, times the compressed size\n"
+           "\n"
+           "Every setting is also an environment variable: WSRVD_ and the key in upper case\n"
+           "(WSRVD_LISTEN_PORT, WSRVD_ALLOW_ORIGIN=a,b for repeatable keys). The environment is\n"
+           "the base layer; --config and flags override it. An unknown WSRVD_ variable is an\n"
+           "error; an empty one counts as unset.\n"
+           "\n"
+           "The token is never accepted on the command line or in the environment: it would show\n"
+           "in `ps` and /proc. Use ipc_token_file / publish_token_file.\n";
 
 }  // namespace
 
@@ -213,8 +378,15 @@ Result<Startup> prepare(std::span<const std::string_view> args,
                         ISyscalls& sys,
                         std::string* detail) {
     Startup startup;
+    startup.config.set_default_socket(std::string{kBuiltInSocket});
     if (std::ranges::any_of(args, is_help)) {
         startup.help = true;  // help wins over a bad variable or flag: it is how one finds out
+        return startup;
+    }
+    if (std::ranges::any_of(args, is_generate_token)) {
+        if (const Result<void> done = read_generate_mode(startup, args); !done) {
+            return std::unexpected{done.error()};
+        }
         return startup;
     }
     if (const Result<void> done = apply_environment(startup.config, environment, detail); !done) {
@@ -236,51 +408,7 @@ Result<Startup> prepare(std::span<const std::string_view> args,
 }
 
 std::string_view usage() noexcept {
-    return "usage: wsrvd --ipc-socket=PATH [options]\n"
-           "\n"
-           "  --ipc-socket=PATH          Unix socket the application connects to (required)\n"
-           "  --ipc-token-file=FILE      shared token; FILE must be mode 0600 and yours\n"
-           "  --ipc-max-frame=BYTES      largest IPC frame (default: max_message_size + 64 KiB)\n"
-           "  --ipc-hello-timeout-ms=MS  time allowed for HELLO (default 5000)\n"
-           "  --ipc-stall-ms=MS          drop an application that reads nothing for MS (default "
-           "10000)\n"
-           "  --config=FILE              read 'key = value' lines (later arguments override)\n"
-           "  --log-level=error|warn|info|debug (info)  one line per event on stderr, as\n"
-           "                             key=value; see docs/OPERATIONS.md section 2\n"
-           "  --log-peer=BOOL (false)    put the client address in log lines (personal data)\n"
-           "  --healthcheck              probe the running daemon (GET /healthz on the admin port,\n"
-           "                             else connect to the websocket port and the IPC socket);\n"
-           "                             exit 0 = healthy, 1 = not; reads the same settings\n"
-           "  --listen-host=ADDR  --listen-port=PORT  --threads=N  --allow-origin=ORIGIN\n"
-           "  --max-message-size=BYTES  --max-connections=N  --shutdown-grace-ms=MS\n"
-           "  --admin-port=PORT  --admin-host=ADDR (127.0.0.1)  serve /metrics, /healthz and\n"
-           "                             /readyz over plain HTTP on this address; off unless\n"
-           "                             a port is given; there is no authentication, so keep\n"
-           "                             it on loopback or behind a network policy\n"
-           "  --publish-port=PORT  --publish-host=ADDR (127.0.0.1)  --publish-token-file=FILE\n"
-           "                             accept `POST /publish?topic=T` from other processes and\n"
-           "                             send the body to the subscribers of T (needs\n"
-           "                             --broker=true); FILE holds a token of at least 32 bytes,\n"
-           "                             mode 0600; plain HTTP: keep it on loopback or a private\n"
-           "                             network, or put TLS in front\n"
-           "  --max-connections-per-ip=N (100)  --max-new-connections-per-ip-per-second=N (50)\n"
-           "                             per client address (IPv6: per /64); over a limit the\n"
-           "                             client gets 429; 0 = no limit (behind a proxy every user\n"
-           "                             is one address: raise or switch off)\n"
-           "  --permessage-deflate=true  compress messages (RFC 7692; off by default, costs memory\n"
-           "                             per connection: see docs/OPERATIONS.md); tuning, only used\n"
-           "                             with the switch on:\n"
-           "  --deflate-server-max-window-bits=9..15 (12)  --deflate-level=1..9 (6)\n"
-           "  --deflate-server-no-context-takeover=BOOL (true)  --deflate-min-size=BYTES (128)\n"
-           "  --deflate-max-ratio=1..1000 (100)  inflated size limit, times the compressed size\n"
-           "\n"
-           "Every setting is also an environment variable: WSRVD_ and the key in upper case\n"
-           "(WSRVD_LISTEN_PORT, WSRVD_ALLOW_ORIGIN=a,b for repeatable keys). The environment is\n"
-           "the base layer; --config and flags override it. An unknown WSRVD_ variable is an\n"
-           "error; an empty one counts as unset.\n"
-           "\n"
-           "The token is never accepted on the command line or in the environment: it would show\n"
-           "in `ps` and /proc. Use ipc_token_file / publish_token_file.\n";
+    return kUsageText;
 }
 
 }  // namespace wsrv::wsrvd

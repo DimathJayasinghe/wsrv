@@ -2,15 +2,18 @@
 // wsrvd: the WebSocket sidecar daemon (ADR-0017). This file is the composition root: it is the one
 // place that creates the concrete loop, signal handling and IPC server and wires them together.
 #include "base/clock.hpp"
+#include "net/endpoint.hpp"
 #include "net/event_loop.hpp"
 #include "net/signal_watcher.hpp"
 #include "net/syscalls.hpp"
+#include "net/system_random.hpp"
 
 #include <array>
 #include <chrono>
 #include <csignal>
 #include <exception>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -22,6 +25,7 @@
 #include "wsrvd/ipc_server.hpp"
 #include "wsrvd/reload.hpp"
 #include "wsrvd/startup.hpp"
+#include "wsrvd/token_file.hpp"
 
 namespace {
 
@@ -33,7 +37,11 @@ int fail_with(std::string_view what, const wsrv::Error& error) {
 wsrv::wsrvd::IpcServerConfig ipc_config(const wsrv::wsrvd::Startup& startup, wsrv::ILogger& logger) {
     wsrv::wsrvd::IpcServerConfig ipc;
     ipc.logger = &logger;
-    ipc.socket_path = startup.config.socket_path();
+    if (startup.config.tcp()) {
+        ipc.tcp = startup.config.ipc_endpoint();  // ADR-0038; the token is mandatory (checked at start)
+    } else {
+        ipc.socket_path = startup.config.socket_path();
+    }
     ipc.token = startup.token;
     ipc.max_frame = startup.config.max_frame();
     ipc.hello_timeout = startup.config.hello_timeout();
@@ -41,6 +49,18 @@ wsrv::wsrvd::IpcServerConfig ipc_config(const wsrv::wsrvd::Startup& startup, wsr
     ipc.restart_grace = startup.config.embedded().server().shutdown_grace;
     ipc.handshake_hook = startup.config.embedded().handshake_hook();
     return ipc;
+}
+
+/// ADR-0043: an `ipc_max_frame` the operator set above what a connection's outbound queue can
+/// carry was lowered to it. Say so once at start: the value in the config file is not in use.
+void warn_if_frame_lowered(wsrv::ILogger& log, const wsrv::wsrvd::Startup& startup) {
+    if (!startup.config.max_frame_lowered()) {
+        return;
+    }
+    log.log(wsrv::LogLevel::Warn,
+            "ipc_max_frame_lowered",
+            "wsrvd: ipc_max_frame is above 2 * max_message_size - 2 and was lowered to it: "
+            "the daemon cannot send a larger message to a browser (raise max_message_size)");
 }
 
 /// Create the WebSocket server and the IPC server on `loop`, start the WebSocket threads, run the
@@ -58,7 +78,8 @@ int run_daemon(wsrv::EventLoop& loop,
     wsrv::ILogger& log = (*embedded)->logger();
     wsrv::wsrvd::EmbeddedBackend backend{**embedded};
     reloadable = embedded->get();  // SIGHUP may reload TLS from now on (see serve())
-    if (startup.token.empty()) {
+    warn_if_frame_lowered(log, startup);
+    if (startup.token.empty() && !startup.config.tcp()) {
         log.log(wsrv::LogLevel::Warn,
                 "ipc_no_token",
                 "wsrvd: no ipc_token_file; only the peer uid check protects the socket");
@@ -68,9 +89,15 @@ int run_daemon(wsrv::EventLoop& loop,
     if (!server) {
         return fail_with("cannot open the IPC socket", server.error());
     }
-    log.log(wsrv::LogLevel::Info,
-            "ipc_ready",
-            "wsrvd: ipc socket " + startup.config.socket_path() + " ready");
+    if (const std::optional<wsrv::Endpoint> bound = (*server)->tcp_endpoint()) {
+        log.log(wsrv::LogLevel::Info,
+                "ipc_ready",
+                "wsrvd: ipc tcp " + wsrv::format_endpoint(*bound) + " ready");
+    } else {
+        log.log(wsrv::LogLevel::Info,
+                "ipc_ready",
+                "wsrvd: ipc socket " + startup.config.socket_path() + " ready");
+    }
 
     // Only now spawn the WebSocket threads: the signal mask is already set (see serve()), the IPC
     // socket is listening, and an application can connect before the first browser does.
@@ -140,6 +167,19 @@ int health(const wsrv::wsrvd::Startup& startup) {
     return 0;
 }
 
+/// --generate-token=FILE (ADR-0038 section 3): a new random token in FILE, mode 0600. The token is
+/// never printed; the path is, so the operator sees what was done and where.
+int generate(const std::string& path, wsrv::ISyscalls& sys) {
+    wsrv::SystemRandom random;
+    const wsrv::Result<void> done = wsrv::wsrvd::generate_token_file(sys, random, path);
+    if (!done) {
+        std::cerr << "wsrvd: cannot create the token file " << path << ": " << done.error().context << '\n';
+        return 1;
+    }
+    std::cout << "wsrvd: wrote a new token to " << path << " (mode 0600)\n";
+    return 0;
+}
+
 int run(const std::vector<std::string_view>& args, const std::vector<std::string_view>& environment) {
     wsrv::LinuxSyscalls sys;
     std::string detail;
@@ -155,6 +195,9 @@ int run(const std::vector<std::string_view>& args, const std::vector<std::string
     if (startup->help) {
         std::cout << wsrv::wsrvd::usage();
         return 0;
+    }
+    if (!startup->generate_token.empty()) {
+        return generate(startup->generate_token, sys);
     }
     if (startup->healthcheck) {
         return health(*startup);

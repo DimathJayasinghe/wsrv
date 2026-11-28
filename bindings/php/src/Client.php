@@ -48,16 +48,81 @@ final class Client
     /**
      * Connect and complete the HELLO handshake.
      *
+     * $socketPath is either the path of wsrvd's Unix socket (`/run/wsrv/ipc.sock`) or, since 1.1,
+     * `tcp://host:port` (`tcp://127.0.0.1:9300`, `tcp://[::1]:9300`), for a worker that cannot reach
+     * a Unix socket: on Windows, or on macOS against a daemon in Docker (ADR-0038). Over TCP the
+     * daemon requires a token that `wsrvd --generate-token=FILE` made (any other is refused at its
+     * start), and the link is not encrypted: keep it on loopback, a private network or a tunnel.
+     *
      * @throws HandshakeRefused the daemon said no (wrong token or version, or another application is connected)
      * @throws ConnectionClosed the daemon hung up, or never answered within $timeout seconds
+     * @throws WsrvException the endpoint is malformed or nothing listens there
      */
     public static function connect(string $socketPath, string $token = '', float $timeout = 5.0): self
     {
-        $stream = @stream_socket_client('unix://' . $socketPath, $errno, $error, $timeout);
-        if ($stream === false) {
-            throw new WsrvException('cannot connect to ' . $socketPath . ': ' . $error . ' (' . $errno . ')');
+        // The parameter keeps its 1.0 name: renaming it would break a caller using it as a named argument.
+        return self::handshake(self::dial($socketPath, $timeout), $token, $timeout);
+    }
+
+    /**
+     * Open the connection only, without the handshake: a connected stream for handshake().
+     * connect() is dial() then handshake(); tests and embedders with their own flow use the parts.
+     *
+     * @return resource
+     * @throws WsrvException the endpoint is malformed or nothing listens there
+     */
+    public static function dial(string $endpoint, float $timeout = 5.0)
+    {
+        if (str_starts_with($endpoint, 'tcp://')) {
+            self::isTcpEndpoint($endpoint) || throw new WsrvException(
+                'not a valid IPC endpoint: ' . self::printable($endpoint)
+                . ' (expected tcp://host:port with a port from 1 to 65535, for example tcp://127.0.0.1:9300)'
+            );
+            $stream = @stream_socket_client(
+                $endpoint,
+                $errno,
+                $error,
+                $timeout,
+                STREAM_CLIENT_CONNECT,
+                stream_context_create(self::tcpContext()),
+            );
+        } else {
+            $stream = @stream_socket_client('unix://' . $endpoint, $errno, $error, $timeout);
         }
-        return self::handshake($stream, $token, $timeout);
+        if ($stream === false) {
+            throw new WsrvException('cannot connect to ' . $endpoint . ': ' . $error . ' (' . $errno . ')');
+        }
+        return $stream;
+    }
+
+    /** Whether $endpoint is a well-formed `tcp://host:port` (a port from 1 to 65535). */
+    public static function isTcpEndpoint(string $endpoint): bool
+    {
+        // host: an IPv6 literal in brackets, or an IPv4 address or name made of letters, digits, dot, hyphen
+        // and underscore. \z, not $, so a trailing newline does not slip through.
+        if (preg_match('~^tcp://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+):([0-9]{1,5})\z~', $endpoint, $m) !== 1) {
+            return false;
+        }
+        $port = (int) $m[2];
+        return $port >= 1 && $port <= 65535;
+    }
+
+    /**
+     * The stream context for a TCP connection: TCP_NODELAY, because the link carries small request
+     * and answer frames and Nagle's algorithm with delayed ACK would add tens of milliseconds to each.
+     *
+     * @return array{socket: array{tcp_nodelay: bool}}
+     */
+    public static function tcpContext(): array
+    {
+        return ['socket' => ['tcp_nodelay' => true]];
+    }
+
+    /** An endpoint as it may appear in a message: no control characters, bounded length. */
+    private static function printable(string $text): string
+    {
+        $text = substr($text, 0, 80);
+        return json_encode($text, JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_SLASHES) ?: '""';
     }
 
     /**
@@ -215,7 +280,7 @@ final class Client
         $this->nextRequest = $request === 0xFFFFFFFF ? 1 : $request + 1;
         $frame = $encode($request);
         if (strlen($frame) - 4 > $this->maxFrame) {
-            throw new ProtocolError('message is larger than the daemon accepts (' . $this->maxFrame . ' bytes per frame)');
+            throw new MessageTooLarge('message is larger than the daemon accepts (' . $this->maxFrame . ' bytes per frame)');
         }
         $this->writeAll($frame, $this->writeTimeout);
         return $request;

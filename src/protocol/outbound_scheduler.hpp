@@ -30,6 +30,14 @@ struct OutboundConfig {
 /// Cost charged to the queue bound for every queued message on top of its payload.
 inline constexpr std::size_t kMessageOverhead = 16;
 
+/// The largest message payload this queue can ever hold (ADR-0043): one over it fails with
+/// BufferFull however empty the queue is, so a caller that learns this early can say no, instead
+/// of the loop dropping the message later.
+[[nodiscard]] constexpr std::size_t largest_message(const OutboundConfig& config) noexcept {
+    return config.max_queued_bytes > kMessageOverhead ? config.max_queued_bytes - kMessageOverhead
+                                                      : 0;
+}
+
 /// Most Pongs waiting to be sent at once: 16 x (125 + 2) bytes at worst, per connection, and only
 /// while a peer is pinging faster than the socket drains.
 inline constexpr std::size_t kMaxQueuedPongs = 16;
@@ -83,6 +91,12 @@ public:
     [[nodiscard]] std::size_t queued_bytes() const noexcept {
         return queued_;
     }
+
+    /// Bytes waiting for the peer to take them, wherever they wait: the queue (charged against
+    /// max_queued_bytes) plus what is already framed in the wire buffer and not yet written. A
+    /// client that reads nothing keeps its first message in the wire buffer, so queued_bytes()
+    /// alone under-counts (ADR-0040).
+    [[nodiscard]] std::size_t held_bytes() const noexcept;
 
     /// Queue a Ping. One may wait at a time: Error{Backpressure} if one is unsent,
     /// Error{InvalidArgument} if payload > 125 bytes, Error{Closing} after queue_close().

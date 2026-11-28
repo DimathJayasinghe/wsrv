@@ -301,6 +301,49 @@ TEST_F(BudgetTest, ASendLargerThanTheWholeBudgetCanNeverBeSentAndIsInvalidNotBus
         << "exactly the budget fits";
 }
 
+// ---- the largest message the outbound queue can ever take ---------------------------------------
+// ADR-0043: a send that can never fit a connection's outbound queue used to be accepted, then
+// dropped on the loop, and the caller was told OK. It is refused where the caller can see it.
+
+class MessageCapTest : public ::testing::Test {
+protected:
+    static constexpr ConnectionId kId = 7;
+    static constexpr std::size_t kCap = 100;
+
+    MessageCapTest() {
+        wsrv::EventLoopConfig config;
+        auto loop = wsrv::EventLoop::create(sys_, clock_, config);
+        EXPECT_TRUE(loop.has_value());
+        loop_ = std::move(*loop);
+        link_ = std::make_shared<wsrv::LoopLink>(*loop_, directory_, std::size_t{1} << 20U, kCap);
+        directory_.sessions[kId] = &session_;
+    }
+
+    static inline wsrv::LinuxSyscalls sys_;
+    static inline wsrv::SteadyClock clock_;
+    FakeDirectory directory_;
+    RecordingSession session_{kId};
+    std::unique_ptr<wsrv::EventLoop> loop_;
+    std::shared_ptr<wsrv::LoopLink> link_;
+};
+
+TEST_F(MessageCapTest, ASendOverTheOutboundCapIsRefusedAtOnceAndHoldsNothing) {
+    const SessionHandle handle{link_, kId};
+    const auto text = handle.send_text(std::string(kCap + 1, 'a'));
+    ASSERT_FALSE(text.has_value());
+    EXPECT_EQ(text.error().code, ErrorCode::InvalidArgument) << "retrying cannot help";
+    const auto binary = handle.send_binary(std::vector<std::byte>(kCap + 1));
+    ASSERT_FALSE(binary.has_value());
+    EXPECT_EQ(binary.error().code, ErrorCode::InvalidArgument);
+    EXPECT_EQ(link_->pending_send_bytes(), 0U);
+}
+
+TEST_F(MessageCapTest, ASendOfExactlyTheCapIsAccepted) {
+    const SessionHandle handle{link_, kId};
+    EXPECT_TRUE(handle.send_text(std::string(kCap, 'a')).has_value());
+    EXPECT_TRUE(handle.send_binary(std::vector<std::byte>(kCap)).has_value());
+}
+
 TEST_F(BudgetTest, SendsThatTheLoopNeverRunsAreGivenBackWhenTheLoopIsDestroyed) {
     const SessionHandle handle{link_, kId};
     ASSERT_TRUE(handle.send_text(std::string(80, 'a')).has_value());

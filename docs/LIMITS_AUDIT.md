@@ -28,13 +28,14 @@ and three defaults had no test (rows 7 and 16, now asserted). Nothing was found 
 | 10 | Connections, global, 10 000 | `ServerConfig::max_connections` | `Server` accept path: the TCP connection is accepted and closed at once, no HTTP answer (finding 3) | `Server.TheConnectionCapRefusesTheExtraClientCheaply` |
 | 11 | Connections per IP, 100 | `ServerConfig::max_connections_per_ip` | `Server` admission (429) | `IpLimitsServer.*` (`expect_429`), `IpLimitsServer.TheDefaultsAreTheDocumentedOnes` |
 | 12 | Handshakes per IP, 50 / s | `ServerConfig::max_new_connections_per_ip_per_second` | `Server` admission (429) | `IpLimitsServer.AFastNewcomerIsRefusedAndForgivenAfterASecond`, `IpLimits.TheBucketAllowsABurstOfOneSecondsWorthThenRefillsAtTheRate` |
-| 13 | Outbound queue, 1 MiB | `OutboundConfig::max_queued_bytes`, `slow_consumer = Close` | `Connection` (1008) | `ConnectionTest.ASlowConsumerIsClosedWith1008ByDefault`, `Integration.ASlowReaderIsDroppedAndANeighbourIsUnaffected` |
+| 13 | Outbound queue, 2 MiB (twice `max_message_size`, ADR-0043) | `OutboundConfig::max_queued_bytes`, `slow_consumer = Close` | `Connection` (1008) | `ConnectionTest.ASlowConsumerIsClosedWith1008ByDefault`, `Integration.ASlowReaderIsDroppedAndANeighbourIsUnaffected` |
 | 14 | Inbound read buffer, 16 KiB per loop | `kScratchSize` in `loop_shard.cpp`; per connection a bounded `ByteBuffer` (finding 2) | `Connection` read path | `ByteBuffer.MemoryNeverExceedsTheBoundEvenWithConsumedBytesAtTheFront` |
 | 15 | Idle timeout, 60 s | `SessionConfig::idle_timeout` | `session.cpp` (1001) | `SessionTimers.TheIdleTimeoutClosesWith1001ExactlyAtTheLimit` |
 | 16 | Ping 30 s / pong 10 s | `SessionConfig::ping_interval`, `pong_timeout` | `session.cpp` (1001 on a missing pong) | `SessionTimers.AQuietConnectionIsPingedAndAPongKeepsItAlive`, `Integration.ASilentPeerIsPingedThenClosedByTheHeartbeat` (1 s values) |
 | 17 | Close handshake, 5 s | `SessionConfig::close_timeout` | `session.cpp` (force close) | `ConnectionTest.APeerThatNeverAnswersOurCloseIsDroppedAtTheCloseTimeout` |
 | 18 | Control frames per second, 100 | `SessionConfig::max_control_frames_per_second` | `session.cpp` (1008) | `SessionRates.TooManyControlFramesInOneWindowCloseWith1008` |
 | 19 | Inflate ratio, 100 : 1 | `DeflateOptions::max_inflate_ratio = 100` (`SessionDeflate` too) | `session.cpp` (1009) | `ServerDeflate.ADecompressionBombIsRefusedWith1009AndTheServerCarriesOn` |
+| 20 | Bytes buffered by all connections together, 1 GiB (added for 1.1, ADR-0040; not part of the 1.0 audit) | `ServerConfig::max_buffered_bytes = kDefaultMaxBufferedBytes` | `Server::on_accept` (503 + `Retry-After: 1`, before a per-IP slot) | `BufferBudgetServer.AServerOverItsBudgetShedsNewConnectionsAndLeavesTheOnesItHas`; the default and both range edges: `ServerConfig.TheBufferedBytesBudgetHasABoundedDefaultAndIsRangeChecked` |
 
 ## Findings
 

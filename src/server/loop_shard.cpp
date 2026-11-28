@@ -56,7 +56,10 @@ LoopShard::LoopShard(Key /*unused*/,
                                                [this](const Endpoint& peer) { on_removed(peer); });
     host_ = std::make_unique<LoopHost>(*loop_, shared_.clock, shared_.logger, *table_);
     scratch_.resize(kScratchSize);
-    link_ = std::make_shared<LoopLink>(*loop_, *table_, shared_.config.max_pending_send_bytes);
+    link_ = std::make_shared<LoopLink>(*loop_,
+                                       *table_,
+                                       shared_.config.max_pending_send_bytes,
+                                       largest_message(shared_.config.session.outbound));
     context_ = std::make_unique<ConnectionContext>(ConnectionContext{*host_,
                                                                      shared_.config,
                                                                      shared_.negotiator,
@@ -66,7 +69,8 @@ LoopShard::LoopShard(Key /*unused*/,
                                                                      shared_.decider,
                                                                      shared_.pending,
                                                                      &bank_,
-                                                                     shared_.ip_limits});
+                                                                     shared_.ip_limits,
+                                                                     &shared_.buffered});
 }
 
 LoopShard::~LoopShard() {

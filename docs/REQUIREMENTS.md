@@ -57,7 +57,7 @@ Keywords MUST / SHOULD / MAY follow RFC 2119. IDs are stable; tests and PRs cite
 - **FR-S5** MUST support graceful shutdown (stop accepting, send 1001, drain with deadline, force close).
 - **FR-S6** MUST isolate user-handler failures: exceptions caught at the boundary → close 1011, logged, server continues.
 - **FR-S7** SHOULD provide pub/sub topics and broadcast with per-subscriber backpressure isolation (M10). Done for C++ applications (`Broker`, ADR-0024); the C ABI and PHP exposure are a follow-up.
-- **FR-S8** MAY expose `/healthz` (plain HTTP 200) on the same port.
+- **FR-S8** MAY expose `/healthz` (plain HTTP 200) on the same port. *Built as the admin listener (ADR-0023): `/healthz`, `/readyz`, `/metrics`; `/metrics` can require a bearer token (ADR-0041), the probes never do.*
 
 ### 2.5 Extensions & transport
 - **FR-E1** SHOULD support permessage-deflate negotiation (window bits, no-context-takeover) with size/ratio limits (M9).
@@ -112,6 +112,7 @@ See [SECURITY_DESIGN.md](SECURITY_DESIGN.md). Secure by default; unsafe options 
 | Max outbound frame payload (auto-fragmentation size) | 64 KiB | — |
 | Data-frame rate per connection | 10 000 / s | close 1008 |
 | Max concurrent connections (global) | 10 000 | refused at accept: closed at once, no answer (FR-S1: minimal cost) |
+| Bytes buffered by all connections together (partial inbound messages + unwritten output; ADR-0040, SECURITY_DESIGN section 6) | 1 GiB | new clients refused at accept with 503 + `Retry-After`; connected clients untouched |
 | Max connections per IP | 100 | 429 / close |
 | Handshake rate per IP | 50 / s | 429 |
 | Outbound queue per connection | 1 MiB | slow-consumer policy (default: close 1008) |

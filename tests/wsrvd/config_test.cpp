@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "wsrvd/config.hpp"
 
+#include "net/endpoint.hpp"
+
 #include <gtest/gtest.h>
 
 #include <string>
@@ -27,6 +29,7 @@ TEST(DaemonConfig, DefaultsAfterTheSocketIsGiven) {
     EXPECT_TRUE(config.token_file().empty());
     const std::size_t message = config.embedded().server().session.assembler.max_message_size;
     EXPECT_EQ(config.max_frame(), message + DaemonConfig::kDefaultFrameHeadroom);
+    EXPECT_FALSE(config.max_frame_lowered());
 }
 
 TEST(DaemonConfig, TheSocketPathIsRequired) {
@@ -36,13 +39,142 @@ TEST(DaemonConfig, TheSocketPathIsRequired) {
     EXPECT_EQ(done.error().code, ErrorCode::InvalidConfig);
 }
 
+// ---- the TCP transport (ADR-0038) ---------------------------------------------------------------
+
+DaemonConfig with_port(std::string_view port = "9300") {
+    DaemonConfig config;
+    EXPECT_TRUE(config.set("ipc_port", port).has_value());
+    EXPECT_TRUE(config.set("ipc_token_file", "/run/secrets/ipc.token").has_value());
+    return config;
+}
+
+TEST(DaemonConfigTcp, APortWithATokenFileSwitchesTheTcpTransportOn) {
+    DaemonConfig config = with_port();
+    ASSERT_TRUE(config.finish().has_value());
+    EXPECT_TRUE(config.tcp());
+    EXPECT_TRUE(config.socket_path().empty());
+    EXPECT_EQ(config.ipc_endpoint().port, 9300);
+    EXPECT_EQ(wsrv::format_endpoint(config.ipc_endpoint()),
+              "127.0.0.1:9300");  // loopback by default
+}
+
+TEST(DaemonConfigTcp, PortZeroLetsTheKernelChoose) {  // like admin_port and publish_port
+    DaemonConfig config = with_port("0");
+    ASSERT_TRUE(config.finish().has_value());
+    EXPECT_TRUE(config.tcp());
+    EXPECT_EQ(config.ipc_endpoint().port, 0);
+}
+
+TEST(DaemonConfigTcp, TheHostIsAnAddressLiteralIpv4OrIpv6) {
+    DaemonConfig v4 = with_port();
+    ASSERT_TRUE(v4.set("ipc_host", "0.0.0.0").has_value());
+    ASSERT_TRUE(v4.finish().has_value());
+    EXPECT_EQ(wsrv::format_endpoint(v4.ipc_endpoint()), "0.0.0.0:9300");
+    DaemonConfig v6 = with_port();
+    ASSERT_TRUE(v6.set("ipc_host", "::1").has_value());
+    ASSERT_TRUE(v6.finish().has_value());
+    EXPECT_TRUE(v6.ipc_endpoint().v6);
+}
+
+TEST(DaemonConfigTcp, AHostnameIsRefusedNoLookupOnTheLoopThread) {
+    DaemonConfig config = with_port();
+    ASSERT_TRUE(config.set("ipc_host", "localhost").has_value());  // checked once, in finish()
+    const auto done = config.finish();
+    ASSERT_FALSE(done.has_value());
+    EXPECT_EQ(done.error().code, ErrorCode::InvalidConfig);
+}
+
+TEST(DaemonConfigTcp, ThePortMustBeANumberFrom0To65535) {
+    for (const char* bad :
+         {"", "-1", "65536", "93x0", " 9300", "9300 ", "0x10", "99999999999999999999"}) {
+        DaemonConfig config;
+        const auto done = config.set("ipc_port", bad);
+        ASSERT_FALSE(done.has_value()) << bad;
+        EXPECT_EQ(done.error().code, ErrorCode::InvalidConfig);
+    }
+    DaemonConfig edge;
+    EXPECT_TRUE(edge.set("ipc_port", "65535").has_value());
+}
+
+TEST(DaemonConfigTcp, BothTransportsAtOnceIsAnErrorThatNamesBothKeys) {
+    DaemonConfig config = with_port();
+    ASSERT_TRUE(config.set("ipc_socket", "/run/wsrv/ipc.sock").has_value());
+    const auto done = config.finish();
+    ASSERT_FALSE(done.has_value());
+    EXPECT_EQ(done.error().code, ErrorCode::InvalidConfig);
+    const std::string message{done.error().context};
+    EXPECT_NE(message.find("ipc_socket"), std::string::npos);
+    EXPECT_NE(message.find("ipc_port"), std::string::npos);
+}
+
+TEST(DaemonConfigTcp,
+     WithoutATokenFileThereIsNoTcpTransport) {  // the token is the only authentication
+    DaemonConfig config;
+    ASSERT_TRUE(config.set("ipc_port", "9300").has_value());
+    const auto done = config.finish();
+    ASSERT_FALSE(done.has_value());
+    EXPECT_EQ(done.error().code, ErrorCode::InvalidConfig);
+    EXPECT_NE(std::string{done.error().context}.find("ipc_token_file"), std::string::npos);
+}
+
+TEST(DaemonConfigTcp, AHostWithoutAPortIsMostLikelyAMistypedKey) {
+    DaemonConfig config = with_socket();
+    ASSERT_TRUE(config.set("ipc_host", "0.0.0.0").has_value());
+    const auto done = config.finish();
+    ASSERT_FALSE(done.has_value());
+    EXPECT_NE(std::string{done.error().context}.find("ipc_port"), std::string::npos);
+}
+
+TEST(DaemonConfigTcp, NeitherTransportNamesBothKeysInTheError) {
+    DaemonConfig config;
+    const auto done = config.finish();
+    ASSERT_FALSE(done.has_value());
+    const std::string message{done.error().context};
+    EXPECT_NE(message.find("ipc_socket"), std::string::npos);
+    EXPECT_NE(message.find("ipc_port"), std::string::npos);
+}
+
+TEST(DaemonConfigTcp, ABuiltInDefaultSocketAppliesOnlyWhenNeitherKeyIsSet) {  // the official image
+    DaemonConfig neither;
+    neither.set_default_socket("/run/wsrv/ipc.sock");
+    ASSERT_TRUE(neither.finish().has_value());
+    EXPECT_FALSE(neither.tcp());
+    EXPECT_EQ(neither.socket_path(), "/run/wsrv/ipc.sock");
+
+    DaemonConfig port_only = with_port();  // `docker run -e WSRVD_IPC_PORT=9300 ...`
+    port_only.set_default_socket("/run/wsrv/ipc.sock");
+    ASSERT_TRUE(port_only.finish().has_value());
+    EXPECT_TRUE(port_only.tcp());
+    EXPECT_TRUE(port_only.socket_path().empty());
+
+    DaemonConfig socket_only = with_socket();
+    socket_only.set_default_socket("/run/wsrv/other.sock");
+    ASSERT_TRUE(socket_only.finish().has_value());
+    EXPECT_EQ(socket_only.socket_path(), "/run/wsrv/ipc.sock");  // the explicit key wins
+
+    DaemonConfig both = with_port();
+    ASSERT_TRUE(both.set("ipc_socket", "/run/wsrv/x.sock").has_value());
+    both.set_default_socket("/run/wsrv/ipc.sock");
+    EXPECT_FALSE(
+        both.finish().has_value());  // explicit both stays an error, the default is no excuse
+}
+
+TEST(DaemonConfigTcp, TheKeysComeInAsFlagsAndFileLinesLikeAnyOther) {
+    DaemonConfig config;
+    ASSERT_TRUE(config.apply_argument("--ipc-port=9300").has_value());
+    ASSERT_TRUE(config.apply_file_text("ipc_host = 10.0.0.5\nipc_token_file = /t\n").has_value());
+    ASSERT_TRUE(config.finish().has_value());
+    EXPECT_EQ(wsrv::format_endpoint(config.ipc_endpoint()), "10.0.0.5:9300");
+}
+
 TEST(DaemonConfig, OtherKeysGoToTheEmbeddedConfigWithItsRules) {
     DaemonConfig config = with_socket();
     ASSERT_TRUE(config.set("listen_port", "8080").has_value());
     ASSERT_TRUE(config.set("max_message_size", "65536").has_value());
     ASSERT_TRUE(config.finish().has_value());
     EXPECT_EQ(config.embedded().port(), 8080);
-    EXPECT_EQ(config.max_frame(), 65536U + DaemonConfig::kDefaultFrameHeadroom);
+    EXPECT_EQ(config.max_frame(), 2U * 65536U - 2U)
+        << "64 KiB of headroom would promise 131072; the queue takes 131056 + the SEND fields 14";
     const auto bad = config.set("listen_port", "not-a-port");
     ASSERT_FALSE(bad.has_value());
     EXPECT_EQ(bad.error().code, ErrorCode::InvalidConfig);
@@ -123,11 +255,86 @@ TEST(DaemonConfig, TheTokenFileIsRecordedNotRead) {
     EXPECT_EQ(config.token_file(), "/etc/wsrv/token");
 }
 
+// ADR-0041: the admin token file is a path recorded here and read later, never a value, and it
+// belongs to an admin listener: a file without a port is most likely a mistyped key.
+TEST(DaemonConfig, TheAdminTokenIsAFileNeverAValue) {
+    DaemonConfig config;
+    EXPECT_FALSE(config.set("admin_token", "s3cret").has_value());
+    EXPECT_FALSE(config.apply_argument("--admin-token=s3cret").has_value());
+    EXPECT_FALSE(config.apply_file_text("admin_token = s3cret\n").has_value());
+    EXPECT_FALSE(config.set("admin_token_file", "").has_value()) << "an empty path is no path";
+}
+
+TEST(DaemonConfig, TheAdminTokenFileIsRecordedNotReadAndNeedsTheAdminPort) {
+    DaemonConfig without_port = with_socket();
+    ASSERT_TRUE(without_port.set("admin_token_file", "/etc/wsrv/admin.token").has_value());
+    const wsrv::Result<void> refused = without_port.finish();
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, ErrorCode::InvalidConfig);
+    EXPECT_NE(std::string{refused.error().context}.find("admin_port"), std::string::npos);
+
+    DaemonConfig with_port = with_socket();
+    ASSERT_TRUE(with_port.apply_argument("--admin-port=9100").has_value());
+    ASSERT_TRUE(with_port.apply_argument("--admin-token-file=/etc/wsrv/admin.token").has_value());
+    ASSERT_TRUE(with_port.finish().has_value());
+    EXPECT_EQ(with_port.admin_token_file(), "/etc/wsrv/admin.token");
+}
+
 TEST(DaemonConfig, AnExplicitFrameLimitIsUsed) {
     DaemonConfig config = with_socket();
-    ASSERT_TRUE(config.set("ipc_max_frame", "2097152").has_value());
+    ASSERT_TRUE(config.set("ipc_max_frame", "1572864").has_value());
     ASSERT_TRUE(config.finish().has_value());
-    EXPECT_EQ(config.max_frame(), 2097152U);
+    EXPECT_EQ(config.max_frame(), 1572864U);
+    EXPECT_FALSE(config.max_frame_lowered());
+}
+
+// ADR-0043: the connection's outbound queue holds 2 * max_message_size bytes, 16 of them per
+// message, so a message over 2 * max_message_size - 16 can never be sent. A SEND frame carries 14
+// bytes besides its payload (the frame length counts what follows its own 4 bytes), so a frame
+// limit above 2 * max_message_size - 2 only lets a worker hand the daemon something it would drop.
+// The limit is lowered to that, and the worker's own client then refuses the message before it is
+// written. (Before this, the daemon said OK and the browser never got the message.)
+constexpr std::size_t kSmall = 16384;
+constexpr std::size_t kSmallFrame = 2 * kSmall - 16 + 14;
+
+TEST(DaemonConfig, TheDefaultFrameLimitIsLoweredToWhatTheOutboundQueueCanTake) {
+    DaemonConfig config = with_socket();
+    ASSERT_TRUE(config.set("max_message_size", std::to_string(kSmall)).has_value());
+    ASSERT_TRUE(config.finish().has_value());
+    EXPECT_EQ(config.max_frame(), kSmallFrame) << "16384 + 64 KiB would promise 81920";
+    EXPECT_FALSE(config.max_frame_lowered()) << "nobody asked for the larger value";
+}
+
+TEST(DaemonConfig, AnExplicitFrameLimitAboveTheQueueIsLoweredAndSaysSo) {
+    DaemonConfig config = with_socket();
+    ASSERT_TRUE(config.set("max_message_size", std::to_string(kSmall)).has_value());
+    ASSERT_TRUE(config.set("ipc_max_frame", "524288").has_value());
+    ASSERT_TRUE(config.finish().has_value()) << "an existing deployment must still start";
+    EXPECT_EQ(config.max_frame(), kSmallFrame);
+    EXPECT_TRUE(config.max_frame_lowered());
+}
+
+TEST(DaemonConfig, TheFrameLimitIsLoweredByExactlyOneByteAndNoMore) {
+    DaemonConfig at = with_socket();
+    ASSERT_TRUE(at.set("max_message_size", std::to_string(kSmall)).has_value());
+    ASSERT_TRUE(at.set("ipc_max_frame", std::to_string(kSmallFrame)).has_value());
+    ASSERT_TRUE(at.finish().has_value());
+    EXPECT_EQ(at.max_frame(), kSmallFrame);
+    EXPECT_FALSE(at.max_frame_lowered());
+
+    DaemonConfig over = with_socket();
+    ASSERT_TRUE(over.set("max_message_size", std::to_string(kSmall)).has_value());
+    ASSERT_TRUE(over.set("ipc_max_frame", std::to_string(kSmallFrame + 1)).has_value());
+    ASSERT_TRUE(over.finish().has_value());
+    EXPECT_EQ(over.max_frame(), kSmallFrame);
+    EXPECT_TRUE(over.max_frame_lowered());
+}
+
+TEST(DaemonConfig, TheLoweredFrameLimitStillHoldsTheBiggestInboundMessage) {
+    DaemonConfig config = with_socket();
+    ASSERT_TRUE(config.set("max_message_size", std::to_string(kSmall)).has_value());
+    ASSERT_TRUE(config.finish().has_value());
+    EXPECT_GE(config.max_frame(), kSmall + DaemonConfig::kEventOverhead);
 }
 
 TEST(DaemonConfig, AnExplicitFrameLimitMustHoldTheBiggestMessagePlusItsFrameFields) {

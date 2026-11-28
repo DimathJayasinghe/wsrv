@@ -175,6 +175,14 @@ public:
     [[nodiscard]] bool message_open() const noexcept {
         return out_.stream_open();
     }
+    /// Bytes of an inbound message that has started and not yet been delivered (ADR-0040).
+    [[nodiscard]] std::size_t buffered_input_bytes() const noexcept {
+        return assembler_.buffered_bytes();
+    }
+    /// Bytes waiting for the peer to take them: queued, or framed and not yet written (ADR-0040).
+    [[nodiscard]] std::size_t buffered_output_bytes() const noexcept {
+        return out_.held_bytes();
+    }
     /// Data bytes waiting in the outbound queue (not yet framed), including per-message overhead.
     [[nodiscard]] std::size_t queued_output_bytes() const noexcept {
         return out_.queued_bytes();

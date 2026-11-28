@@ -107,6 +107,7 @@ Result<void> EmbeddedConfig::set(std::string_view key, std::string_view value) {
                  &EmbeddedConfig::set_handshake_decision_timeout_ms},
         KeyEntry{"max_pending_handshakes", &EmbeddedConfig::set_max_pending_handshakes},
         KeyEntry{"max_pending_send_bytes", &EmbeddedConfig::set_max_pending_send_bytes},
+        KeyEntry{"max_buffered_bytes", &EmbeddedConfig::set_max_buffered_bytes},
         KeyEntry{"tls_cert", &EmbeddedConfig::set_tls_cert},
         KeyEntry{"tls_key", &EmbeddedConfig::set_tls_key},
         KeyEntry{"tls_sni", &EmbeddedConfig::add_tls_sni},
@@ -157,14 +158,33 @@ std::optional<Result<void>> EmbeddedConfig::set_more_key(std::string_view key,
     return std::nullopt;
 }
 
+EmbeddedConfig::EmbeddedConfig() {
+    server_.session.outbound.max_queued_bytes = 2 * server_.session.assembler.max_message_size;
+}
+
+std::size_t EmbeddedConfig::max_outbound_message() const noexcept {
+    return largest_outbound_message(server_);
+}
+
+BrokerConfig EmbeddedConfig::broker_config() const noexcept {
+    BrokerConfig applied = broker_;
+    applied.max_payload_bytes = std::min(applied.max_payload_bytes, max_outbound_message());
+    return applied;
+}
+
 void EmbeddedConfig::apply_to(ServerBuilder& builder) const {
     builder.listen(host_, port_);
     builder.config() = server_;
     if (admin_port_) {
-        builder.admin(admin_host_, *admin_port_);  // build() checks the address and the bounds
+        if (admin_token_.empty()) {
+            builder.admin(admin_host_, *admin_port_);  // build() checks the address and the bounds
+        } else {
+            builder.admin(
+                admin_host_, *admin_port_, admin_token_);  // borrowed: this config lives on
+        }
     }
     builder.config().publish_max_body_bytes =
-        broker_.max_payload_bytes;  // one bound for both doors
+        broker_config().max_payload_bytes;  // one bound for both doors
     if (deflate_enabled_) {
         builder.permessage_deflate(deflate_);  // build() checks the ranges and the zlib build
     }
@@ -192,6 +212,17 @@ Result<void> EmbeddedConfig::set_publish_token(std::string token) {
         return fail(ErrorCode::InvalidConfig, "config: the publish token needs at least 32 bytes");
     }
     publish_token_ = std::move(token);
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_admin_token(std::string token) {
+    if (token.size() < kMinAdminTokenBytes) {
+        return fail(ErrorCode::InvalidConfig, "config: the admin token needs at least 32 bytes");
+    }
+    if (!admin_port_) {
+        return fail(ErrorCode::InvalidConfig, "config: an admin token needs admin_port");
+    }
+    admin_token_ = std::move(token);
     return {};
 }
 
@@ -555,6 +586,19 @@ Result<void> EmbeddedConfig::set_max_pending_send_bytes(std::string_view value) 
                     "config: max_pending_send_bytes must be in (0, 1 GiB]");
     }
     server_.max_pending_send_bytes = *number;
+    return {};
+}
+
+Result<void> EmbeddedConfig::set_max_buffered_bytes(std::string_view value) {
+    const Result<std::size_t> number =
+        parse_size(value, "config: max_buffered_bytes needs a number");
+    if (!number) {
+        return std::unexpected{number.error()};
+    }
+    if (*number == 0 || *number > kMaxConfiguredBufferedBytes) {
+        return fail(ErrorCode::InvalidConfig, "config: max_buffered_bytes must be in (0, 1 TiB]");
+    }
+    server_.max_buffered_bytes = *number;
     return {};
 }
 

@@ -7,9 +7,11 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <mutex>
 #include <optional>
+#include <vector>
 
 namespace wsrv::test {
 
@@ -42,6 +44,7 @@ enum class Call : std::size_t {
     SignalFd,
     GetFdLimits,
     SetFdSoftLimit,
+    OpenFile,
     Close,
     Count
 };
@@ -63,6 +66,12 @@ public:
         const std::lock_guard<std::mutex> lock{mutex_};
         script_[index(call)].push_back(SysResult{value, 0});
     }
+    /// The next write(2) really writes at most `bytes` bytes of its buffer (a short write): the
+    /// caller must go on with the rest. Queue several to shorten several writes in a row.
+    void short_write(std::size_t bytes) {
+        const std::lock_guard<std::mutex> lock{mutex_};
+        short_writes_.push_back(bytes);
+    }
     /// From now on getrlimit/setrlimit(RLIMIT_NOFILE) act on this in-memory pair, never on the
     /// real process: a test can describe any host limit, and raising the soft limit above `hard`
     /// is refused with EINVAL like the kernel does (soft > hard). Without this call the real limit
@@ -78,6 +87,19 @@ public:
     [[nodiscard]] std::size_t calls(Call call) const {
         const std::lock_guard<std::mutex> lock{mutex_};
         return count_[index(call)];
+    }
+    /// One setsockopt(2) call whose value was an int (all the options the server sets are).
+    struct SockOptCall {
+        int level = 0;
+        int name = 0;
+        int value = 0;
+        friend bool operator==(const SockOptCall&, const SockOptCall&) = default;
+    };
+    /// Every int-valued setsockopt call so far, in order (a test checks what the server asked for;
+    /// the kernel still gets the call, so the option really is set).
+    [[nodiscard]] std::vector<SockOptCall> sockopt_calls() const {
+        const std::lock_guard<std::mutex> lock{mutex_};
+        return sockopts_;
     }
     [[nodiscard]] std::size_t pending_script(Call call) const {
         const std::lock_guard<std::mutex> lock{mutex_};
@@ -118,6 +140,13 @@ public:
         if (const auto injected = scripted(Call::Write)) {
             return *injected;
         }
+        const std::lock_guard<std::mutex> lock{mutex_};
+        if (!short_writes_.empty()) {
+            // A real write of at most the queued size: the kernel taking only part of the buffer.
+            const std::size_t limit = short_writes_.front();
+            short_writes_.pop_front();
+            return real_.write(fd, buf, n < limit ? n : limit);
+        }
         return real_.write(fd, buf, n);
     }
     SysResult poll(pollfd* fds, nfds_t count, int timeout_ms) override {
@@ -139,6 +168,12 @@ public:
         return real_.shutdown(fd, how);
     }
     SysResult setsockopt(int fd, SockOpt option, const void* v, socklen_t len) override {
+        if (len == sizeof(int)) {
+            int value = 0;
+            std::memcpy(&value, v, sizeof(int));
+            const std::lock_guard<std::mutex> lock{mutex_};
+            sockopts_.push_back(SockOptCall{option.level, option.name, value});
+        }
         if (const auto injected = scripted(Call::SetSockOpt)) {
             return *injected;
         }
@@ -167,6 +202,12 @@ public:
             return *injected;
         }
         return real_.chmod_path(path, mode);
+    }
+    SysResult open_file(const char* path, int flags, std::uint32_t mode) override {
+        if (const auto injected = scripted(Call::OpenFile)) {
+            return *injected;
+        }
+        return real_.open_file(path, flags, mode);
     }
     SysResult unlink_path(const char* path) override {
         if (const auto injected = scripted(Call::UnlinkPath)) {
@@ -298,7 +339,9 @@ private:
     mutable std::mutex mutex_;
     std::array<std::deque<SysResult>, static_cast<std::size_t>(Call::Count)> script_;
     std::array<std::size_t, static_cast<std::size_t>(Call::Count)> count_{};
+    std::vector<SockOptCall> sockopts_;
     std::optional<FdLimits> pretended_;
+    std::deque<std::size_t> short_writes_;
 };
 
 }  // namespace wsrv::test

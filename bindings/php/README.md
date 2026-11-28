@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/DimathJayasinghe/wsrv/main/docs/brand/svg/wsrv-horizontal-white.svg">
+    <img src="https://raw.githubusercontent.com/DimathJayasinghe/wsrv/main/docs/brand/svg/wsrv-horizontal.svg" alt="wsrv" width="220">
+  </picture>
+</p>
+
 # wsrv/client: PHP client for the `wsrvd` WebSocket sidecar
 
 A pure-PHP client (PHP 8.2+, plain streams, no extensions needed) for the **wsrvd** daemon. The daemon owns the WebSocket connections, framing, UTF-8 checks, limits and backpressure; your PHP code only receives events and sends commands over a local Unix socket. That is what makes it work on every PHP stack, including PHP-FPM workers and Laravel/Symfony queue workers: PHP never holds a WebSocket or a thread.
@@ -34,7 +41,7 @@ Protocol: [`docs/IPC_PROTOCOL.md`](../../docs/IPC_PROTOCOL.md). Lesson: [`docs/l
 
 | | |
 |---|---|
-| `Client::connect($socket, $token = '', $timeout = 5.0)` | connect and run the HELLO handshake |
+| `Client::connect($socketOrTcp, $token = '', $timeout = 5.0)` | connect and run the HELLO handshake; the first argument is the daemon's Unix socket path, or `tcp://host:port` (1.1, the only form on Windows; the token is then required, 32 bytes or more, and the link is not encrypted: loopback, VPN or tunnel only) |
 | `$client->poll($timeout)` | next `Event` / `StatusReply` / `Pong`, or `null` on timeout |
 | `$client->sendText($conn, $text)`, `sendBinary`, `closeConnection($conn, $code, $reason)` | commands; return the request id |
 | `Worker::on('open'\|'message'\|'close'\|'error'\|'status'\|'authenticate', $fn)` | callbacks (signatures in `src/Worker.php`) |
@@ -43,7 +50,7 @@ Protocol: [`docs/IPC_PROTOCOL.md`](../../docs/IPC_PROTOCOL.md). Lesson: [`docs/l
 | `Connection::subscribe($topic)` / `unsubscribe($topic)`, `Worker::publish($topic, $payload, $binary = false, $except = 0)` | rooms over IPC (daemon with `--broker=true`) |
 | `new Publisher($url, $token)` then `->publish($topic, $payload, $binary = false, $except = 0)` | publish from any process over HTTP; returns `PublishResult`, throws `PublishFailed` |
 | `new ClusterPublisher([$url1, $url2], $token)` then the same `->publish(...)` | publish to every daemon of a multi-node deployment; returns `ClusterPublishResult` (summed counts, `->failures` per node), throws `PublishFailed` only when no node took it |
-| `Supervisor::forSocket($socket, $token)->run(fn (Worker $w) => ...)` | the production loop: reconnects to the daemon with backoff and jitter, retries `BACKPRESSURE`, fails fast on a wrong token, reports throwing handlers without dropping the link, stops on `SIGTERM` (`installSignalHandlers()`) |
+| `Supervisor::forSocket($socketOrTcp, $token)->run(fn (Worker $w) => ...)` | the production loop: reconnects to the daemon with backoff and jitter, retries `BACKPRESSURE`, fails fast on a wrong token, reports throwing handlers without dropping the link, stops on `SIGTERM` (`installSignalHandlers()`) |
 | `Upgrade::accept($subprotocol = null)` / `reject($status = 403)` | answer a waiting upgrade (`authenticate`) |
 | `HandshakeRequest::cookie($name)` / `header($name)` / `headers($name)` | read the request in `authenticate` |
 
@@ -61,9 +68,10 @@ Return `true` (accept), `false` (403), an int status (`400, 401, 403, 404, 429, 
 
 ## Rooms, and publishing from a controller or a job
 
-Start the daemon with the broker and the publish endpoint (the token is a file, mode 0600, at least 32 bytes):
+Start the daemon with the broker and the publish endpoint (the token is a file that `wsrvd --generate-token=/run/wsrv/publish.token` makes, mode 0600; from wsrv 1.1 the daemon accepts no other, ADR-0039):
 
 ```
+wsrvd --generate-token=/run/wsrv/publish.token
 wsrvd --ipc-socket=/run/wsrv/ipc.sock --broker=true --publish-port=9200 --publish-token-file=/run/wsrv/publish.token
 ```
 
@@ -83,7 +91,7 @@ $result = $publisher->publish('room.7', json_encode(['text' => 'hello']), except
 
 `publish()` throws `PublishFailed` on anything but a 200; `$e->status` is the HTTP status and `$e->isRetryable()` is true for 429, 503 and an unreachable daemon. A subscription ends with its connection, and also at once if the worker disconnects. Only `http://` is supported (the token travels in clear text: keep the daemon on a private network or behind a TLS proxy). Endpoint reference and bounds: `docs/OPERATIONS.md` 3.1.1.
 
-Using Laravel? `docs/LARAVEL.md` has the ticket login, an Artisan worker and a queued publisher.
+Using Laravel? `docs/LARAVEL.md` has the ticket login, an Artisan worker and a queued publisher; `docs/LARAVEL_ECHO.md` (wsrv 1.1) is for Laravel Echo and `broadcast()`.
 
 ## Quick start: embedded mode (about five minutes)
 

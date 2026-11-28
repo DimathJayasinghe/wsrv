@@ -2,13 +2,16 @@
     "name": "wsrv/client",
     "description": "PHP client for the wsrvd WebSocket sidecar (IPC protocol v0). Pure PHP, works on every PHP stack including PHP-FPM workers.",
     "type": "library",
+    "keywords": ["websocket", "websockets", "rfc6455", "pubsub", "realtime", "laravel", "laravel-echo", "pusher-protocol", "broadcasting", "sidecar", "wsrvd"],
     "license": "Apache-2.0",
     "require": {
         "php": ">=8.2"
     },
     "suggest": {
         "ext-ffi": "Needed only for the embedded server, Wsrv\\Embedded\\Server (PHP CLI); the sidecar client does not use it",
-        "ext-pcntl": "Needed only for signal handling in worker scripts (see the echo example in bindings/php/examples)"
+        "ext-pcntl": "Needed only for signal handling in worker scripts (see the echo example in bindings/php/examples)",
+        "laravel/framework": "Laravel 11 or newer: the `wsrv` broadcasting driver and `php artisan wsrv:echo` serve Laravel Echo through wsrvd (docs/LARAVEL_ECHO.md)",
+        "ext-sodium": "Needed only for private-encrypted-* channels"
     },
     "autoload": {
         "psr-4": {
@@ -20,5 +23,12 @@
     },
     "bin": [
         "bin/wsrv-install-lib"
-    ]
+    ],
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Wsrv\\Laravel\\WsrvServiceProvider"
+            ]
+        }
+    }
 }

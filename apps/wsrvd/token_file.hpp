@@ -2,6 +2,7 @@
 #pragma once
 
 #include "base/error.hpp"
+#include "base/random.hpp"
 #include "net/syscalls.hpp"
 
 #include <string>
@@ -19,5 +20,18 @@ namespace wsrv::wsrvd {
 /// file in between; the directory holding the token must be the operator's own, as for any secret.
 /// @return Error{InvalidConfig} for a missing, unsafe or empty file; Error{Io} if reading fails.
 [[nodiscard]] Result<std::string> read_token_file(ISyscalls& sys, const std::string& path);
+
+/// Create `path` holding a new generated token (apps/wsrvd/token_format.hpp) and one newline, for
+/// `wsrvd --generate-token=FILE` (ADR-0038 section 3).
+///  - the file is created exclusively (O_EXCL, mode 0600, whatever the umask): an existing file is
+///    never overwritten (a token is a deployment's secret) and a symlink is never followed;
+///  - the random bytes come from `random` and nothing weaker: if it fails no file is made;
+///  - a write that fails or stops short leaves no file behind (a file that looks like a token and
+///    is not one is worse than none).
+/// The token is never printed or returned: it exists in the file and nowhere else.
+/// @return Error{InvalidConfig} if `path` exists or its directory does not; Error{RandomUnavailable}
+/// if there is no random source; Error{Io} for any other failure.
+[[nodiscard]] Result<void>
+generate_token_file(ISyscalls& sys, IRandom& random, const std::string& path);
 
 }  // namespace wsrv::wsrvd

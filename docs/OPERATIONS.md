@@ -14,13 +14,13 @@ The defaults and the allowed range of every limit are in `docs/REQUIREMENTS.md` 
 |---|---|
 | Listening | `listen_host`, `listen_port`, `threads` (event loops: start at the number of cores you give it) |
 | Who may connect | `allow_origin` (repeatable), `allow_missing_origin`, `trusted_proxy` (repeatable), `client_ip_header` |
-| Limits | `max_connections`, `max_connections_per_ip`, `max_new_connections_per_ip_per_second`, `max_message_size`, `max_frame_payload`, `max_fragments`, `max_data_frames_per_second`, `max_pending_send_bytes`, `event_queue_events`, `event_queue_bytes`, `shutdown_grace_ms` |
+| Limits | `max_connections`, `max_connections_per_ip`, `max_new_connections_per_ip_per_second`, `max_message_size`, `max_frame_payload`, `max_fragments`, `max_data_frames_per_second`, `max_pending_send_bytes`, `max_buffered_bytes`, `event_queue_events`, `event_queue_bytes`, `shutdown_grace_ms` |
 | Authenticating upgrades | `handshake_hook`, `handshake_forward_header` (repeatable), `handshake_decision_timeout_ms`, `max_pending_handshakes` |
 | TLS | `tls_cert`, `tls_key`, `tls_sni` (repeatable) |
 | Compression | `permessage_deflate`, `deflate_server_max_window_bits`, `deflate_server_no_context_takeover`, `deflate_level`, `deflate_min_size`, `deflate_max_ratio` (section 1.1) |
 | Observability | `admin_host`, `admin_port` (section 3.1), `log_level`, `log_peer` (section 2) |
 | Rooms and publishing | `broker`, `broker_max_topics`, `broker_max_subscribers_per_topic`, `broker_max_topics_per_connection`, `broker_max_subscriptions`, `broker_max_payload_bytes`, `publish_host`, `publish_port`, `publish_token_file` (sections 3.1.1, 3.2) |
-| `wsrvd` only | `ipc_socket` (required), `ipc_token_file`, `ipc_max_frame`, `ipc_hello_timeout_ms`, `ipc_stall_ms` (section 7) |
+| `wsrvd` only | `ipc_socket` or `ipc_port` and `ipc_host` (one of the two transports, section 7), `ipc_token_file`, `ipc_max_frame`, `ipc_hello_timeout_ms`, `ipc_stall_ms` (section 7) |
 
 The IPC and publish tokens are never keys: they would show in `ps` and `/proc`, so only a file (mode 0600, yours) can carry them.
 
@@ -84,12 +84,24 @@ client_ip_header = X-Forwarded-For   # default; any other name is read as one si
 
 An application (the C API, the PHP worker through `wsrvd`) sends from its own thread: each `send_text` / `send_binary` is copied and queued to the loop that owns the connection. The queue is bounded in count, and since ADR-0032 also in bytes: `max_pending_send_bytes` (per loop, default 64 MiB, 1 B to 1 GiB, no unlimited value; `WSRVD_MAX_PENDING_SEND_BYTES` in a container). When the budget is used up a send returns `BufferFull` (C: `WSRV_ERR_BACKPRESSURE`, a PHP worker sees status `BACKPRESSURE`): wait and retry. A single message larger than the whole budget is refused for good with `InvalidArgument`, so keep the budget above your largest message. Worst case memory is `threads x budget`. Broadcasts and control commands are not charged (one shared buffer, and they must always get through).
 
+### 1.2.3 The bytes all connections buffer together (ADR-0040)
+
+Every connection is bounded on its own (a partial message at most `max_message_size`, the outbound queue at most `max_queued_bytes`, which is twice `max_message_size`: 2 MiB by default, ADR-0043), and `max_connections` bounds how many exist, but at the defaults the sum could reach about 30 GiB: many clients that each send the first fragments of a big message and stop, or many slow readers while your application broadcasts. `max_buffered_bytes` is the limit on that sum (the whole server, default **1 GiB**, 1 byte to 1 TiB, no unlimited value; `WSRVD_MAX_BUFFERED_BYTES` in a container, `--max-buffered-bytes` on the command line, `wsrv_config_set` in the C API).
+
+- **What counts:** per connection, the bytes of a message that has started and not been delivered, plus the bytes waiting to be written (queued, or framed and not yet accepted by the socket). Not counted: the permessage-deflate state (section 1.1 gives its figure, and `max_connections` bounds how many exist), the handshake head, the shared read buffer, TLS records in flight, and direct sends waiting for a loop (`max_pending_send_bytes`, section 1.2.2).
+- **What happens over the limit:** a **soft cap on new clients**. A client that connects while the sum is at or above the limit gets `HTTP/1.1 503 Service Unavailable` with `Retry-After: 1` and is closed; the connections that exist are not touched, and new clients are welcome again as soon as the sum drops. A burst between two checks can overshoot by what the admitted connections can still add.
+- **What you see:** the gauge `wsrv_buffered_bytes` (alert when it stays near the limit), the counter `wsrv_connections_total{result="rejected_buffer_budget"}`, and the warn event `buffer_budget` (rate-limited: the 1st, 2nd, 4th, 8th, ... refusal).
+- **What to set:** the default protects a host with several GiB. If the process has a memory limit (`MemoryMax`, a container limit), set the key to **about half of it**, after the deflate figure of section 1.1 and the other memory the process needs; `deploy/kubernetes/wsrv.yaml` sets 256 MiB for its 1 GiB limit. A healthy server holds close to nothing here (an idle or echoing connection holds zero), so a limit well below the default sheds nothing in normal operation. If `rejected_buffer_budget` grows while clients are healthy, look for slow readers (a queue near `max_queued_bytes` closes the connection under the default slow-consumer policy) and for fragmented uploads that never finish.
+- **If you raise other limits, raise this one with them.** The default is sized for ordinary message sizes. With `max_message_size` raised for file or image transfer, a limit of M bytes per message means about `1 GiB / M` unfinished messages at once before new clients are refused (50 MiB: about 20). The same goes for `max_queued_bytes`, and for an application that broadcasts large messages to many subscribers: a broadcast is copied into each subscriber's queue, and a slow reader keeps its copy. Size the key for the worst case you intend to serve, within about half of the memory limit; if the two do not fit, the host is too small for that workload.
+- **Not done:** closing existing connections to get back under the limit (a hard cap) is a separate decision.
+
 ### 1.3 Frame, fragment and frame-rate limits (ADR-0016 A1)
 
 Three per-connection limits protect the server from a single peer, and each has a text key in the embedded and `wsrvd` configuration. They exist because some legitimate clients need more than the defaults (a trusted batch uploader; the Autobahn conformance run), not because the defaults are wrong for the web.
 
 | Key | Default | Accepted | What raising it costs |
 |-----|---------|----------|-----------------------|
+| `max_message_size` | 1 MiB | a size in bytes | the largest message a browser may send, and half the size of one connection's outbound queue: the server can send a message of at most `2 x max_message_size - 16` bytes to one browser, and refuses a larger send or publish (`INVALID_ARGUMENT`, HTTP 413) instead of dropping it. `broker_max_payload_bytes` and, in `wsrvd`, `ipc_max_frame` are capped to that size (`ipc_max_frame` lowered with a log line, never raised). Before 1.1 the unset default queue held only 1 MiB, so a message of 1 MiB - 15 bytes or more could be received and not sent back |
 | `max_frame_payload` | 1 MiB | 1 to 64 MiB | the largest buffer one connection can make the server hold for one frame; raise it with `max_message_size` |
 | `max_fragments` | 1024 | 1 to 16 777 216 | bookkeeping per fragment, not memory; a peer can make the server do more work per message |
 | `max_data_frames_per_second` | 10 000 | 1 to 10 000 000 | the flood guard: a peer may send that many frames per second before it is closed with 1008 |
@@ -143,14 +155,20 @@ Never logged at any level: tokens and credentials, cookies and other headers, me
 | `listening` | info | the WebSocket port is open (`msg` has the port) |
 | `publish_listening`, `admin_listening` | info | the publish / admin endpoint is open (`msg` has the address) |
 | `publish_exposed`, `admin_exposed` | warn | that endpoint is not on loopback: keep it on a private network (sections 3.1 and 3.1.1) |
-| `ipc_ready` | info | `wsrvd` is ready for the application on its socket |
-| `ipc_no_token` | warn | no `ipc_token_file`: only the peer uid check protects the socket |
-| `app_connected`, `app_disconnected` | info (warn if cut off for not reading) | the application's link came and went: connections it knew are closed with 1012 after `shutdown_grace_ms` unless a new one connects |
+| `ipc_ready` | info | `wsrvd` is ready for the application, on its Unix socket or (ADR-0038) on its TCP address, with the port actually bound |
+| `ipc_no_token` | warn | no `ipc_token_file`: only the peer uid check protects the socket (never said over TCP, where a token is required) |
+| `ipc_plaintext` | warn | the TCP IPC link is bound to an address that is not loopback; it is not encrypted (ADR-0038). Expected in a container whose port you publish on the host's loopback; a warning anywhere else |
+| `ipc_keepalive` | warn | TCP keepalive could not be set on the application's socket: a host that vanishes may keep the application slot for a long time |
+| `ipc_linger_full` | debug | over TCP, more than 32 refused connections were waiting to close at once; the extra ones were closed immediately (a flood of refused connections; the status was still sent) |
+| `app_waiting` | debug | over TCP, a connection was admitted to the waiting room (at most 8 wait for their HELLO at once, ADR-0038 section 5) |
+| `app_replaced` | warn | over TCP, the waiting room was full (8 connections that had not said HELLO) and the oldest was evicted and told `BACKPRESSURE`. Occasional: a probe or a port scan. Repeated: connections arrive faster than your worker's HELLO, so it can be refused; check what else reaches the IPC port and who may |
+| `app_connected`, `app_disconnected` | info (warn if cut off for not reading) | the application's link came and went: connections it knew are closed with 1012 after `shutdown_grace_ms`, also when a new application connects meanwhile (it never saw them, and the protocol has no way to hand them over) |
 | `app_rejected` | warn | an application was refused: another user, a second one, a wrong token or version, no HELLO in time. Many of these: a misconfigured worker (compare tokens and the socket path) |
 | `tls_reloaded` | info | SIGHUP picked up a new certificate |
 | `tls_reload_skipped` | info | SIGHUP, but TLS is off |
 | `tls_reload_failed`, `tls_config` | error | the certificate or key cannot be used; `tls_config` lines name the file and the reason. The old certificate stays in use |
 | `conn_limit`, `ip_limit`, `loop_overloaded` | warn | a limit refused a client (section 1.2 and `max_connections`) |
+| `buffer_budget` | warn | the connections together hold `max_buffered_bytes` or more, so a new client was refused with a 503 (section 1.2.3, ADR-0040). Rate-limited. Repeated: slow readers or unfinished fragmented messages are holding the memory, or the limit is set too low for your load |
 | `origin_refused` | warn | the Origin header is not in `allow_origin`. A wrong list shows up here at once; scanners show up as a rate-limited stream |
 | `handshake_refused` | info | the upgrade was refused for another reason (malformed, too large). Any client can cause it, so it is deliberately not a warning |
 | `handshake_undecided` | warn | the application could not be asked about an upgrade (its queue is full or it is gone), so the client was refused with 503. This one is about your server, not the client |
@@ -179,7 +197,8 @@ ADR-0023. Counters live in one bank per loop (relaxed atomics, no lock) and are 
 | Metric | Type | Status |
 |---|---|---|
 | `wsrv_connections_current` | gauge | done |
-| `wsrv_connections_total{result}` | counter | done: `accepted`, `rejected_global_cap` (also a loop too overloaded to take a client), `rejected_ip_connections`, `rejected_ip_rate`, `rejected_ip_table`, `handshake_failed` |
+| `wsrv_buffered_bytes` | gauge | done: bytes the connections hold in partial inbound messages and outbound queues (section 1.2.3, ADR-0040) |
+| `wsrv_connections_total{result}` | counter | done: `accepted`, `rejected_global_cap` (also a loop too overloaded to take a client), `rejected_ip_connections`, `rejected_ip_rate`, `rejected_ip_table`, `rejected_buffer_budget`, `handshake_failed` |
 | `wsrv_messages_total{direction,type}` | counter | done: `in`/`out` x `text`/`binary` (a streamed message counts when it starts) |
 | `wsrv_bytes_total{direction}` | counter | done: bytes at the socket (ciphertext under TLS); `out` counts bytes the transport accepted |
 | `wsrv_close_total{class}` | counter | done: `normal` (1000, 1001), `protocol_error` (1002, 1003, 1007, 1009, 1010), `policy` (1008), `abnormal` (no Close frame: 1005, 1006, 1015), `other` (1011-1014 and application codes) |
@@ -194,7 +213,7 @@ ADR-0023. Counters live in one bank per loop (relaxed atomics, no lock) and are 
 | `wsrv_config_reload_total{result}` | counter | not in 1.0, planned (`wsrvd` reload) |
 
 ### 3.1 Admin endpoint
-Off unless configured: embedded/`wsrvd` keys `admin_port` (setting it switches the listener on; 0 lets the kernel choose) and `admin_host` (default `127.0.0.1`); `wsrvd --admin-port=9100`. Plain HTTP, **no authentication**: keep it on loopback or behind a network policy (a non-loopback bind logs a warning at start). It serves exactly three pages:
+Off unless configured: embedded/`wsrvd` keys `admin_port` (setting it switches the listener on; 0 lets the kernel choose) and `admin_host` (default `127.0.0.1`); `wsrvd --admin-port=9100`. Plain HTTP. **By default there is no authentication**: keep it on loopback or behind a network policy (a non-loopback bind logs a warning at start), or protect `/metrics` with a token (below). It serves exactly three pages:
 
 | Request | Answer |
 |---|---|
@@ -205,8 +224,16 @@ Off unless configured: embedded/`wsrvd` keys `admin_port` (setting it switches t
 
 Bounds (ADR-0023, SECURITY_DESIGN T21): the admin listener runs on loop 0 (no extra thread); at most 8 clients at once (more are closed at once), a request head of at most 2 KiB, 5 s to send it, one request per connection, one non-blocking send for the answer (a client that cannot take the whole page in one call is dropped, so a page is never silently truncated). Prometheus example: `scrape_configs: [{job_name: wsrv, static_configs: [{targets: ["127.0.0.1:9100"]}]}]`.
 
+**A token for `/metrics` (optional, from 1.1; ADR-0041).** `wsrvd --admin-port=9100 --admin-token-file=/run/secrets/wsrv_admin` (or `WSRVD_ADMIN_TOKEN_FILE`) makes `GET /metrics` answer `401` unless the request has `Authorization: Bearer <token>`. The file follows the rules of the other two token files (a regular file owned by the service user, mode 0600, one trailing newline ignored), the token must be one `wsrvd --generate-token=FILE` made, and it must **differ from the publish and IPC tokens** (a monitoring system that holds it must not be able to publish into rooms or speak as the application's worker). The key needs `admin_port`. There is no `admin_token` key or flag, and no C ABI setting: an embedding application gives the token to `EmbeddedConfig::set_admin_token()` or `ServerBuilder::admin(ip, port, token)`.
+
+- **Nothing changes unless you set it.** An admin port bound to `0.0.0.0` with no token is exactly as readable as before, and still logs the `admin_exposed` warning. With a token and a non-loopback bind the warning is replaced by an info line saying that `/metrics` needs the token.
+- **Only `/metrics` is protected.** `/healthz` and `/readyz` stay open because a Kubernetes `httpGet` probe and `wsrvd --healthcheck` (the image's `HEALTHCHECK` and the liveness probe) cannot send a credential, and they say one word each.
+- **One answer for every refusal:** `401`, `WWW-Authenticate: Bearer`, the body `credential required`, the connection closed. A missing, wrong, malformed or repeated `Authorization` header all get the same bytes; routing is judged first, so a wrong method or path is still `405` or `404`. A refusal is logged as the warn event `admin_unauthorized` (the 1st, 2nd, 4th, 8th, ... one; the credential the peer sent is never in the line).
+- **Prometheus** reads the token from a file, so it is not in the scrape config: `scrape_configs: [{job_name: wsrv, authorization: {credentials_file: /etc/prometheus/wsrv_admin_token}, static_configs: [{targets: ["wsrv:9100"]}]}]` (`type` defaults to `Bearer`; `credentials` and `credentials_file` exclude each other).
+- **What it does not do:** no TLS (the token travels in clear on a non-loopback bind, so it keeps out whoever can *reach* the port, not whoever can read the traffic; a private network or TLS in front covers that), no lockout (a generated token has 256 bits, and a lockout would let an attacker lock your monitoring out), and the eight-slot exhaustion below is unchanged. Rotating the token is a restart: SIGHUP reloads the TLS certificate only.
+
 ### 3.1.1 Publish endpoint (HTTP publish from any process)
-ADR-0028, SECURITY_DESIGN T22. Lets a PHP-FPM request, a queue job or a cron script push a message to the browsers in a room with one HTTP call. Off unless `publish_port` is set: `wsrvd --broker=true --publish-port=9200 --publish-token-file=/run/secrets/wsrv_publish --publish-host=127.0.0.1`. It needs the broker (rooms are what it publishes to) and a token file (a regular file, owned by the service user, mode 0600, at least 32 bytes; one trailing newline is ignored). The token is never a key or a flag: it would show in `ps` and in config repositories.
+ADR-0028, SECURITY_DESIGN T22. Lets a PHP-FPM request, a queue job or a cron script push a message to the browsers in a room with one HTTP call. Off unless `publish_port` is set: `wsrvd --broker=true --publish-port=9200 --publish-token-file=/run/secrets/wsrv_publish --publish-host=127.0.0.1`. It needs the broker (rooms are what it publishes to) and a token file (a regular file, owned by the service user, mode 0600; one trailing newline is ignored). **From 1.1 the token must be one `wsrvd --generate-token=FILE` made** (ADR-0039): a token somebody chose can be guessed however long it is, so any other stops the start with a message that names the fix, on loopback too. **Upgrading from 1.0** with a token you made yourself (`openssl rand`, `head -c 32 /dev/urandom`): make a new one (`mv publish.token publish.token.old && wsrvd --generate-token=publish.token`, as the service user), restart `wsrvd`, and give the new file to every publisher; the old token stops working at the restart. The token is never a key or a flag: it would show in `ps` and in config repositories.
 
 ```
 POST /publish?topic=room.7[&except=<connection id>][&binary=1]
@@ -261,7 +288,7 @@ What to watch: `wsrv_broker_deliveries_total{result="refused"}` rising means a l
 - Container: the official image runs as uid 10001 with a built-in `HEALTHCHECK` and only the libraries the daemon links against. Run it with a read-only root filesystem and every capability dropped, as `deploy/kubernetes/wsrv.yaml` does.
 - Kernel tuning (documented, not applied by the server): `net.core.somaxconn`, `net.ipv4.tcp_max_syn_backlog`, `tcp_syncookies=1`, `fs.file-max`, ephemeral port range, `tcp_keepalive_*`.
 - Behind a reverse proxy: configure `trusted_proxy`, ensure proxy timeouts > heartbeat, forward `Upgrade/Connection`, pass the real client IP in `X-Forwarded-For` (or another single-address header) and list the proxies in `trusted_proxy` (section 1.2.1); the PROXY protocol is not implemented yet.
-- Capacity planning: memory/connection × max_connections + buffer pool headroom; measured in `docs/PERFORMANCE.md` and `docs/BENCHMARKS.md`.
+- Capacity planning: memory/connection × max_connections + buffer pool headroom; and set `max_buffered_bytes` (section 1.2.3) to about half of the memory limit, so that a flood of buffering clients is answered with 503s instead of an out-of-memory kill; measured in `docs/PERFORMANCE.md` and `docs/BENCHMARKS.md`.
 
 ## 6. Runbook
 
@@ -286,12 +313,14 @@ What the daemon does (ADR-0017, IPC protocol in `docs/IPC_PROTOCOL.md`). Metrics
 ### Start-up
 ```sh
 mkdir -m 700 /run/wsrv                       # private directory, owned by the service user (or root)
-install -m 600 /dev/null /etc/wsrv/ipc.token  # then put a long random token in it
+wsrvd --generate-token=/etc/wsrv/ipc.token     # 256 random bits, mode 0600, never overwrites; chown it to the service user
 wsrvd --ipc-socket=/run/wsrv/ipc.sock --ipc-token-file=/etc/wsrv/ipc.token \
       --listen-host=0.0.0.0 --listen-port=8080 --allow-origin=https://app.example.com
 ```
+- **TCP instead of the Unix socket** (ADR-0038): `--ipc-port=9300 --ipc-token-file=FILE` (and `--ipc-host=ADDR`, default `127.0.0.1`) for a worker on another host, or on macOS or Windows against a daemon in Docker. Set exactly one of `ipc_socket` and `ipc_port`. The token is **mandatory** and must be one `wsrvd --generate-token=FILE` made (`wsrv1_` and 64 hex digits and a checksum; there is no peer uid to check over TCP, so the token is the only authentication, and a token somebody chose can be guessed however long, so the daemon refuses it at start and says what to run), and the link is **plaintext**: keep it on loopback, a private network, a VPN or an SSH tunnel. In a container, bind `0.0.0.0` inside and publish the port on the host's loopback only (`-p 127.0.0.1:9300:9300`); the daemon then logs the `ipc_plaintext` warning, which is expected there. The official image has a built-in default socket path that applies only when neither key is set, so `-e WSRVD_IPC_PORT=9300` alone selects TCP. The container health check does not probe the TCP port. `ipc_port=0` lets the kernel choose; `ipc_ready` logs the port.
 - The socket directory must not be group- or world-writable and must belong to the service user or root. The daemon creates the socket with mode `0600` and refuses to follow a symlink at that path.
 - The token file must be mode `0600` and owned by the service user. There is **no** command-line or config-file value for the token (it would show in `ps` and `/proc`). Without a token only the peer-uid check protects the socket, and the daemon warns at start-up.
+- **`wsrvd --generate-token=FILE`** (1.1) writes a new random IPC token to `FILE` (`wsrv1_`, 64 hex digits of 32 bytes from the kernel's random source, `_`, a CRC-32; mode `0600`; one newline) and exits. It refuses an existing file (a token is a deployment's secret: delete the old one on purpose to replace it), never follows a symlink, never prints the token, and takes no other argument. It is the only way to make a token the TCP transport accepts, and a good one for a Unix socket too. In the image: `docker run --rm -v wsrv-secrets:/run/wsrv ghcr.io/dimathjayasinghe/wsrvd --generate-token=/run/wsrv/ipc.token` (the volume must be writable by uid 10001).
 - `--config=FILE` reads `key = value` lines; later arguments override earlier ones. Keys: `ipc_socket`, `ipc_token_file`, `ipc_max_frame`, `ipc_hello_timeout_ms`, `ipc_stall_ms`, the handshake-hook keys below, plus every embedded-server key (`listen_host`, `listen_port`, `threads`, `tls_cert`, `tls_key`, `allow_origin`, `allow_missing_origin`, `max_message_size`, `max_connections`, `shutdown_grace_ms`, ...).
 - **wss:// (TLS)**: add `--tls-cert=/etc/wsrv/cert.pem --tls-key=/etc/wsrv/key.pem` (PEM; the certificate file holds the server certificate first, then any intermediates). Setting either makes the port TLS-only (TLS 1.2 and 1.3, forward-secret AEAD suites only, ALPN `http/1.1`); plain `ws://` is not served on that port. The key file must not be readable by "others" (mode `0640` or `0600`) and must have no passphrase; an expired certificate, a key that does not match, a missing file, only one of the two options, or a build without TLS (`WSRV_ENABLE_TLS=OFF`) all stop the start-up with the reason on stderr: the daemon never falls back to plain text. Details and the threat model: ADR-0019.
 - **Several certificates (SNI)**: repeat `--tls-sni=NAME=CERT_FILE:KEY_FILE` (at most 64), for example `--tls-sni=app.example.com=/etc/wsrv/app.pem:/etc/wsrv/app.key --tls-sni='*.example.org=/etc/wsrv/org.pem:/etc/wsrv/org.key'`. The client names the host it wants in its TLS hello; matching ignores case, an exact name beats a wildcard, and `*.example.org` covers exactly one label (`a.example.org`, not `example.org` or `a.b.example.org`; `*.org` is refused). A client that sends no name (or an IP address, or an unknown name) receives the `--tls-cert` certificate, so that one is required and acts as the default. Every certificate is held to the same rules as the default (valid now, key matches, key file not open to others), and all of them are re-read on `SIGHUP`; if any one fails, nothing changes. Paths must not contain `:`.

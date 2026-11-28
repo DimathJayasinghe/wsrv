@@ -1,0 +1,65 @@
+# `php artisan wsrv:echo` under systemd, beside wsrvd.service (docs/LARAVEL_ECHO.md section 9). Install:
+#   install -m 0644 wsrv-echo.service /etc/systemd/system/ && systemctl daemon-reload
+#   systemctl enable --now wsrv-echo
+# Change User, WorkingDirectory and ReadWritePaths (below) to your application's; the user must own storage/. With the Unix socket the worker must run as the
+# user wsrvd runs as (the socket is mode 0600 and the daemon checks the peer uid, ADR-0017); with TCP
+# (ipc_endpoint tcp://host:port) any user that can read the token file will do.
+# The process reads its code and configuration once: after a deploy, a changed .env or a changed secret,
+#   systemctl restart wsrv-echo
+# (the daemon closes every browser for a moment and Echo reconnects; a change to config that is cached with
+# `php artisan config:cache` needs the new cache built before the restart).
+[Unit]
+Description=wsrv:echo, the Laravel Echo gateway for wsrvd
+Documentation=https://github.com/DimathJayasinghe/wsrv/blob/main/docs/LARAVEL_ECHO.md
+# Wants, not Requires: the worker reconnects by itself when the daemon restarts, so the two lifecycles stay apart.
+After=wsrvd.service network-online.target
+Wants=wsrvd.service
+# A worker that cannot start (a wrong token, a typo in the configuration) ends as "failed" after ten tries
+# in a minute, where you will see it, instead of restarting every two seconds for ever.
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=wsrv
+Group=wsrv
+WorkingDirectory=/var/www/app
+ExecStart=/usr/bin/php artisan wsrv:echo --stats-interval=60
+# SIGTERM ends the loop after the message in progress (needs ext-pcntl, which the CLI has on most distributions).
+KillSignal=SIGTERM
+TimeoutStopSec=20
+# on-failure: a stop you ask for is not a failure; a crash or a configuration error is.
+Restart=on-failure
+RestartSec=2
+# stdout and stderr go to the journal: journalctl -u wsrv-echo -f. Every [wsrv] gateway line is numbers only.
+
+# MemoryMax=512M     # the gateway itself holds a few kilobytes per connection; the rest is your application's boot
+
+# Hardening (the same set as wsrvd.service). The worker needs its own code (read-only), the two directories
+# Laravel writes, a socket to wsrvd and whatever your database and cache need.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/www/app/storage /var/www/app/bootstrap/cache
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+# Stricter, checked: add MemoryDenyWriteExecute=yes and start php with `-d pcre.jit=0`. PHP's regular-expression
+# JIT needs memory that is writable and executable, and without the flag PHP prints "Allocation of JIT memory
+# failed" and falls back to the slower interpreter. It is not on here because opcache.jit has the same need.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

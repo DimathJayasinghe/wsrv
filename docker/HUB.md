@@ -1,3 +1,5 @@
+<img src="https://raw.githubusercontent.com/DimathJayasinghe/wsrv/main/docs/brand/variants/wsrv-symbol-app-icon.svg" alt="wsrv" width="96" align="right">
+
 # wsrvd: a WebSocket server for PHP (and anything else) that you run as a container
 
 `wsrvd` is the daemon of [wsrv](https://github.com/DimathJayasinghe/wsrv): a from-scratch C++23 implementation of RFC 6455 that owns your WebSocket connections, so your PHP (or other) application never has to hold a socket open. Your code connects to the daemon over a Unix socket and only reacts to events: *a browser asked to connect*, *a message arrived*, *a connection closed*.
@@ -23,6 +25,12 @@ $worker->run();
 ```
 
 A complete Docker Compose stack with a PHP worker and a publish example is in [examples/docker](https://github.com/DimathJayasinghe/wsrv/tree/main/examples/docker); a Laravel guide is in [docs/LARAVEL.md](https://github.com/DimathJayasinghe/wsrv/blob/main/docs/LARAVEL.md).
+
+## A worker on another machine, or on macOS and Windows (1.1)
+
+By default the worker reaches the daemon over a Unix socket, which cannot cross out of a container. Since 1.1 the link can be TCP: set `WSRVD_IPC_PORT=9300` (and `WSRVD_IPC_HOST=0.0.0.0` inside a container so a published port arrives) with `WSRVD_IPC_TOKEN_FILE` pointing at a token that `wsrvd --generate-token=FILE` made; the worker passes the same token. The link is **not encrypted**: publish the port on `127.0.0.1`, or put it behind a VPN or an SSH tunnel. A complete setup is [examples/host-worker](https://github.com/DimathJayasinghe/wsrv/tree/main/examples/host-worker).
+
+The publish token (`WSRVD_PUBLISH_TOKEN_FILE`) must also be one `wsrvd --generate-token` made; the daemon accepts no other. `WSRVD_ADMIN_TOKEN_FILE` makes `GET /metrics` need a bearer token, and `WSRVD_MAX_BUFFERED_BYTES` bounds the memory the connections hold together (new clients get `503` above it): set it to about half of the memory you give the container.
 
 ## Configuration
 

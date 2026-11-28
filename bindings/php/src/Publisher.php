@@ -123,4 +123,15 @@ final class Publisher
         }
         return new PublishResult((int) $c[1], (int) $c[2], (int) $c[3]);
     }
+
+    /** @return array<string, mixed> */
+    public function __debugInfo(): array
+    {
+        return ['token' => '(hidden)'];
+    }
+
+    public function __serialize(): array
+    {
+        throw new \LogicException('a Publisher holds the publish token and cannot be serialized');
+    }
 }

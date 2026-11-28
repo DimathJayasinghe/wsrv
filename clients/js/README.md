@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/DimathJayasinghe/wsrv/main/docs/brand/svg/wsrv-horizontal-white.svg">
+    <img src="https://raw.githubusercontent.com/DimathJayasinghe/wsrv/main/docs/brand/svg/wsrv-horizontal.svg" alt="wsrv" width="220">
+  </picture>
+</p>
+
 # wsrv-client (JavaScript)
 
 A WebSocket client that survives restarts. Browser and Node 22+, no dependencies, one file (`src/client.js`) plus a hand-written `.d.ts`. Design and limits: [ADR-0031](../../docs/adr/0031-browser-and-node-client.md).

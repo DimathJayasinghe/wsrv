@@ -1,13 +1,23 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/svg/wsrv-horizontal-white.svg">
+    <img src="docs/brand/svg/wsrv-horizontal.svg" alt="wsrv" width="260">
+  </picture>
+</p>
+
 # wsrv: a WebSocket server for PHP, with a C++ core
 
 Hold thousands of WebSocket connections in one small daemon and write the logic in PHP (or any
 language that can call a C ABI). A from-scratch **RFC 6455** implementation in modern C++23: no Boost,
 no Asio, no third-party WebSocket library. Open source under the [Apache License 2.0](LICENSE).
 
-> Status: **1.0.0**, stable. The 1.0 line freezes the IPC protocol, the C ABI and the PHP API (see
+**New here?** [Get started in five minutes](docs/GETTING_STARTED.md) (a browser page, a PHP worker and a
+reconnect you can watch), see [what has been checked and how to check it yourself](docs/EVIDENCE.md).
+
+> Status: **1.1.0**, stable. The 1.0 line freezes the IPC protocol, the C ABI and the PHP API (see
 > [Stability](#stability)); what was checked before release, and what is known and accepted, is in
 > [docs/RELEASE.md](docs/RELEASE.md), and changes are in [CHANGELOG.md](CHANGELOG.md). The server is Linux only
-> (x86-64 and aarch64); on macOS and Windows develop with Docker or WSL2 ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) section 11). A native macOS server and TCP IPC are planned for a future 1.x release.
+> (x86-64 and aarch64); on macOS and Windows develop with Docker or WSL2 ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) section 11). A native macOS server is planned for a future 1.x release; since 1.1 a worker on macOS or Windows can reach a daemon in Docker over [TCP IPC](examples/host-worker).
 
 ## What you get
 
@@ -17,12 +27,14 @@ no Asio, no third-party WebSocket library. Open source under the [Apache License
   send to browsers without holding a connection.
 - **A PHP package** (`composer require wsrv/client`, PHP 8.2 or newer, no extension for the sidecar): a
   worker that reconnects after a daemon restart, a `Publisher`, and a [Laravel guide](docs/LARAVEL.md).
+- **Laravel Echo support** (1.1): `broadcast()`, `Broadcast::channel()` and the stock `pusher-js`/`laravel-echo` against wsrv,
+  with private and presence channels and whispers ([guide](docs/LARAVEL_ECHO.md)).
 - **A JavaScript client** that reconnects with backoff and rejoins its rooms
   ([clients/js](clients/js/README.md)).
 - **Operations built in:** Prometheus metrics, `/healthz` and `/readyz`, graceful shutdown, and a
   [deployment guide](docs/DEPLOYMENT.md) (Docker, Compose, systemd, Kubernetes, reverse proxies).
 - **Tested hard:** Autobahn|Testsuite (517 cases, 0 failed, also over `wss://`), the whole suite under
-  ASan, UBSan and TSan, and 12 fuzz targets.
+  ASan, UBSan and TSan, and 14 fuzz targets. [What was checked, and how to check it yourself](docs/EVIDENCE.md).
 
 ```
 browser ──WebSocket──▶ wsrvd (C++: sockets, TLS, limits, rooms) ──Unix socket──▶ your PHP worker
@@ -37,8 +49,14 @@ limits keep working), and a worker that stalls for good is cut off after a timeo
 
 ```sh
 git clone https://github.com/DimathJayasinghe/wsrv && cd wsrv/examples/docker
-docker compose up -d                       # port 8080 busy? WSRV_PORT=18080 docker compose up -d
-npx wscat -c ws://localhost:8080/          # any WebSocket client works
+docker compose up -d                       # port 8080 or 8000 busy? WSRV_PORT=18080 WSRV_WEB_PORT=18000 docker compose up -d
+```
+
+Open <http://localhost:8000>, press **Connect** and **Send**: the PHP worker echoes your message. Press
+**Join** to enter `room.1`. Prefer a terminal? Any WebSocket client works:
+
+```sh
+npx wscat -c ws://localhost:8080/
 > hello                                    # < hello            (the PHP worker echoes)
 > join room.1                              # < joined room.1
 ```
@@ -50,11 +68,14 @@ docker compose run --rm worker php /app/publish.php room.1 "hello from outside"
 # subscribers=1 accepted=1 refused=0   and the first terminal prints: hello from outside
 ```
 
+Then `docker compose restart wsrvd` and watch the page reconnect and join its room again by itself.
+Step by step, for every stack: [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md).
+
 Use it in your own project:
 
 | You want | Do this |
 |---|---|
-| The daemon | `docker run ghcr.io/dimathjayasinghe/wsrvd:1.0.0` (amd64 and arm64), or the checksummed binary from the [releases](https://github.com/DimathJayasinghe/wsrv/releases) |
+| The daemon | `docker run ghcr.io/dimathjayasinghe/wsrvd:1.1.0` (amd64 and arm64), or the checksummed binary from the [releases](https://github.com/DimathJayasinghe/wsrv/releases) |
 | The PHP client | `composer require wsrv/client` (PHP 8.2 or newer, no extension needed for the sidecar) |
 | Rooms and push from a controller or job | `Wsrv\Publisher`, see [bindings/php/README.md](bindings/php/README.md) |
 | Laravel | [docs/LARAVEL.md](docs/LARAVEL.md) (ticket login, an Artisan worker, queued publishing; tried against Laravel 13) |
@@ -102,6 +123,8 @@ Security reports: [SECURITY.md](SECURITY.md).
 
 | You want to | Read |
 |---|---|
+| Get started, for your stack (Docker, PHP, Laravel, macOS and Windows, the browser client) | [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) |
+| See what was checked, and check it yourself | [docs/EVIDENCE.md](docs/EVIDENCE.md) |
 | Put it in production (Docker, systemd, Kubernetes, proxies, sizing, go-live checklist) | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
 | Configure, monitor and harden it (limits, TLS, metrics, shutdown) | [docs/OPERATIONS.md](docs/OPERATIONS.md) |
 | Use it from PHP | [bindings/php/README.md](bindings/php/README.md) |
@@ -126,6 +149,8 @@ The documents below are the contract the code satisfies; read them before changi
 
 | Document | Purpose | Read when |
 |---|---|---|
+| [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) | Five-minute quickstart and one path per stack | First time here |
+| [docs/EVIDENCE.md](docs/EVIDENCE.md) | Claims, the command that checks each, last results and limits | Deciding whether to trust it |
 | [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md) | Vision, scope, milestones, exit criteria, risks | Starting any work |
 | [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) | Functional & non-functional requirements, default limits | Designing/accepting a feature |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, modules, threading, data flow, public API | Adding/changing a component |
@@ -139,6 +164,7 @@ The documents below are the contract the code satisfies; read them before changi
 | [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md) | Test pyramid, fuzzing, Autobahn, sanitizers, perf | Writing tests |
 | [docs/BUILD_AND_TOOLING.md](docs/BUILD_AND_TOOLING.md) | CMake, presets, CI, linters, dependency policy | Setting up / changing build |
 | [docs/LARAVEL.md](docs/LARAVEL.md) | Rooms and publishing from a Laravel app | Using wsrv from Laravel |
+| [docs/LARAVEL_ECHO.md](docs/LARAVEL_ECHO.md) | Laravel Echo and `broadcast()` on wsrv (wsrv 1.1) | Laravel Echo on wsrv |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Config, logging, metrics, shutdown, deployment hardening | Shipping / running |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Measured scaling, fan-out and soak numbers and their limits | Sizing or touching a hot path |
 | [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | wsrv against Workerman, Swoole and Reverb: numbers, noise, limits, how to rerun | Choosing a server, or quoting a number |

@@ -8,6 +8,7 @@
 #include "net/transport.hpp"
 #include "protocol/handshake_driver.hpp"
 #include "protocol/session.hpp"
+#include "server/buffer_ledger.hpp"
 #include "server/config.hpp"
 #include "server/connection_host.hpp"
 #include "server/handler.hpp"
@@ -17,6 +18,7 @@
 #include "server/pending_gate.hpp"
 #include "server/session_handle.hpp"
 
+#include <atomic>
 #include <memory>
 #include <optional>
 #include <string>
@@ -45,6 +47,9 @@ struct ConnectionContext {
     /// The per-IP table (ADR-0021), used here only to admit the client address a trusted proxy
     /// names (ADR-0029). Null = no per-IP limits.
     IpLimits* ip_limits = nullptr;
+    /// The server's counter of buffered bytes (ADR-0040): this connection charges what it holds to
+    /// it. Null (tests, fakes) charges nothing.
+    std::atomic<std::size_t>* buffered = nullptr;
 };
 
 /// One client, from accept to close: the glue between a transport, the handshake, the
@@ -170,6 +175,8 @@ private:
 
     void apply_interest();
     void notify_writable();
+    /// Charge what the session holds (a partial message, queued output) to the server's budget.
+    void account_buffers() noexcept;
 
     // streaming writer (IMessageSink): what a MessageWriter calls
     [[nodiscard]] Result<MessageWriter> begin_message(Opcode type);
@@ -211,6 +218,7 @@ private:
     std::optional<Endpoint> client_slot_;
     std::unique_ptr<ITransport> transport_;
     ConnectionContext ctx_;
+    BufferLedger ledger_;  ///< what this connection has charged to the buffered-bytes budget
     Phase phase_ = Phase::Handshaking;
 
     HandshakeDriver driver_;

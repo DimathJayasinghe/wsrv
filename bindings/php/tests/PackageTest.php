@@ -30,7 +30,14 @@ test('package: the root autoload and bin point at files that exist', function ()
     assertTrue(is_file($repository . '/' . $dir . 'Client.php'), 'the autoload directory has the classes');
     foreach ($root['bin'] ?? [] as $bin) {
         assertTrue(is_file($repository . '/' . $bin), "bin $bin exists");
-        assertTrue(is_executable($repository . '/' . $bin), "bin $bin is executable");
+        // The exec bit exists on POSIX only (PHP's is_executable() on Windows looks at the file extension).
+        PHP_OS_FAMILY === 'Windows' || assertTrue(is_executable($repository . '/' . $bin), "bin $bin is executable");
+        // What Composer and git archive ship is the mode recorded in the index, on every platform.
+        if (is_dir($repository . '/.git')) {
+            exec('git -C ' . escapeshellarg($repository) . ' ls-files --stage -- ' . escapeshellarg($bin), $staged, $status);
+            assertSame(0, $status, 'git ls-files --stage');
+            assertTrue(str_starts_with($staged[0] ?? '', '100755 '), "bin $bin is recorded as executable (100755) in git");
+        }
     }
     assertSame(['bindings/php/bin/wsrv-install-lib'], $root['bin'] ?? null);
     assertSame(['bin/wsrv-install-lib'], $local['bin'] ?? null);
@@ -39,7 +46,7 @@ test('package: the root autoload and bin point at files that exist', function ()
 test('package: every top-level entry is either in the package or export-ignored', function () {
     $repository = dirname(__DIR__, 3);
     $attributes = (string) file_get_contents($repository . '/.gitattributes');
-    preg_match_all('#^/(\S+) export-ignore$#m', $attributes, $m);
+    preg_match_all('#^/(\S+) export-ignore[ \t]*\r?$#m', $attributes, $m);
     $ignored = $m[1];
     $kept = ['bindings', 'LICENSE', 'NOTICE', 'CHANGELOG.md', 'README.md', 'composer.json'];
     // Only tracked entries end up in the archive; untracked local files (tooling, build output) do not matter.

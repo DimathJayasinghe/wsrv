@@ -5,6 +5,7 @@ declare(strict_types=1);
 
 namespace Wsrv\Ipc;
 
+use Wsrv\MessageTooLarge;
 use Wsrv\ProtocolError;
 
 /**
@@ -162,7 +163,7 @@ final class Codec
     {
         $length = 2 + strlen($body);
         if ($length > self::FRAME_CEILING) {
-            throw new ProtocolError('frame is larger than the protocol ceiling');
+            throw new MessageTooLarge('frame is larger than the protocol ceiling');
         }
         return pack('NCC', $length, $type, 0) . $body;
     }

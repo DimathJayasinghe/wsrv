@@ -74,6 +74,10 @@ public:
     /// authentication, so loopback unless the network around it is trusted. Port 0 = any free port
     /// (see Server::admin_endpoint()). Off unless called.
     ServerBuilder& admin(std::string_view ip, std::uint16_t port);
+    /// The same, and `/metrics` needs `Authorization: Bearer <token>` (ADR-0041): at least 32
+    /// bytes, or the build fails. `/healthz` and `/readyz` stay open (a kubelet probe cannot send a
+    /// credential). `token` is borrowed and must outlive the Server.
+    ServerBuilder& admin(std::string_view ip, std::uint16_t port, const std::string& token);
     /// Serve `POST /publish` on this address (ADR-0028): a bearer token (`sources.token`, at least
     /// 32 bytes) and the one action it may take. Plain HTTP: loopback, a private network or a TLS
     /// proxy in front. `sources` is borrowed and must outlive the Server. Port 0 = any free port

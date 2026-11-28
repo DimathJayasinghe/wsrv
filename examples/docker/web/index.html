@@ -1,0 +1,181 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- The browser end of the Docker quickstart: one static file, no framework, no CDN. It uses the wsrv
+     JavaScript client (clients/js, mounted next to it as ./js/client.js), which reconnects by itself and
+     joins its rooms again, so `docker compose restart wsrvd` is something you can watch happen. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wsrv quickstart</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --ink: #14181f; --muted: #5a6472; --line: #d9dee5;
+    --accent: #1f5fd1; --ok: #14733a; --warn: #8a5a00; --bad: #a3261d; --code: #eef1f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --card: #171b21; --ink: #e8ebf0; --muted: #98a2b0; --line: #2a313b;
+      --accent: #6aa0ff; --ok: #4cc27f; --warn: #e0b04a; --bad: #ff7b72; --code: #0f1216;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 42rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
+  p.lead { margin: 0 0 1.25rem; color: var(--muted); }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+            padding: 1rem; margin-bottom: 1rem; }
+  h2 { font-size: 1rem; margin: 0 0 .6rem; }
+  form { display: flex; gap: .5rem; flex-wrap: wrap; }
+  label.grow { flex: 1 1 12rem; }
+  input[type=text] { width: 100%; padding: .5rem .6rem; border: 1px solid var(--line); border-radius: 6px;
+                     background: var(--bg); color: var(--ink); font: inherit; }
+  button { padding: .5rem .9rem; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent);
+           color: #fff; font: inherit; cursor: pointer; }
+  button.quiet { background: transparent; color: var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .status { display: inline-block; padding: .1rem .6rem; border-radius: 999px; font-size: .85rem;
+            border: 1px solid currentColor; }
+  .status.open { color: var(--ok); } .status.wait { color: var(--warn); } .status.closed { color: var(--bad); }
+  #log { list-style: none; margin: 0; padding: 0; max-height: 18rem; overflow: auto; font: .9rem/1.45 ui-monospace, monospace; }
+  #log li { padding: .15rem 0; border-bottom: 1px dashed var(--line); overflow-wrap: anywhere; }
+  #log .in { color: var(--ok); } #log .out { color: var(--accent); } #log .sys { color: var(--muted); }
+  pre { margin: .5rem 0 0; padding: .6rem .7rem; background: var(--code); border-radius: 6px; overflow-x: auto;
+        font-size: .85rem; }
+  .row { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-bottom: .6rem; }
+  .muted { color: var(--muted); font-size: .9rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>wsrv quickstart</h1>
+  <p class="lead">This page talks to the <code>wsrvd</code> daemon over a WebSocket; a PHP worker answers.</p>
+
+  <section aria-labelledby="h-conn">
+    <h2 id="h-conn">1. Connect</h2>
+    <div class="row">
+      <span id="status" class="status closed" role="status">not connected</span>
+    </div>
+    <form id="connect">
+      <label class="grow">WebSocket address
+        <input type="text" id="url" value="ws://localhost:8080/" autocomplete="off" spellcheck="false">
+      </label>
+      <button type="submit" id="go">Connect</button>
+      <button type="button" id="stop" class="quiet" disabled>Disconnect</button>
+    </form>
+    <p class="muted">Another port? Run compose with <code>WSRV_PORT=18080</code> and use <code>ws://localhost:18080/</code> here.</p>
+  </section>
+
+  <section aria-labelledby="h-msg">
+    <h2 id="h-msg">2. Send a message</h2>
+    <form id="say">
+      <label class="grow">Message
+        <input type="text" id="text" value="hello" autocomplete="off">
+      </label>
+      <button type="submit" id="send" disabled>Send</button>
+    </form>
+    <p class="muted">The worker echoes it back.</p>
+  </section>
+
+  <section aria-labelledby="h-room">
+    <h2 id="h-room">3. Join a room, then publish from outside</h2>
+    <form id="rooms">
+      <label class="grow">Room
+        <input type="text" id="room" value="room.1" autocomplete="off">
+      </label>
+      <button type="submit" id="join" disabled>Join</button>
+    </form>
+    <p class="muted">In a terminal, as a controller or a queue job would:</p>
+    <pre id="publish">docker compose run --rm worker php /app/publish.php room.1 "hello from outside"</pre>
+  </section>
+
+  <section aria-labelledby="h-log">
+    <h2 id="h-log">What the page sees</h2>
+    <ul id="log" aria-live="polite"></ul>
+    <p class="muted">Now try <code>docker compose restart wsrvd</code>: the page reconnects and joins the room again by itself.</p>
+  </section>
+</main>
+
+<script type="module">
+  import { WsrvClient } from './js/client.js';
+
+  const $ = (id) => document.getElementById(id);
+  const log = $('log');
+  let client = null;
+
+  // Everything that came from the network goes in with textContent, never as HTML.
+  function line(kind, text) {
+    const li = document.createElement('li');
+    li.className = kind;
+    li.textContent = `${new Date().toLocaleTimeString()}  ${text}`;
+    log.append(li);
+    while (log.children.length > 200) log.firstChild.remove();
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function show(state, text) {
+    const el = $('status');
+    el.className = `status ${state}`;
+    el.textContent = text;
+    const open = state === 'open';
+    $('send').disabled = !open;
+    $('join').disabled = !open;
+    $('stop').disabled = client === null;
+    $('go').disabled = client !== null;
+  }
+
+  $('connect').addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (client) return;
+    let url;
+    try { url = new URL($('url').value.trim()); } catch { line('sys', 'that is not an address'); return; }
+    if (url.protocol !== 'ws:' && url.protocol !== 'wss:') { line('sys', 'use a ws:// or wss:// address'); return; }
+
+    client = new WsrvClient(url.href);
+    client.on('open', ({ reconnect }) => { show('open', 'connected'); line('sys', reconnect ? 'reconnected' : 'connected'); });
+    client.on('message', ({ data }) => line('in', `< ${typeof data === 'string' ? data : `[${data.byteLength ?? data.size} bytes]`}`));
+    client.on('reconnecting', ({ attempt, delay }) => {
+      show('wait', `reconnecting (attempt ${attempt})`);
+      if (attempt === 3) line('sys', 'still not connected: is the address right, and is the daemon up? Try: docker compose logs wsrvd (an origin_refused line means this page is opened from an address the daemon does not list)');
+      line('sys', `the connection was lost; trying again in ${Math.round(delay)} ms`);
+    });
+    client.on('close', ({ code, reason, willRetry }) => {
+      line('sys', `closed: code ${code}${reason ? ` (${reason})` : ''}${willRetry ? '' : ', not retrying'}`);
+      if (!willRetry) { client = null; show('closed', 'not connected'); }
+    });
+    client.on('error', ({ error }) => line('sys', `error: ${error && error.message ? error.message : 'could not connect'}`));
+    show('wait', 'connecting');
+    client.connect();
+  });
+
+  $('stop').addEventListener('click', () => {
+    if (!client) return;
+    client.close();
+    client = null;
+    show('closed', 'not connected');
+  });
+
+  $('say').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const text = $('text').value;
+    if (client && text !== '' && client.send(text)) line('out', `> ${text}`);
+  });
+
+  $('rooms').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const room = $('room').value.trim();
+    if (client && room !== '') {
+      client.join(room);  // remembered: sent again after every reconnect
+      line('out', `> join ${room}`);
+      // The command is meant to be pasted into a shell, so only a name the worker accepts goes into it.
+      if (/^[A-Za-z0-9._:/@-]+$/.test(room)) {
+        $('publish').textContent = `docker compose run --rm worker php /app/publish.php ${room} "hello from outside"`;
+      }
+    }
+  });
+</script>
+</body>
+</html>

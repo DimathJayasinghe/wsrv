@@ -44,6 +44,24 @@ std::vector<std::byte> drain(OutboundScheduler& s, std::size_t step = 0) {
     }
 }
 
+// ADR-0043: largest_message() is the exact boundary of can_enqueue() on an empty queue, so a caller
+// that refuses a larger message early refuses exactly what the queue would have dropped.
+TEST(OutboundScheduler, LargestMessageIsTheExactSizeAnEmptyQueueStillTakes) {
+    const OutboundConfig c = config(64, 1000);
+    const std::size_t largest = wsrv::largest_message(c);
+    EXPECT_EQ(largest, 1000U - wsrv::kMessageOverhead);
+    const OutboundScheduler s{c};
+    EXPECT_TRUE(s.can_enqueue(largest).has_value());
+    const auto over = s.can_enqueue(largest + 1);
+    ASSERT_FALSE(over.has_value());
+    EXPECT_EQ(over.error().code, ErrorCode::BufferFull) << "refused however empty the queue is";
+}
+
+TEST(OutboundScheduler, ATinyQueueHoldsNoMessageAtAll) {
+    EXPECT_EQ(wsrv::largest_message(config(64, wsrv::kMessageOverhead)), 0U);
+    EXPECT_EQ(wsrv::largest_message(config(64, 3)), 0U);
+}
+
 TEST(OutboundScheduler, ACompressedMessageCarriesRsv1OnItsFirstFrameOnly) {  // EC-D02
     OutboundScheduler s{config(4)};
     const std::string payload(10, 'x');

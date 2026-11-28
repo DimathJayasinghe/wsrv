@@ -87,7 +87,7 @@ final class Supervisor
         };
     }
 
-    /** The usual case: connect to the daemon's Unix socket (and token) each time. */
+    /** The usual case: connect to the daemon (a Unix socket path, or `tcp://host:port`) with the token each time. */
     public static function forSocket(string $socketPath, string $token = '', float $helloTimeout = 5.0): self
     {
         return new self(static fn (): Client => Client::connect($socketPath, $token, $helloTimeout));
@@ -173,6 +173,10 @@ final class Supervisor
                 try {
                     $worker->run();
                     return;  // stop() was called
+                } catch (MessageTooLarge $e) {
+                    // Refused before a byte was written: the link is fine, so this is a handler's error, not a
+                    // lost daemon. Dropping the link here would disconnect every browser for one oversized send.
+                    ($this->onError)($e);
                 } catch (ConnectionClosed | ProtocolError $e) {
                     ($this->log)('lost wsrvd: ' . $e->getMessage());
                     return;

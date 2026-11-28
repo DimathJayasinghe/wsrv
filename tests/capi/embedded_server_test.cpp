@@ -327,6 +327,30 @@ TEST(EmbeddedServer, TheBrokerKeyGivesTheHostRoomsByConnectionIdAndItsCountersRe
         << page;
 }
 
+// ADR-0041: the admin token reaches the listener through the embedded config, which is how the
+// daemon starts the server: /metrics needs it, the probes do not, and a server without one is open.
+TEST(EmbeddedServer, TheAdminTokenGuardsMetricsAndNotTheProbes) {
+    const std::string token(48, 't');
+    EmbeddedConfig config = base_config();
+    ASSERT_TRUE(config.set("admin_port", "0").has_value());
+    ASSERT_TRUE(config.set_admin_token(token).has_value());
+    const auto server = started(config);
+    const auto page = [&](const std::string& request) {
+        TcpClient admin{server->admin_port()};
+        EXPECT_TRUE(admin.send(request));
+        return admin.read_http_head() + admin.read_all();
+    };
+    const std::string refused = page("GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
+    EXPECT_EQ(refused.rfind("HTTP/1.1 401 Unauthorized\r\n", 0), 0U) << refused;
+    EXPECT_EQ(refused.find("wsrv_connections_current"), std::string::npos);
+    const std::string allowed =
+        page("GET /metrics HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer " + token + "\r\n\r\n");
+    EXPECT_EQ(allowed.rfind("HTTP/1.1 200 OK\r\n", 0), 0U) << allowed;
+    EXPECT_NE(allowed.find("wsrv_connections_current"), std::string::npos) << allowed;
+    EXPECT_EQ(page("GET /healthz HTTP/1.1\r\n\r\n").rfind("HTTP/1.1 200 OK\r\n", 0), 0U);
+    EXPECT_EQ(page("GET /readyz HTTP/1.1\r\n\r\n").rfind("HTTP/1.1 200 OK\r\n", 0), 0U);
+}
+
 TEST(EmbeddedServer, WithoutTheBrokerKeyBrokerCommandsAreInvalidArgument) {
     const auto server = started();
     const auto result = server->publish_text("room", "x");
