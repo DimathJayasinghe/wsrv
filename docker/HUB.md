@@ -1,3 +1,5 @@
+<img src="https://raw.githubusercontent.com/DimathJayasinghe/wsrv/main/docs/brand/variants/wsrv-symbol-app-icon.svg" alt="wsrv" width="96" align="right">
+
 # wsrvd: a WebSocket server for PHP (and anything else) that you run as a container
 
 `wsrvd` is the daemon of [wsrv](https://github.com/DimathJayasinghe/wsrv): a from-scratch C++23 implementation of RFC 6455 that owns your WebSocket connections, so your PHP (or other) application never has to hold a socket open. Your code connects to the daemon over a Unix socket and only reacts to events: *a browser asked to connect*, *a message arrived*, *a connection closed*.

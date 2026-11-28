@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/DimathJayasinghe/wsrv/main/docs/brand/svg/wsrv-horizontal-white.svg">
+    <img src="https://raw.githubusercontent.com/DimathJayasinghe/wsrv/main/docs/brand/svg/wsrv-horizontal.svg" alt="wsrv" width="220">
+  </picture>
+</p>
+
 # wsrv/client: PHP client for the `wsrvd` WebSocket sidecar
 
 A pure-PHP client (PHP 8.2+, plain streams, no extensions needed) for the **wsrvd** daemon. The daemon owns the WebSocket connections, framing, UTF-8 checks, limits and backpressure; your PHP code only receives events and sends commands over a local Unix socket. That is what makes it work on every PHP stack, including PHP-FPM workers and Laravel/Symfony queue workers: PHP never holds a WebSocket or a thread.
