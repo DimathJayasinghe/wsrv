@@ -14,7 +14,7 @@ no Asio, no third-party WebSocket library. Open source under the [Apache License
 **New here?** [Get started in five minutes](docs/GETTING_STARTED.md) (a browser page, a PHP worker and a
 reconnect you can watch), see [what has been checked and how to check it yourself](docs/EVIDENCE.md).
 
-> Status: **1.0.0**, stable. The 1.0 line freezes the IPC protocol, the C ABI and the PHP API (see
+> Status: **1.1.0**, stable. The 1.0 line freezes the IPC protocol, the C ABI and the PHP API (see
 > [Stability](#stability)); what was checked before release, and what is known and accepted, is in
 > [docs/RELEASE.md](docs/RELEASE.md), and changes are in [CHANGELOG.md](CHANGELOG.md). The server is Linux only
 > (x86-64 and aarch64); on macOS and Windows develop with Docker or WSL2 ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) section 11). A native macOS server is planned for a future 1.x release; since 1.1 a worker on macOS or Windows can reach a daemon in Docker over [TCP IPC](examples/host-worker).
@@ -75,7 +75,7 @@ Use it in your own project:
 
 | You want | Do this |
 |---|---|
-| The daemon | `docker run ghcr.io/dimathjayasinghe/wsrvd:1.0.0` (amd64 and arm64), or the checksummed binary from the [releases](https://github.com/DimathJayasinghe/wsrv/releases) |
+| The daemon | `docker run ghcr.io/dimathjayasinghe/wsrvd:1.1.0` (amd64 and arm64), or the checksummed binary from the [releases](https://github.com/DimathJayasinghe/wsrv/releases) |
 | The PHP client | `composer require wsrv/client` (PHP 8.2 or newer, no extension needed for the sidecar) |
 | Rooms and push from a controller or job | `Wsrv\Publisher`, see [bindings/php/README.md](bindings/php/README.md) |
 | Laravel | [docs/LARAVEL.md](docs/LARAVEL.md) (ticket login, an Artisan worker, queued publishing; tried against Laravel 13) |
