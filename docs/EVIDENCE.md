@@ -59,7 +59,7 @@ Stated so you do not have to find it out:
 
 - **No external audit** of the code, the protocol implementation or the TLS configuration.
 - **No users yet at scale.** The project is young; the evidence above is from its own tests and tools.
-- **Laravel:** the ticket guide is tried by hand against Laravel 13, not in CI ([LARAVEL.md](LARAVEL.md)). The Echo support planned for 1.2 ([LARAVEL_ECHO.md](LARAVEL_ECHO.md)) has unit tests and a real-daemon test in CI, and was run by hand with the real `pusher-js` and `laravel-echo` in Chrome and against Laravel 13.43; section 9 of that guide lists what was not run (other browsers, Laravel 11 and 12, Echo's `pusher` broadcaster).
+- **Laravel:** the ticket guide is tried by hand against Laravel 13, not in CI ([LARAVEL.md](LARAVEL.md)). The Echo support of 1.1 ([LARAVEL_ECHO.md](LARAVEL_ECHO.md)) has unit tests and a real-daemon test in CI, and was run by hand with the real `pusher-js` and `laravel-echo` in Chrome and against Laravel 13.43; section 9 of that guide lists what was not run (other browsers, Laravel 11 and 12, Echo's `pusher` broadcaster).
 - **macOS and Windows:** the server is Linux only. CI runs the PHP client tests on both against a daemon stand-in; the whole path (a host worker, a published port, Docker Desktop) is checked on Linux, not on a real Mac or PC ([DEPLOYMENT.md](DEPLOYMENT.md) section 11).
 - **Several nodes:** there is no built-in message backplane; you publish to each daemon ([DEPLOYMENT.md](DEPLOYMENT.md) section 7).
 - **Known limitations** with their decisions: [RELEASE.md](RELEASE.md) section 3.

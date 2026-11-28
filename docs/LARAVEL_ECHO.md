@@ -2,7 +2,7 @@
 
 Use Laravel's own broadcasting (`broadcast(new Event)`, `Broadcast::channel()`, `routes/channels.php`, Laravel Echo in the browser) with `wsrvd` as the WebSocket server, so a Laravel app gets real-time events without a Node service, a paid broker or a second WebSocket server to learn.
 
-> **Status.** Planned for wsrv 1.2 (ADR-0042). The gateway, the broadcaster, encrypted channels and `php artisan wsrv:echo` are implemented and tested: unit tests, a run against a real `wsrvd` with raw WebSocket clients, a run of the glue inside a real Laravel 13 application, and two runs of the real browser libraries (`pusher-js` 8.6.0 and `laravel-echo` 2.6.3, in Chrome): against a real `wsrvd`, and against a real Laravel 13 application with a real `wsrvd`. Section 12 says what each run covers and what was not run.
+> **Status.** Part of wsrv 1.1 (ADR-0042), not released yet. The gateway, the broadcaster, encrypted channels and `php artisan wsrv:echo` are implemented and tested: unit tests, a run against a real `wsrvd` with raw WebSocket clients, a run of the glue inside a real Laravel 13 application, and two runs of the real browser libraries (`pusher-js` 8.6.0 and `laravel-echo` 2.6.3, in Chrome): against a real `wsrvd`, and against a real Laravel 13 application with a real `wsrvd`. Section 12 says what each run covers and what was not run.
 
 If you want rooms without Echo (your own join messages, your own tickets), see [LARAVEL.md](LARAVEL.md). The two ways use the same daemon, but one daemon serves one of them at a time (one worker per daemon).
 
@@ -126,7 +126,7 @@ The browser's `Origin` must be in `--allow-origin`. Channel names are limited to
 
 ## 6. What works, and what does not
 
-| Feature | In wsrv 1.2 |
+| Feature | In wsrv 1.1 |
 |---|---|
 | Public channels, `broadcast()`, `broadcastAs()`, `broadcastWith()` | yes |
 | Private channels and `Broadcast::channel()` callbacks | yes: the signature is bound to the browser's socket id and the channel |
@@ -301,7 +301,7 @@ What the daemon says about itself is on its admin port (start it with `--admin-p
 | `python3 tests/gateway_load/run.py --daemon WSRVD --scenario join\|whisper\|churn` | thousands of Pusher-protocol browsers against a real `wsrvd` and the worker: reconnect storms, whisper fan-out, and churn with abusive clients and killed load processes; it fails unless every subscribe was answered and, after the last browser has gone, every gauge of the gateway is back at zero ([README](../bindings/php/tests/gateway_load/README.md)) | by hand (needs Node 22.4 or newer) |
 | `php tests/echo_browser/run.php WSRVD PUSHER_JS ECHO_JS` | the real `pusher-js` 8.6.0 and `laravel-echo` 2.6.3 in Chrome against a real `wsrvd`: connect, public, private (signature through an auth endpoint, and a refused one), presence `here`/`joining`/`leaving`, whispers, `toOthers`, encrypted channels decrypted in the browser, a join followed at once by a leave, a clean disconnect, a page that joins 60 channels in one burst, and a restart of the daemon and the worker under connected browsers (Echo reconnects, re-authorizes and resubscribes, including that page's 60 channels) | by hand (needs the two npm packages and a browser) |
 
-The `run.php` variant uses a small stand-in for your Laravel routes (`tests/echo_browser/router.php`), so it needs no Laravel; `laravel/run.sh` runs the same page against a real application. Last runs: 12 of 12 checks passed in each (2026-11-27, Chrome, `wsrvd` built from this branch; the Laravel run on Laravel Framework 13.43.0).
+The `run.php` variant uses a small stand-in for your Laravel routes (`tests/echo_browser/router.php`), so it needs no Laravel; `laravel/run.sh` runs the same page against a real application. Last runs: 12 of 12 checks passed in each (2026-11-27, Chrome, on the code of the 1.1 release-prep branch after ADR-0042 A3 and ADR-0043, with a `wsrvd` release build of those sources; the Laravel run on Laravel Framework 13.43.0). The Chrome version is not recorded; the two npm bundles are `pusher-js` 8.6.0 and `laravel-echo` 2.6.3.
 
 ### Measured
 

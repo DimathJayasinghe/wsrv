@@ -84,7 +84,7 @@ $result = $publisher->publish('room.7', json_encode(['text' => 'hello']), except
 
 `publish()` throws `PublishFailed` on anything but a 200; `$e->status` is the HTTP status and `$e->isRetryable()` is true for 429, 503 and an unreachable daemon. A subscription ends with its connection, and also at once if the worker disconnects. Only `http://` is supported (the token travels in clear text: keep the daemon on a private network or behind a TLS proxy). Endpoint reference and bounds: `docs/OPERATIONS.md` 3.1.1.
 
-Using Laravel? `docs/LARAVEL.md` has the ticket login, an Artisan worker and a queued publisher; `docs/LARAVEL_ECHO.md` (planned for 1.2) is for Laravel Echo and `broadcast()`.
+Using Laravel? `docs/LARAVEL.md` has the ticket login, an Artisan worker and a queued publisher; `docs/LARAVEL_ECHO.md` (wsrv 1.1) is for Laravel Echo and `broadcast()`.
 
 ## Quick start: embedded mode (about five minutes)
 
