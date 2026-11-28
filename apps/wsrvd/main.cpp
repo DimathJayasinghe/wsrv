@@ -51,6 +51,18 @@ wsrv::wsrvd::IpcServerConfig ipc_config(const wsrv::wsrvd::Startup& startup, wsr
     return ipc;
 }
 
+/// ADR-0043: an `ipc_max_frame` the operator set above what a connection's outbound queue can
+/// carry was lowered to it. Say so once at start: the value in the config file is not in use.
+void warn_if_frame_lowered(wsrv::ILogger& log, const wsrv::wsrvd::Startup& startup) {
+    if (!startup.config.max_frame_lowered()) {
+        return;
+    }
+    log.log(wsrv::LogLevel::Warn,
+            "ipc_max_frame_lowered",
+            "wsrvd: ipc_max_frame is above 2 * max_message_size - 2 and was lowered to it: "
+            "the daemon cannot send a larger message to a browser (raise max_message_size)");
+}
+
 /// Create the WebSocket server and the IPC server on `loop`, start the WebSocket threads, run the
 /// loop until it is stopped, and shut everything down in the right order.
 int run_daemon(wsrv::EventLoop& loop,
@@ -66,6 +78,7 @@ int run_daemon(wsrv::EventLoop& loop,
     wsrv::ILogger& log = (*embedded)->logger();
     wsrv::wsrvd::EmbeddedBackend backend{**embedded};
     reloadable = embedded->get();  // SIGHUP may reload TLS from now on (see serve())
+    warn_if_frame_lowered(log, startup);
     if (startup.token.empty() && !startup.config.tcp()) {
         log.log(wsrv::LogLevel::Warn,
                 "ipc_no_token",

@@ -194,6 +194,50 @@ test('pusher presence: removing what is not there is harmless, and empty channel
     assertSame(0, $p->channels());
 });
 
+test('pusher presence: removing a connection that is not in a channel leaves the members alone', function () {
+    // No caller can do this today (the gateway removes only what it added), but one stray call used to
+    // forget a whole room: the members of a channel are not the business of a connection that is not in it.
+    $p = new PresenceTable(5);
+    $p->add('presence-a', 1, 'x', ['n' => 'X']);
+    $p->add('presence-a', 2, 'y', null);
+    assertSame(PresenceTable::ABSENT, $p->remove('presence-a', 99));
+    assertSame(2, $p->count('presence-a'));
+    assertTrue($p->has('presence-a', 'x') && $p->has('presence-a', 'y'));
+    assertSame(PresenceTable::ABSENT, $p->remove('presence-none', 1));
+    assertSame(1, $p->channels(), 'asking about a channel that is not there makes no empty one');
+    assertSame('x', $p->remove('presence-a', 1));
+    assertSame('y', $p->remove('presence-a', 2));
+    assertSame(0, $p->channels());
+});
+
+test('pusher presence: the revision of a channel changes exactly when its member list does', function () {
+    $p = new PresenceTable(2);
+    assertSame(0, $p->revision('presence-a'), 'no members, no revision');
+    assertSame(PresenceTable::ADDED, $p->add('presence-a', 1, 'u1', ['n' => 1]));
+    $r1 = $p->revision('presence-a');
+    assertTrue($r1 > 0);
+    assertSame(PresenceTable::SAME_USER, $p->add('presence-a', 2, 'u1', ['n' => 'a second tab']));
+    assertSame(PresenceTable::SAME_USER, $p->add('presence-a', 1, 'u1', null));   // the same connection twice
+    assertSame($r1, $p->revision('presence-a'), 'the same user again is not a change');
+    assertSame(PresenceTable::ADDED, $p->add('presence-a', 3, 'u2', null));
+    $r2 = $p->revision('presence-a');
+    assertTrue($r2 > $r1, 'a new member is a change');
+    assertSame(PresenceTable::FULL, $p->add('presence-a', 4, 'u3', null));
+    assertSame(PresenceTable::ABSENT, $p->remove('presence-a', 99));
+    assertSame(PresenceTable::STAYS, $p->remove('presence-a', 1));                  // u1 still has the tab on 2
+    assertSame($r2, $p->revision('presence-a'), 'a refused join, a stray remove and a tab that closes are not changes');
+    assertSame('u1', $p->remove('presence-a', 2));
+    $r3 = $p->revision('presence-a');
+    assertTrue($r3 > $r2, 'a user whose last tab left is a change');
+    assertSame('u2', $p->remove('presence-a', 3));
+    assertSame(0, $p->revision('presence-a'), 'the channel is gone');
+    $p->add('presence-a', 5, 'u9', null);
+    assertTrue($p->revision('presence-a') > $r3, 'a channel made again never repeats an old revision');
+    $r4 = $p->revision('presence-a');
+    $p->add('presence-b', 6, 'x', null);
+    assertSame($r4, $p->revision('presence-a'), 'another channel changing is not this one changing');
+});
+
 test('pusher presence: user ids that look alike stay different users', function () {
     $p = new PresenceTable(10);
     $p->add('presence-a', 1, '1', null);

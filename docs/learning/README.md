@@ -61,5 +61,6 @@ We teach as we build. Each lesson answers three questions: **What** are we build
 | 54 | [A credential for one page, and one answer for every no](54-a-credential-for-one-page-and-one-answer-for-every-no.md) | 1.1 | written |
 | 55 | [A quickstart you can verify, and claims you can check](55-a-quickstart-you-can-verify-and-claims-you-can-check.md) | 1.1 | written |
 | 56 | [Speaking another protocol without trusting it](56-speaking-another-protocol-without-trusting-it.md) | 1.2 | written |
+| 57 | [Running a gateway you cannot babysit](57-running-a-gateway-you-cannot-babysit.md) | 1.2 | written |
 
 Lesson template: *Goal → Background (the problem) → Design (why this way) → Walkthrough (code, small steps) → Tests (what proves it works) → Pitfalls → Exercises.*

@@ -33,7 +33,9 @@ namespace wsrv::wsrvd {
 ///   admin_token_file     file holding the token `/metrics` then needs (ADR-0041), same file rules
 ///                        and the same generated form; requires admin_port, must differ from the
 ///                        publish and IPC tokens; there is no admin_token key
-///   ipc_max_frame        largest IPC frame after HELLO; default max_message_size + 64 KiB
+///   ipc_max_frame        largest IPC frame after HELLO; default max_message_size + 64 KiB. Never
+///                        above 2 * max_message_size - 2: a connection's outbound queue holds
+///                        2 * max_message_size bytes, so a larger message could not be sent (ADR-0043)
 ///   ipc_hello_timeout_ms how long a new connection may take to say HELLO (default 5000)
 ///   ipc_stall_ms         how long the application may leave our output unread before we close
 ///                        the link (default 10000, 100 to 600000)
@@ -55,6 +57,9 @@ public:
     static constexpr std::chrono::milliseconds kMaxStallTimeout{600000};
     /// An EVENT frame besides its payload: the 6-byte frame header and the 12 body fields.
     static constexpr std::size_t kEventOverhead = ipc::kFrameHeaderSize + 12;
+    /// What a SEND frame's length counts besides its payload: the type and flags after the 4-byte
+    /// length field (header minus those 4 bytes) and the 12 body fields (request, connection).
+    static constexpr std::size_t kSendOverhead = ipc::kFrameHeaderSize - 4 + 12;
 
     /// @return Error{InvalidConfig} for an unknown key, a malformed value or the forbidden
     /// `ipc_token`; nothing changes then.
@@ -115,8 +120,15 @@ public:
     [[nodiscard]] Result<void> set_publish_token(std::string token) {
         return embedded_.set_publish_token(std::move(token));
     }
+    /// The frame limit as it applies after finish(): lowered, if it was higher, to what a
+    /// connection's outbound queue can take (ADR-0043): a larger SEND could only be dropped.
     [[nodiscard]] std::uint32_t max_frame() const noexcept {
         return max_frame_;
+    }
+    /// True when an `ipc_max_frame` the operator set was above that and has been lowered; main()
+    /// says so in the log. A default that is larger is lowered without a word: nobody chose it.
+    [[nodiscard]] bool max_frame_lowered() const noexcept {
+        return max_frame_lowered_;
     }
     [[nodiscard]] std::chrono::milliseconds hello_timeout() const noexcept {
         return hello_timeout_;
@@ -137,6 +149,9 @@ private:
     /// Which IPC transport, its token file and its address: the rules of ADR-0038 section 2 and 3.
     [[nodiscard]] Result<void> check_transport();
     EmbeddedConfig embedded_;
+    /// `frame` limited to what the outbound queue can carry in one SEND (ADR-0043).
+    [[nodiscard]] std::size_t clamp_to_outbound(std::size_t frame) const noexcept;
+
     std::string socket_path_;
     std::string default_socket_;
     std::optional<std::uint16_t> ipc_port_;
@@ -148,6 +163,7 @@ private:
     std::string admin_token_file_;
     std::uint64_t explicit_max_frame_ = 0;  // 0 = not set
     std::uint32_t max_frame_ = 0;
+    bool max_frame_lowered_ = false;
     std::chrono::milliseconds hello_timeout_ = kDefaultHelloTimeout;
     std::chrono::milliseconds stall_timeout_ = kDefaultStallTimeout;
 };

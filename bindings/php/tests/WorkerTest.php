@@ -114,3 +114,87 @@ test('worker: an unknown handler name is refused', function () {
     [$worker] = ready_worker();
     assertThrows(InvalidArgumentException::class, fn () => $worker->on('mesage', fn () => null));
 });
+
+/** A clock the tests move by hand. */
+function worker_clock(): object
+{
+    return new class {
+        public float $now = 100.0;
+    };
+}
+
+test('worker: every() calls a function about every N seconds while run() serves, and not before', function () {
+    [$client, $daemon] = ready_client();
+    $clock = worker_clock();
+    $worker = new Worker($client, fn (): float => $clock->now);
+    $fired = [];
+    $worker->every(10.0, function () use (&$fired, $clock) {
+        $fired[] = $clock->now;
+    });
+    $messages = 0;
+    $worker->on('message', function () use (&$messages, $clock, $worker) {
+        $messages++;
+        $clock->now += 4.0;                       // each message "takes" four seconds
+        if ($messages === 7) {
+            $worker->stop();
+        }
+    });
+    fwrite($daemon, event_bytes(1, 1, 'a') . str_repeat(event_bytes(2, 1, 'm'), 7));
+    $worker->run(0.5);
+    // the clock reads 104, 108, 112 (due since 110: fires, next 122), 116, 120, 124 (fires, next 134), 128 and stop()
+    assertSame([112.0, 124.0], $fired);
+});
+
+test('worker: every() does not catch up on the intervals it missed, and a run that is stopped does not call it', function () {
+    [$client, $daemon] = ready_client();
+    $clock = worker_clock();
+    $worker = new Worker($client, fn (): float => $clock->now);
+    $fired = 0;
+    $worker->every(10.0, function () use (&$fired) {
+        $fired++;
+    });
+    $messages = 0;
+    $worker->on('message', function () use (&$messages, $clock, $worker) {
+        $clock->now += 1000.0;                    // a handler that took 100 intervals
+        if (++$messages === 3) {
+            $worker->stop();
+        }
+    });
+    fwrite($daemon, event_bytes(1, 1, 'a') . str_repeat(event_bytes(2, 1, 'm'), 3));
+    $worker->run(0.5);
+    assertSame(2, $fired, 'one call after each of the first two messages, not one per missed interval, and none after stop()');
+});
+
+test('worker: an exception from a timer leaves run() like one from a handler, and the timer is already scheduled again', function () {
+    [$client, $daemon] = ready_client();
+    $clock = worker_clock();
+    $worker = new Worker($client, fn (): float => $clock->now);
+    $calls = 0;
+    $worker->every(10.0, function () use (&$calls) {
+        $calls++;
+        throw new RuntimeException('timer bug');
+    });
+    $worker->on('message', function () use ($clock) {
+        $clock->now += 11.0;
+    });
+    fwrite($daemon, event_bytes(1, 1, 'a') . event_bytes(2, 1, 'm') . event_bytes(2, 1, 'm') . event_bytes(2, 1, 'm'));
+    $thrown = assertThrows(RuntimeException::class, fn () => $worker->run(0.5));
+    assertSame('timer bug', $thrown->getMessage());
+    assertSame(1, $calls);
+    $seen = 0;
+    $worker->on('message', function () use (&$seen, $clock, $worker) {
+        $clock->now += 1.0;                       // 112, 113: before the next call at 121
+        if (++$seen === 2) {
+            $worker->stop();
+        }
+    });
+    $worker->run(0.5);
+    assertSame(1, $calls, 'a timer that threw is not called again at once');
+});
+
+test('worker: every() refuses an interval that is not a positive finite number', function () {
+    [$worker] = ready_worker();
+    foreach ([0.0, -1.0, NAN, INF] as $bad) {
+        assertThrows(InvalidArgumentException::class, fn () => $worker->every($bad, fn () => null));
+    }
+});

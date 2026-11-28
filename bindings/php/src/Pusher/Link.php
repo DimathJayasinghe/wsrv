@@ -8,12 +8,16 @@ namespace Wsrv\Pusher;
 /**
  * What the Gateway needs from the daemon, as five commands. WorkerLink is the real one (a Worker);
  * the tests use one that only records. Every call is a command the daemon answers later; the
- * request id of subscribe() and unsubscribe() comes back in a STATUS the caller passes to
+ * request id of send(), subscribe(), unsubscribe() and close() comes back in a STATUS the caller passes to
  * Gateway::status().
  */
 interface Link
 {
-    public function send(int $conn, string $text): void;
+    /**
+     * @return int the request id of the send, whose STATUS comes back like the others (0 when the connection
+     *             is not known and nothing was sent)
+     */
+    public function send(int $conn, string $text): int;
 
     /** @return int the request id */
     public function subscribe(int $conn, string $topic): int;
@@ -24,5 +28,9 @@ interface Link
     /** To every subscriber of $topic except connection $except (0 = nobody). */
     public function publish(string $topic, string $payload, int $except): void;
 
-    public function close(int $conn, int $code, string $reason): void;
+    /**
+     * @return int the request id of the close, whose STATUS comes back like the others (0 when the connection
+     *             is not known: it is gone, and nothing was asked)
+     */
+    public function close(int $conn, int $code, string $reason): int;
 }

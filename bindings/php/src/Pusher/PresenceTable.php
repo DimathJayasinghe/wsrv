@@ -21,8 +21,11 @@ final class PresenceTable
     public const STAYS = -1;      // the connection left, the user still has another one
     public const ABSENT = -2;     // nothing to remove
 
-    /** @var array<string, array{users: array<string, array{info: ?array, conns: array<int, true>}>, by_conn: array<int, string>}> */
+    /** @var array<string, array{users: array<string, array{info: ?array, conns: array<int, true>}>, by_conn: array<int, string>, rev: int}> */
     private array $channels = [];
+
+    /** Counts the changes to any member list; a channel's revision is the value it had at its latest change, so none repeats. */
+    private int $clock = 0;
 
     public function __construct(private readonly int $maxMembers)
     {
@@ -34,7 +37,7 @@ final class PresenceTable
     public function add(string $channel, int $conn, string $userId, ?array $info): int
     {
         $ch = &$this->channels[$channel];
-        $ch ??= ['users' => [], 'by_conn' => []];
+        $ch ??= ['users' => [], 'by_conn' => [], 'rev' => 0];
         if (isset($ch['by_conn'][$conn])) {
             return self::SAME_USER;   // subscribing twice changes nothing
         }
@@ -51,17 +54,17 @@ final class PresenceTable
         }
         $ch['users'][$userId] = ['info' => $info, 'conns' => [$conn => true]];
         $ch['by_conn'][$conn] = $userId;
+        $ch['rev'] = ++$this->clock;
         return self::ADDED;
     }
 
     /** @return string|int the user id if this was their last connection, else STAYS or ABSENT */
     public function remove(string $channel, int $conn): string|int
     {
-        $ch = &$this->channels[$channel];
-        if ($ch === null || !isset($ch['by_conn'][$conn])) {
-            unset($this->channels[$channel]);
-            return self::ABSENT;
+        if (!isset($this->channels[$channel]['by_conn'][$conn])) {
+            return self::ABSENT;   // not in this channel: its members are none of this connection's business
         }
+        $ch = &$this->channels[$channel];
         $userId = (string) $ch['by_conn'][$conn];
         unset($ch['by_conn'][$conn], $ch['users'][$userId]['conns'][$conn]);
         if ($ch['users'][$userId]['conns'] !== []) {
@@ -70,8 +73,20 @@ final class PresenceTable
         unset($ch['users'][$userId]);
         if ($ch['users'] === []) {
             unset($this->channels[$channel]);
+        } else {
+            $ch['rev'] = ++$this->clock;
         }
         return $userId;
+    }
+
+    /**
+     * A number that changes whenever the member list of the channel does (a user comes, or a user's last
+     * connection leaves) and is never used twice, even by a channel that was emptied and made again; 0 for a
+     * channel with no members. A second tab of a member, a refused join and a stray remove change nothing.
+     */
+    public function revision(string $channel): int
+    {
+        return $this->channels[$channel]['rev'] ?? 0;
     }
 
     public function has(string $channel, string $userId): bool
@@ -88,6 +103,16 @@ final class PresenceTable
     public function channels(): int
     {
         return count($this->channels);
+    }
+
+    /** Users in all channels together (a user in two channels counts twice). */
+    public function members(): int
+    {
+        $n = 0;
+        foreach ($this->channels as $channel) {
+            $n += count($channel['users']);
+        }
+        return $n;
     }
 
     /**

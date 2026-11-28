@@ -18,7 +18,9 @@ use Wsrv\Pusher\Gateway;
  */
 final class EchoCommand extends Command
 {
-    protected $signature = 'wsrv:echo {--connection=wsrv : the name of the broadcasting connection to serve}';
+    protected $signature = 'wsrv:echo
+        {--connection=wsrv : the name of the broadcasting connection to serve}
+        {--stats-interval=60 : seconds between lines of statistics on stderr (0 turns them off)}';
 
     protected $description = 'Serve the Pusher protocol for Laravel Echo through wsrvd';
 
@@ -35,6 +37,7 @@ final class EchoCommand extends Command
             $gatewayConfig = $connection->gateway();
             $supervisor = Supervisor::forSocket($connection->ipcEndpoint(), $connection->ipcToken());
             $checkAppKey = $connection->checkAppKey();
+            $statsInterval = ConnectionConfig::statsInterval($this->option('stats-interval'));
         } catch (\InvalidArgumentException $e) {
             $this->components->error($e->getMessage());
             return self::FAILURE;
@@ -42,9 +45,15 @@ final class EchoCommand extends Command
         $supervisor->installSignalHandlers();
         $this->components->info('wsrv:echo serving "' . $name . '" through ' . $connection->ipcEndpoint());
         // A new Gateway for every connection to the daemon: when the daemon restarts it closes every
-        // browser, so no presence state may outlive the link.
-        $supervisor->run(static function (Worker $worker) use ($gatewayConfig, $checkAppKey): void {
-            Gateway::forWorker($gatewayConfig, $worker, $checkAppKey);
+        // browser, so no presence state may outlive the link. Its counters start again with it.
+        $supervisor->run(static function (Worker $worker) use ($gatewayConfig, $checkAppKey, $statsInterval): void {
+            $gateway = Gateway::forWorker($gatewayConfig, $worker, $checkAppKey);
+            if ($statsInterval > 0) {
+                // Numbers only (GatewayStats), so nothing a browser sent can end up in the line.
+                $worker->every((float) $statsInterval, static function () use ($gateway): void {
+                    fwrite(STDERR, '[wsrv] gateway ' . $gateway->stats()->line() . "\n");
+                });
+            }
         });
         return self::SUCCESS;
     }

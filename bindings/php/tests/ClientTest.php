@@ -11,6 +11,7 @@ use Wsrv\Ipc\Event;
 use Wsrv\Ipc\EventKind;
 use Wsrv\Ipc\Pong;
 use Wsrv\Ipc\StatusReply;
+use Wsrv\MessageTooLarge;
 use Wsrv\ProtocolError;
 use Wsrv\StatusCode;
 use Wsrv\WsrvException;
@@ -264,6 +265,8 @@ test('client: request ids wrap from 4294967295 to 1, never 0', function () {
 test('client: a message larger than the daemon accepts is refused locally', function () {
     [$client, $daemon] = ready_client(4096);
     assertThrows(ProtocolError::class, fn () => $client->sendBinary(1, str_repeat('x', 5000)));
+    $thrown = assertThrows(MessageTooLarge::class, fn () => $client->sendText(1, str_repeat('x', 5000)));
+    assertTrue($thrown instanceof ProtocolError, 'a caller that catches ProtocolError still catches it');
     assertSame('', received($daemon), 'nothing may reach the daemon');
     $client->sendBinary(1, str_repeat('x', 4096 - 14));  // exactly at the limit: 2 + 12 + payload
     assertTrue(received($daemon) !== '');

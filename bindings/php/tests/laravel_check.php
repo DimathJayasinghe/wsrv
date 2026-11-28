@@ -105,6 +105,16 @@ $check('php artisan wsrv:echo is registered', function () use ($app) {
     assertTrue(isset($commands['wsrv:echo']), 'wsrv:echo is not an artisan command');
 });
 
+$check('php artisan wsrv:echo takes --stats-interval and refuses a bad one before it connects to anything', function () use ($app) {
+    $kernel = $app->make(Kernel::class);
+    $command = $kernel->all()['wsrv:echo'];
+    assertTrue($command->getDefinition()->hasOption('stats-interval'), 'no --stats-interval option');
+    assertSame('60', $command->getDefinition()->getOption('stats-interval')->getDefault());
+    $code = $kernel->call('wsrv:echo', ['--stats-interval' => 'soon']);
+    assertSame(1, $code, 'a bad interval must end the command with a failure, not start serving');
+    assertTrue(str_contains($kernel->output(), '--stats-interval'), 'the message names the option: ' . $kernel->output());
+});
+
 $check('private channel: the callback decides, the answer is the signature the gateway verifies', function () use ($auth, $sock) {
     [$status, $body] = $auth('private-chat.7', $sock);
     assertSame(200, $status);

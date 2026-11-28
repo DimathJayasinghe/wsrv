@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -55,9 +56,12 @@ public:
 class LoopLink {
 public:
     /// `max_pending_send_bytes`: the budget for direct sends that wait for the loop (ADR-0032).
+    /// `max_message_bytes`: the largest message a connection's outbound queue can ever hold
+    /// (ADR-0043); a direct send over it is refused at once. The default asks for no check.
     LoopLink(EventLoop& loop,
              ISessionDirectory& directory,
-             std::size_t max_pending_send_bytes = kDefaultMaxPendingSendBytes);
+             std::size_t max_pending_send_bytes = kDefaultMaxPendingSendBytes,
+             std::size_t max_message_bytes = std::numeric_limits<std::size_t>::max());
     LoopLink(const LoopLink&) = delete;
     LoopLink& operator=(const LoopLink&) = delete;
     LoopLink(LoopLink&&) = delete;
@@ -69,7 +73,8 @@ public:
     /// counts against the pending-send budget until the loop has run, or discarded, the command.
     /// @return Error{Closing} after close(), Error{BufferFull} when the loop's task queue is full
     /// (EC-N14) or the budget is used up (wait and retry), Error{InvalidArgument} when the payload
-    /// alone is larger than the whole budget (retrying cannot help), Error{ResourceExhausted} on
+    /// alone is larger than the whole budget or than any outbound queue can hold (retrying cannot
+    /// help), Error{ResourceExhausted} on
     /// allocation failure. Ok means "accepted for delivery", not "delivered".
     [[nodiscard]] Result<void>
     submit(ConnectionId id, SessionCommand command, std::size_t payload_bytes = 0);
@@ -106,6 +111,7 @@ private:
     EventLoop* loop_;
     ISessionDirectory* directory_;
     std::shared_ptr<PendingBytes> pending_;
+    std::size_t max_message_bytes_;
 };
 
 /// How many connection ids one broadcast task carries (ADR-0034). A loop's task queue holds at

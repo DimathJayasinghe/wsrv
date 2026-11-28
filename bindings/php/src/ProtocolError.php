@@ -7,9 +7,11 @@ namespace Wsrv;
 
 /**
  * The other side sent bytes that are not valid IPC protocol v0 (or we were asked to send something
- * the protocol cannot express). A length-prefixed stream cannot be resynchronised, so after this
- * the connection must be dropped.
+ * the protocol cannot express). A length-prefixed stream cannot be resynchronised, so after bytes
+ * from the daemon that fail to parse the connection must be dropped. A refusal to *send* happens
+ * before anything is written and leaves the stream intact; MessageTooLarge is the subclass for the
+ * one such case a running application meets.
  */
-final class ProtocolError extends WsrvException
+class ProtocolError extends WsrvException
 {
 }

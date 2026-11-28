@@ -95,6 +95,11 @@ namespace detail {
 /// Thread-affinity: not thread-safe; configure on one thread before starting.
 class EmbeddedConfig {
 public:
+    /// The outbound queue starts at twice max_message_size, the rule set_max_message_size() applies
+    /// when the key is given (ADR-0043): without it the queue was as large as the biggest message,
+    /// and a maximum-size message could be received but never sent back.
+    EmbeddedConfig();
+
     /// @return Error{InvalidConfig} for an unknown key or a malformed value; nothing changes then.
     [[nodiscard]] Result<void> set(std::string_view key, std::string_view value);
 
@@ -174,9 +179,14 @@ public:
     [[nodiscard]] bool broker_enabled() const noexcept {
         return broker_enabled_;
     }
-    [[nodiscard]] const BrokerConfig& broker_config() const noexcept {
-        return broker_;
-    }
+    /// The broker's bounds as they apply: the payload bound is cut to what a connection's outbound
+    /// queue can ever hold (max_outbound_message(), ADR-0043), because a broadcast over that is
+    /// dropped on every subscriber while the publisher is told it was accepted. By value: it
+    /// depends on max_message_size, which may be set after broker_max_payload_bytes.
+    [[nodiscard]] BrokerConfig broker_config() const noexcept;
+    /// The largest message the server can send to one connection: twice max_message_size less the
+    /// queue's per-message cost (ADR-0043).
+    [[nodiscard]] std::size_t max_outbound_message() const noexcept;
 
     /// The publish endpoint (ADR-0028): on only once publish_port was given, and then it needs the
     /// broker and a token. The token is deliberately NOT a key: it cannot come from a config file,
