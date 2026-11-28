@@ -470,6 +470,9 @@ final class Gateway
                 $this->error($conn, self::ERR_UNAUTHORIZED, 'Connection is unauthorized');
                 return;
             }
+            // The application's own auth route signed this: a visitor who is not anonymous (ADR-0042 A4). Whatever happens to the
+            // join below (a full presence channel, a bad member), the signature did verify.
+            $state->verified = true;
             if ($kind === ChannelKind::Presence) {
                 $member = $this->member($channelData);
                 if ($member === null) {
@@ -485,10 +488,11 @@ final class Gateway
         }
 
         if ($kind === ChannelKind::Public && !isset($this->publicHeld[$channel])
-            && count($this->publicHeld) >= $this->config->maxPublicChannels) {
-            // A new public name when the budget of names is used up (ADR-0042 A3). A name somebody holds is never refused (a join
-            // that was cancelled and is revived holds its own name too): it costs the daemon no new room.
-            // Anonymous browsers can fill the budget, not the daemon's whole table.
+            && count($this->publicHeld) >= $this->config->maxPublicChannels - ($state->verified ? 0 : $this->config->publicChannelsReserved)) {
+            // A new public name when the budget of names is used up (ADR-0042 A3), or, for a connection that has not proved who it
+            // is, when only the part kept back for those is left (A4). A name somebody holds is never refused (a join that was
+            // cancelled and is revived holds its own name too): it costs the daemon no new room.
+            // Anonymous browsers can fill the budget they are given, not the daemon's whole table, and not the part kept for users.
             $this->publicRefused++;
             $this->subscriptionError($conn, $channel, 'LimitReached', 'The server is at its public channel limit');
             return;

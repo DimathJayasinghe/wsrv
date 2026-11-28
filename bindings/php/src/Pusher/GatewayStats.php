@@ -59,7 +59,8 @@ final class GatewayStats
         /** Joins refused because the name is not in `public_channels` (answer: subscription_error AuthError; no strike). */
         public readonly int $publicDenied,
         /**
-         * Joins of a new public name refused because `max_public_channels` names were already held (answer: LimitReached; no
+         * Joins of a new public name refused because `max_public_channels` names were already held, or, for a connection that has
+         * not proved who it is, `max_public_channels - public_channels_reserved` (answer: LimitReached; no
          * strike). Rising means anonymous browsers are using the budget: a flood of names, or a site that needs a larger one.
          */
         public readonly int $publicRefused,

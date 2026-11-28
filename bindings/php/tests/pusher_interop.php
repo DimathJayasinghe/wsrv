@@ -594,6 +594,8 @@ $check('sixteen anonymous connections joining 64 public names each cannot keep a
         }
     }
     assertSame(1024, $joined + $refused, 'every one of the 16 x 64 joins was answered');
+    // ADR-0042 A4: of the 512 names a quarter is kept for signed-in users, so the flood stops at 384.
+    assertSame(384, $joined, 'anonymous visitors got the 384 names that are not kept back');
 
     // A user logs in. Their signed joins to new names must work, whatever the anonymous ones did.
     [$user, $userSocket] = $connect();
@@ -610,12 +612,24 @@ $check('sixteen anonymous connections joining 64 public names each cannot keep a
     $f = pusher_read_when_ready($user, $openWorker);
     assertSame('pusher_internal:subscription_succeeded', $f['event'], 'a name that is held: ' . json_encode($f));
 
+    // A new public name: refused for another anonymous visitor (the budget that is not kept back is used up), admitted for
+    // the signed-in user, whose signature on private-user.7 verified (ADR-0042 A4).
+    [$late] = $connect();
+    pusher_send($late, 'pusher:subscribe', ['channel' => 'news.late']);
+    $f = pusher_read_when_ready($late, $openWorker);
+    assertSame('pusher:subscription_error', $f['event'], 'a new name for an anonymous visitor: ' . json_encode($f));
+    assertSame('LimitReached', $f['data']['type']);
+    pusher_send($user, 'pusher:subscribe', ['channel' => 'news.user']);
+    $f = pusher_read_when_ready($user, $openWorker);
+    assertSame('pusher_internal:subscription_succeeded', $f['event'], 'a new name for a signed-in user: ' . json_encode($f));
+
     // What the operator sees: the refusals are the gateway's own, not the daemon's.
     $stats = $openGateway->stats();
     assertSame(0, $stats->daemonRefused, 'the daemon refused nothing: the gateway kept the anonymous joins inside its budget');
-    assertSame($refused, $stats->publicRefused);
-    assertSame($joined, $stats->publicChannels);
+    assertSame($refused + 1, $stats->publicRefused);
+    assertSame($joined + 1, $stats->publicChannels);
 
+    fclose($late);
     fclose($user);
     foreach ($attackers as $ws) {
         fclose($ws);

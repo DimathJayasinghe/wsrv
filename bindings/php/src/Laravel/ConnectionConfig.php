@@ -48,6 +48,7 @@ final class ConnectionConfig
         'max_strikes' => ['maxStrikes', 'int'],
         'max_public_channels' => ['maxPublicChannels', 'int'],
         'public_channels' => ['publicChannels', 'list'],
+        'public_channels_reserved' => ['publicChannelsReserved', 'int'],
     ];
 
     /** The seconds between statistics lines when `wsrv:echo` is not told otherwise. */

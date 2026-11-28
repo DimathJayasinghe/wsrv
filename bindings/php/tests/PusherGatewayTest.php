@@ -1451,6 +1451,103 @@ test('pusher gateway: the budget counts public names held, so a name somebody ho
     assertSame(held_public($gw), recount_public($gw));
 });
 
+test('pusher config: publicChannelsReserved defaults to a quarter of the public budget and stays below it (ADR-0042 A4)', function () {
+    assertSame(128, (new GatewayConfig(GW_KEY, GW_SECRET))->publicChannelsReserved);
+    assertSame(0, (new GatewayConfig(GW_KEY, GW_SECRET, maxPublicChannels: 3))->publicChannelsReserved, 'a quarter of 3 rounds down to none');
+    assertSame(250, (new GatewayConfig(GW_KEY, GW_SECRET, maxPublicChannels: 1000))->publicChannelsReserved);
+    assertSame(0, (new GatewayConfig(GW_KEY, GW_SECRET, publicChannelsReserved: 0))->publicChannelsReserved, '0 switches it off');
+    assertSame(511, (new GatewayConfig(GW_KEY, GW_SECRET, publicChannelsReserved: 511))->publicChannelsReserved);
+    assertThrows(InvalidArgumentException::class, fn () => new GatewayConfig(GW_KEY, GW_SECRET, publicChannelsReserved: -1));
+    assertThrows(InvalidArgumentException::class, fn () => new GatewayConfig(GW_KEY, GW_SECRET, publicChannelsReserved: 512), 'all of the budget would leave anonymous visitors nothing');
+    assertThrows(InvalidArgumentException::class, fn () => new GatewayConfig(GW_KEY, GW_SECRET, maxPublicChannels: 10, publicChannelsReserved: 10));
+});
+
+test('pusher gateway: the top of the public budget is kept for connections that proved who they are (ADR-0042 A4)', function () {
+    [$gw, $link] = gateway(['maxPublicChannels' => 4, 'publicChannelsReserved' => 2]);
+    $s = [];
+    foreach ([1, 2, 3] as $c) {
+        $s[$c] = open_conn($gw, $link, $c);
+    }
+    // an anonymous connection may take the part that is not kept back
+    join_channel($gw, $link, 1, $s[1], 'a');
+    join_channel($gw, $link, 1, $s[1], 'b');
+    // a third new name from it is refused although the budget is not full: nothing goes to the daemon, no strike, counted
+    $link->clear();
+    $gw->received(1, subscribe_frame('c', $s[1]));
+    $f = $link->lastFrame(1);
+    assertSame('pusher:subscription_error', $f['event']);
+    assertSame('LimitReached', $f['data']['type']);
+    assertSame([], $link->subscribed);
+    assertSame(1, $gw->stats()->publicRefused);
+    // so is a new name from another anonymous connection
+    $gw->received(2, subscribe_frame('d', $s[2]));
+    assertSame('LimitReached', $link->lastFrame(2)['data']['type']);
+    // a signature that does not verify proves nothing
+    $gw->received(2, subscribe_frame('private-x', $s[2], null, 'a-secret-the-app-does-not-have'));
+    assertSame('pusher:error', $link->lastFrame(2)['event']);
+    $link->clear();
+    $gw->received(2, subscribe_frame('c', $s[2]));
+    assertSame('LimitReached', $link->lastFrame(2)['data']['type'], 'still anonymous after a bad signature');
+    // a valid one does: this connection may now use the kept part
+    join_channel($gw, $link, 2, $s[2], 'private-x');
+    join_channel($gw, $link, 2, $s[2], 'c');
+    join_channel($gw, $link, 2, $s[2], 'd');
+    assertSame(4, $gw->stats()->publicChannels);
+    $link->clear();
+    $gw->received(2, subscribe_frame('e', $s[2]));
+    assertSame('LimitReached', $link->lastFrame(2)['data']['type'], 'the whole budget is still a limit, also for a signed-in connection');
+    // a name that is held is joinable by an anonymous connection, with the budget used up
+    join_channel($gw, $link, 3, $s[3], 'c');
+    assertSame('pusher_internal:subscription_succeeded', $link->lastFrame(3)['event']);
+    // the proof lasts as long as the connection: leaving the private channel does not take it back
+    $gw->received(2, frame_text('pusher:unsubscribe', ['channel' => 'private-x']));
+    $gw->received(2, frame_text('pusher:unsubscribe', ['channel' => 'd']));
+    assertSame(3, $gw->stats()->publicChannels);
+    join_channel($gw, $link, 2, $s[2], 'e');
+    assertSame('pusher_internal:subscription_succeeded', $link->lastFrame(2)['event']);
+    // refusals cost no strike
+    assertSame([], $link->closed);
+    assertSame(0, $gw->stats()->strikeCloses);
+    assertSame(held_public($gw), recount_public($gw));
+});
+
+test('pusher gateway: with nothing kept back an anonymous connection may use the whole budget, as in 1.1.0', function () {
+    [$gw, $link] = gateway(['maxPublicChannels' => 3, 'publicChannelsReserved' => 0]);
+    $sock = open_conn($gw, $link, 1);
+    foreach (['a', 'b', 'c'] as $name) {
+        join_channel($gw, $link, 1, $sock, $name);
+    }
+    assertSame(3, $gw->stats()->publicChannels);
+    $link->clear();
+    $gw->received(1, subscribe_frame('d', $sock));
+    assertSame('LimitReached', $link->lastFrame(1)['data']['type']);
+});
+
+test('pusher gateway: on the defaults a normal load is never refused, and the kept part starts after 384 names (ADR-0042 A4)', function () {
+    [$gw, $link] = gateway();
+    $conns = [];
+    for ($c = 1; $c <= 7; $c++) {
+        $conns[$c] = open_conn($gw, $link, $c);
+    }
+    // 384 distinct names (512 less the 128 kept back) from six anonymous connections of 64 names each: every one is admitted
+    for ($c = 1; $c <= 6; $c++) {
+        for ($j = 0; $j < 64; $j++) {
+            join_channel($gw, $link, $c, $conns[$c], "pub.$c.$j");
+        }
+    }
+    assertSame(384, $gw->stats()->publicChannels);
+    assertSame(0, $gw->stats()->publicRefused, 'nothing under the line is refused');
+    // the 385th new name is refused for an anonymous connection and admitted for a signed-in one
+    $link->clear();
+    $gw->received(7, subscribe_frame('pub.late', $conns[7]));
+    assertSame('LimitReached', $link->lastFrame(7)['data']['type']);
+    join_channel($gw, $link, 7, $conns[7], 'private-user.7');
+    join_channel($gw, $link, 7, $conns[7], 'pub.late');
+    assertSame('pusher_internal:subscription_succeeded', $link->lastFrame(7)['event']);
+    assertSame(385, $gw->stats()->publicChannels);
+    assertSame(held_public($gw), recount_public($gw));
+});
+
 test('pusher gateway: a public name is reserved when its join goes to the daemon and given back however the join or the membership ends', function () {
     [$gw, $link] = gateway(['maxPublicChannels' => 2]);
     $s = [];
